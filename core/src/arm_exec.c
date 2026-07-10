@@ -131,6 +131,50 @@ static void exec_multiply(arm7tdmi_t *cpu, uint32_t instr) {
     }
 }
 
+static void exec_long_multiply(arm7tdmi_t *cpu, uint32_t instr) {
+    int rdhi = (int)((instr >> 16) & 0xFu);
+    int rdlo = (int)((instr >> 12) & 0xFu);
+    int rs = (int)((instr >> 8) & 0xFu);
+    int rm = (int)(instr & 0xFu);
+    int is_signed = (int)((instr >> 22) & 1u);
+    int accumulate = (int)((instr >> 21) & 1u);
+    int set_flags = (int)((instr >> 20) & 1u);
+    uint64_t result;
+
+    if (is_signed) {
+        result = (uint64_t)((int64_t)(int32_t)cpu->r[rm] * (int64_t)(int32_t)cpu->r[rs]);
+    } else {
+        result = (uint64_t)cpu->r[rm] * (uint64_t)cpu->r[rs];
+    }
+    if (accumulate) {
+        result += ((uint64_t)cpu->r[rdhi] << 32) | (uint64_t)cpu->r[rdlo];
+    }
+    cpu->r[rdlo] = (uint32_t)result;
+    cpu->r[rdhi] = (uint32_t)(result >> 32);
+    if (set_flags) {
+        cpu->cpsr = (cpu->cpsr & ~(CPSR_N | CPSR_Z)) | ((result & 0x8000000000000000ull) ? CPSR_N : 0u) |
+                    (result == 0 ? CPSR_Z : 0u);
+    }
+}
+
+static void exec_swap(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
+    int byte = (int)((instr >> 22) & 1u);
+    int rn = (int)((instr >> 16) & 0xFu);
+    int rd = (int)((instr >> 12) & 0xFu);
+    int rm = (int)(instr & 0xFu);
+    uint32_t addr = arm_read_reg(cpu, rn, pc, 0);
+
+    if (byte) {
+        uint8_t old = psemu_bus_read8(cpu->bus, addr);
+        psemu_bus_write8(cpu->bus, addr, (uint8_t)cpu->r[rm]);
+        cpu->r[rd] = old;
+    } else {
+        uint32_t old = psemu_bus_read32(cpu->bus, addr & ~3u);
+        psemu_bus_write32(cpu->bus, addr & ~3u, cpu->r[rm]);
+        cpu->r[rd] = old;
+    }
+}
+
 static void exec_bx(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     int rm = (int)(instr & 0xFu);
     uint32_t target = arm_read_reg(cpu, rm, pc, 0);
@@ -348,8 +392,12 @@ void arm_execute(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         exec_multiply(cpu, instr);
         return;
     }
+    if ((instr & 0x0F8000F0u) == 0x00800090u) {
+        exec_long_multiply(cpu, instr);
+        return;
+    }
     if ((instr & 0x0FB000F0u) == 0x01000090u) {
-        cpu->unimplemented = 1; /* SWP - not implemented */
+        exec_swap(cpu, instr, pc);
         return;
     }
     if ((instr & 0x0E000090u) == 0x00000090u && ((instr >> 5) & 0x3u) != 0) {

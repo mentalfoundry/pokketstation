@@ -73,6 +73,43 @@ static void test_arm_data_processing(void) {
     printf("test_arm_data_processing OK\n");
 }
 
+static void test_arm_long_multiply_and_swap(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* UMULL R2,R3,R0,R1 (RdHi=2,RdLo=3,Rm=0,Rs=1): 0xFFFFFFFF * 2 unsigned */
+    ps->cpu.r[0] = 0xFFFFFFFFu;
+    ps->cpu.r[1] = 2u;
+    uint32_t umull = (0xEu << 28) | (1u << 23) | (0u << 22) | (0u << 21) | (0u << 20) | (2u << 16) | (3u << 12) |
+                      (1u << 8) | (0x9u << 4) | 0u;
+    put32(ps, 0, umull);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[3] == 0xFFFFFFFEu); /* RdLo */
+    assert(ps->cpu.r[2] == 1u);          /* RdHi */
+
+    /* SMULL R4,R5,R0,R1 with R0=-2, R1=3 (signed): -2 * 3 = -6 */
+    ps->cpu.r[0] = (uint32_t)-2;
+    ps->cpu.r[1] = 3u;
+    uint32_t smull = (0xEu << 28) | (1u << 23) | (1u << 22) | (0u << 21) | (0u << 20) | (4u << 16) | (5u << 12) |
+                      (1u << 8) | (0x9u << 4) | 0u;
+    put32(ps, 4, smull);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[5] == 0xFFFFFFFAu); /* RdLo: low 32 bits of -6 */
+    assert(ps->cpu.r[4] == 0xFFFFFFFFu); /* RdHi: sign-extended */
+
+    /* SWP R2,R1,[R0]: atomically exchange R1 with the word at [R0] */
+    ps->cpu.r[0] = 0x300u;
+    ps->cpu.r[1] = 0x99u;
+    put32(ps, 0x300, 0xAAu);
+    uint32_t swp = (0xEu << 28) | (1u << 24) | (0u << 16) | (2u << 12) | (0x9u << 4) | 1u;
+    put32(ps, 8, swp);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[2] == 0xAAu);                          /* old memory value */
+    assert(psemu_bus_read32(&ps->bus, 0x300) == 0x99u);     /* R1 written in its place */
+
+    psemu_destroy(ps);
+    printf("test_arm_long_multiply_and_swap OK\n");
+}
+
 static void test_arm_memory(void) {
     psemu_t *ps = make_arm_cpu();
     ps->cpu.r[0] = 0x100;
@@ -332,6 +369,7 @@ static void test_timer_and_irq(void) {
 
 int main(void) {
     test_arm_data_processing();
+    test_arm_long_multiply_and_swap();
     test_arm_memory();
     test_arm_control_flow();
     test_arm_exceptions_and_psr();
