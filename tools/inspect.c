@@ -124,9 +124,36 @@ int main(int argc, char **argv) {
     long fb_prints = 0;
     int dumped_vectors = 0;
 
+#define TRACE_SIZE 4000
+    static uint32_t trace_pc[TRACE_SIZE];
+    static uint32_t trace_cpsr[TRACE_SIZE];
+    long trace_pos = 0;
+    int dumped_halt_trace = 0;
+
     for (long i = 0; i < max_instr; i++) {
         uint32_t pc_before = ps->cpu.r[15];
         uint32_t cpsr_before = ps->cpu.cpsr;
+
+        trace_pc[trace_pos % TRACE_SIZE] = pc_before;
+        trace_cpsr[trace_pos % TRACE_SIZE] = cpsr_before;
+        trace_pos++;
+
+        if (pc_before == 0x020015DAu) {
+            printf("instr #%ld: about to 'bx lr' at 0x15DA, lr=0x%08X\n", i, ps->cpu.r[14]);
+        }
+
+        if (pc_before == 0x040001C8u && !dumped_halt_trace) {
+            dumped_halt_trace = 1;
+            long count = trace_pos < TRACE_SIZE ? trace_pos : TRACE_SIZE;
+            long start = trace_pos < TRACE_SIZE ? 0 : trace_pos % TRACE_SIZE;
+            printf("=== entered halt trap at instr #%ld; last %ld PCs leading up to it ===\n", i, count);
+            for (long k = 0; k < count; k++) {
+                long idx = (start + k) % TRACE_SIZE;
+                printf(
+                    "  [%ld] pc=0x%08X %s\n", i - count + k + 1, trace_pc[idx],
+                    (trace_cpsr[idx] & CPSR_T) ? "(thumb)" : "(arm)");
+            }
+        }
 
         if (button_sim) {
             /* Hold Fire for 1000 instructions out of every 20000, so the app
