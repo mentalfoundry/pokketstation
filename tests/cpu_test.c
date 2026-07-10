@@ -238,6 +238,53 @@ static void test_arm_exceptions_and_psr(void) {
     printf("test_arm_exceptions_and_psr OK\n");
 }
 
+static void test_arm_exception_return(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* SWI, then MOVS PC,LR should return past the SWI with CPSR fully restored. */
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    ps->cpu.cpsr |= CPSR_Z; /* a recognizable flag pattern to verify restoration */
+    ps->cpu.r[13] = 0x9000;
+    uint32_t old_cpsr = ps->cpu.cpsr;
+
+    uint32_t swi_instr = (0xEu << 28) | (0xFu << 24);
+    put32(ps, 0x50, swi_instr);
+    ps->cpu.r[15] = 0x50;
+    arm7tdmi_step(&ps->cpu); /* enters SVC, LR_svc = 0x54 */
+    assert(ps->cpu.r[15] == 0x08u);
+
+    /* MOVS PC, LR: MOV(0xD), S=1, register operand2 = LR, LSL #0 */
+    uint32_t movs_pc_lr = (0xEu << 28) | (0u << 25) | (0xDu << 21) | (1u << 20) | (0u << 16) | (15u << 12) | 14u;
+    put32(ps, 0x08, movs_pc_lr);
+    arm7tdmi_step(&ps->cpu);
+
+    assert(ps->cpu.r[15] == 0x54u);
+    assert(ps->cpu.cpsr == old_cpsr);
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_USR);
+    assert(ps->cpu.r[13] == 0x9000u); /* USR's own SP, untouched by SVC's */
+
+    /* IRQ, then SUBS PC,LR,#4 should return to the pre-empted instruction. */
+    ps->cpu.cpsr &= ~CPSR_I; /* unmask so the IRQ can actually deliver */
+    old_cpsr = ps->cpu.cpsr;
+    ps->cpu.r[15] = 0x60;
+    arm_request_irq(&ps->cpu);
+    arm7tdmi_step(&ps->cpu); /* delivers the IRQ instead of fetching at 0x60; LR_irq = 0x64 */
+    assert(ps->cpu.r[15] == ARM_IRQ_VECTOR);
+    assert(ps->cpu.r[14] == 0x64u);
+
+    /* SUBS PC, LR, #4: SUB(0x2), S=1, Rn=LR, Rd=PC, imm8=4 */
+    uint32_t subs_pc_lr4 = (0xEu << 28) | (1u << 25) | (0x2u << 21) | (1u << 20) | (14u << 16) | (15u << 12) | 4u;
+    put32(ps, (uint32_t)ARM_IRQ_VECTOR, subs_pc_lr4);
+    arm7tdmi_step(&ps->cpu);
+
+    assert(ps->cpu.r[15] == 0x60u);
+    assert(ps->cpu.cpsr == old_cpsr);
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_USR);
+
+    psemu_destroy(ps);
+    printf("test_arm_exception_return OK\n");
+}
+
 static void test_thumb_basic(void) {
     psemu_t *ps = make_thumb_cpu();
 
@@ -373,6 +420,7 @@ int main(void) {
     test_arm_memory();
     test_arm_control_flow();
     test_arm_exceptions_and_psr();
+    test_arm_exception_return();
     test_thumb_basic();
     test_thumb_memory_and_control();
     test_timer_and_irq();

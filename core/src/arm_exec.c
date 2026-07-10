@@ -105,8 +105,18 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 
     if (set_flags) {
-        arm_set_nz(cpu, result);
-        cpu->cpsr = (cpu->cpsr & ~(CPSR_C | CPSR_V)) | (carry ? CPSR_C : 0u) | (overflow ? CPSR_V : 0u);
+        uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
+        if (rd == 15 && mode != ARM_MODE_USR && mode != ARM_MODE_SYS) {
+            /* "MOVS/SUBS PC, ..." in a privileged mode is the standard
+               exception-return idiom: restore the whole CPSR (mode, I/F/T,
+               NZCV) from this mode's SPSR instead of just updating flags. */
+            uint32_t spsr = cpu->spsr_bank[arm_current_bank(cpu)];
+            arm_set_mode(cpu, spsr & CPSR_MODE_MASK);
+            cpu->cpsr = spsr;
+        } else {
+            arm_set_nz(cpu, result);
+            cpu->cpsr = (cpu->cpsr & ~(CPSR_C | CPSR_V)) | (carry ? CPSR_C : 0u) | (overflow ? CPSR_V : 0u);
+        }
     }
     if (write_result) {
         arm_write_reg(cpu, rd, result);
