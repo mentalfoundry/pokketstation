@@ -8,6 +8,7 @@
 #include "lcd.h"
 #include "memory.h"
 #include "psemu/psemu.h"
+#include "timer.h"
 
 struct psemu {
     arm7tdmi_t cpu;
@@ -16,6 +17,7 @@ struct psemu {
     io_t io;
     flash_t flash;
     ir_t ir;
+    timer_t timer;
     int has_bios;
 };
 

@@ -22,6 +22,8 @@
 #define ARM_MODE_UND 0x1Bu
 #define ARM_MODE_SYS 0x1Fu
 
+#define ARM_IRQ_VECTOR 0x18u
+
 /* Bank slots: 0=fiq, 1=irq, 2=svc, 3=abt, 4=und, 5=usr/sys (shared, per spec). */
 #define ARM_BANK_COUNT 6
 
@@ -36,6 +38,7 @@ typedef struct {
     psemu_bus_t *bus;
     int halted;
     int unimplemented; /* set when an unrecognized opcode is hit; sticky until cleared by caller */
+    int irq_pending;
 } arm7tdmi_t;
 
 typedef struct {
@@ -59,6 +62,7 @@ void arm_set_nz(arm7tdmi_t *cpu, uint32_t result);
 uint32_t arm_adc_raw(uint32_t a, uint32_t b, uint32_t carry_in, int *carry_out, int *overflow);
 arm_shift_result_t arm_apply_shift(uint32_t value, int shift_type, uint32_t amount, int carry_in, int is_immediate_encoding);
 void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32_t return_addr);
+void arm_request_irq(arm7tdmi_t *cpu);
 
 void arm_execute(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc);
 void thumb_execute(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc);

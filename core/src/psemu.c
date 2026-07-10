@@ -14,7 +14,8 @@ psemu_t *psemu_create(void) {
     io_init(&ps->io);
     flash_init(&ps->flash);
     ir_init(&ps->ir);
-    psemu_bus_init(&ps->bus, &ps->lcd, &ps->io, &ps->flash, &ps->ir);
+    timer_init(&ps->timer);
+    psemu_bus_init(&ps->bus, &ps->lcd, &ps->io, &ps->flash, &ps->ir, &ps->timer);
     arm7tdmi_init(&ps->cpu, &ps->bus);
     ps->has_bios = 0;
     return ps;
@@ -51,7 +52,11 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     }
     uint32_t ran = 0;
     while (ran < cycles) {
-        ran += arm7tdmi_step(&ps->cpu);
+        uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
+        if (timer_tick(&ps->timer, step_cycles)) {
+            arm_request_irq(&ps->cpu);
+        }
+        ran += step_cycles;
     }
     return ran;
 }
@@ -91,6 +96,7 @@ psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
     ps->bus.io = &ps->io;
     ps->bus.flash = &ps->flash;
     ps->bus.ir = &ps->ir;
+    ps->bus.timer = &ps->timer;
     ps->cpu.bus = &ps->bus;
     return PSEMU_OK;
 }

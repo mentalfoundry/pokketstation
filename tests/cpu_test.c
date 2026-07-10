@@ -289,6 +289,47 @@ static void test_thumb_memory_and_control(void) {
     printf("test_thumb_memory_and_control OK\n");
 }
 
+static void test_timer_and_irq(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0, 10u); /* count */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 4, 10u); /* reload */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 8, TIMER_CTRL_ENABLE | TIMER_CTRL_IRQ_ENABLE);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_TIMER_BASE + 4) == 10u);
+
+    assert(!timer_tick(&ps->timer, 5u));  /* fewer than `reload` cycles: no underflow yet */
+    assert(timer_tick(&ps->timer, 5u));   /* the rest pushes it past the reload value */
+    arm_request_irq(&ps->cpu);
+
+    /* Give USR mode its own SP so we can confirm IRQ entry banks r13/r14/SPSR
+       independently of it, then trigger delivery via a single step. */
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    ps->cpu.cpsr &= ~CPSR_I; /* reset leaves IRQs masked; unmask like real startup code would */
+    ps->cpu.r[13] = 0x9000;
+    uint32_t old_cpsr = ps->cpu.cpsr;
+    ps->cpu.r[15] = 0x30; /* address the pending IRQ preempts */
+
+    arm7tdmi_step(&ps->cpu); /* delivers the IRQ instead of fetching at 0x30 */
+
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_IRQ);
+    assert(ps->cpu.r[15] == ARM_IRQ_VECTOR);
+    assert(ps->cpu.r[14] == 0x34u); /* 0x30 + 4, per the SUBS PC,LR,#4 exit convention */
+    assert(ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)] == old_cpsr);
+    assert(!ps->cpu.irq_pending);
+    assert(ps->cpu.cpsr & CPSR_I); /* IRQs disabled on entry until the handler re-enables them */
+
+    /* With IRQs masked, a fresh request must stay pending rather than fire. */
+    arm_request_irq(&ps->cpu);
+    uint32_t pc_before = ps->cpu.r[15];
+    put32(ps, pc_before, 0xE1A00000u); /* MOV R0,R0 (no-op) */
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.irq_pending);                              /* still pending - never delivered while masked */
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_IRQ); /* unchanged, no re-entry happened */
+
+    psemu_destroy(ps);
+    printf("test_timer_and_irq OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_memory();
@@ -296,6 +337,7 @@ int main(void) {
     test_arm_exceptions_and_psr();
     test_thumb_basic();
     test_thumb_memory_and_control();
+    test_timer_and_irq();
     printf("all cpu tests passed\n");
     return 0;
 }

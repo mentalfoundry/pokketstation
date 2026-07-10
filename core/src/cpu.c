@@ -36,6 +36,7 @@ void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector) {
     cpu->r[15] = reset_vector;
     cpu->halted = 0;
     cpu->unimplemented = 0;
+    cpu->irq_pending = 0;
 }
 
 int arm_condition_passed(arm7tdmi_t *cpu, uint32_t cond) {
@@ -208,8 +209,19 @@ void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32
     cpu->r[15] = vector;
 }
 
+void arm_request_irq(arm7tdmi_t *cpu) {
+    cpu->irq_pending = 1;
+}
+
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     if (cpu->halted) {
+        return 1;
+    }
+    if (cpu->irq_pending && !(cpu->cpsr & CPSR_I)) {
+        cpu->irq_pending = 0;
+        /* Return address follows the "SUBS PC, LR, #4" handler-exit
+           convention: LR_irq = address of the next instruction + 4. */
+        arm_enter_exception(cpu, ARM_MODE_IRQ, ARM_IRQ_VECTOR, cpu->r[15] + 4u);
         return 1;
     }
     uint32_t pc = cpu->r[15];

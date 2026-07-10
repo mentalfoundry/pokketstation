@@ -21,6 +21,7 @@ struct lcd;
 struct io;
 struct flash;
 struct ir;
+struct timer;
 
 typedef struct psemu_bus {
     uint8_t ram[PSEMU_RAM_SIZE];
@@ -29,9 +30,11 @@ typedef struct psemu_bus {
     struct io *io;
     struct flash *flash;
     struct ir *ir;
+    struct timer *timer;
 } psemu_bus_t;
 
-void psemu_bus_init(psemu_bus_t *bus, struct lcd *lcd, struct io *io, struct flash *flash, struct ir *ir);
+void psemu_bus_init(
+    psemu_bus_t *bus, struct lcd *lcd, struct io *io, struct flash *flash, struct ir *ir, struct timer *timer);
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr);
 uint16_t psemu_bus_read16(psemu_bus_t *bus, uint32_t addr);

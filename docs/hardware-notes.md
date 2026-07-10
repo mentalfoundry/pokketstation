@@ -15,7 +15,7 @@ ARM7TDMI (ARM/THUMB), Atmel-fabricated. Variable clock, max ~7.995 MHz; drops to
 | `0x08000000` | 128KB | FLASH2 — physical flash, 15 blocks. |
 | `0x0A000000` | — | `INT_LATCH`. |
 | `0x0A000004` | — | `INT_INPUT` — buttons, bits 0–4 (Up/Right/Down/Left/Fire). |
-| `0x0A800000`+ | — | Timers. |
+| `0x0A800000`+ | — | Timers. Register layout (count/reload/ctrl) implemented in `core/src/timer.c` is a **best-effort approximation**, not sourced from primary documentation - revise once real register details surface. |
 | `0x0C800000`+ | — | IR registers (protocol/send-receive mode at `+0`, beam on/off at `+4`). Exact bit-level IR timing is **unverified** —  |
 | `0x0D000100` | 128B | LCD VRAM. |
 

@@ -8,6 +8,7 @@ add_library(psemu STATIC
     src/memory.c
     src/psemu.c
     src/thumb_exec.c
+    src/timer.c
 )
 
 target_include_directories(psemu
