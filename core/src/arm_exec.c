@@ -335,6 +335,7 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
 static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     int pre_index = (int)((instr >> 24) & 1u);
     int up = (int)((instr >> 23) & 1u);
+    int s_bit = (int)((instr >> 22) & 1u);
     int writeback = (int)((instr >> 21) & 1u);
     int load = (int)((instr >> 20) & 1u);
     int rn = (int)((instr >> 16) & 0xFu);
@@ -375,6 +376,20 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
 
     if (writeback && rn != 15) {
         cpu->r[rn] = up ? base + (uint32_t)count * 4u : base - (uint32_t)count * 4u;
+    }
+
+    /* "LDM ...,{...,PC}^" is the other standard exception-return idiom
+       alongside "MOVS/SUBS PC,LR" - S-bit set with PC in the list means
+       also restore the whole CPSR from this mode's SPSR. S-bit without PC
+       in the list means something unrelated (user-bank register access),
+       not handled here. */
+    if (load && s_bit && (reg_list & 0x8000u)) {
+        uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
+        if (mode != ARM_MODE_USR && mode != ARM_MODE_SYS) {
+            uint32_t spsr = cpu->spsr_bank[arm_current_bank(cpu)];
+            arm_set_mode(cpu, spsr & CPSR_MODE_MASK);
+            cpu->cpsr = spsr;
+        }
     }
 }
 

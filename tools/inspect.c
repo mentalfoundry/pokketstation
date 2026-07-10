@@ -122,6 +122,7 @@ int main(int argc, char **argv) {
     long same_pc_count = 0;
     long fb_changes = 0;
     long fb_prints = 0;
+    int dumped_vectors = 0;
 
     for (long i = 0; i < max_instr; i++) {
         uint32_t pc_before = ps->cpu.r[15];
@@ -169,6 +170,14 @@ int main(int argc, char **argv) {
                 "instr #%ld: mode %s -> %s at pc=0x%08X (came from pc=0x%08X)\n", i, mode_name(cpsr_before),
                 mode_name(ps->cpu.cpsr), ps->cpu.r[15], pc_before);
             last_mode = new_mode;
+        }
+
+        if (pc_before == 8 && !dumped_vectors) {
+            dumped_vectors = 1;
+            printf("vector table @ instr #%ld:\n", i);
+            for (int v = 0; v < 16; v++) {
+                printf("  0x%02X: 0x%08X\n", v * 4, psemu_bus_read32(&ps->bus, (uint32_t)v * 4));
+            }
         }
 
         if (ps->cpu.r[15] == last_pc) {

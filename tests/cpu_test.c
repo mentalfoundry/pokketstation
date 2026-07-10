@@ -303,6 +303,45 @@ static void test_arm_exception_return(void) {
     printf("test_arm_exception_return OK\n");
 }
 
+static void test_arm_ldm_exception_return(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* SWI, then LDM SP!,{R0,PC}^ should return with CPSR fully restored -
+       this is the return idiom a real BIOS SWI handler actually uses. */
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    ps->cpu.cpsr |= CPSR_Z;
+    ps->cpu.r[13] = 0x9000;
+    uint32_t old_cpsr = ps->cpu.cpsr;
+
+    uint32_t swi_instr = (0xEu << 28) | (0xFu << 24);
+    put32(ps, 0x50, swi_instr);
+    ps->cpu.r[15] = 0x50;
+    arm7tdmi_step(&ps->cpu); /* enters SVC, LR_svc = 0x54 */
+    assert(ps->cpu.r[15] == 0x08u);
+
+    ps->cpu.r[13] = 0x300;
+    put32(ps, 0x300, 0xDEADBEEFu); /* R0 */
+    put32(ps, 0x304, 0x54u);       /* PC: matches the SWI's own return address */
+
+    /* LDM R13!,{R0,R15}^ : P=0(IA),U=1,S=1,W=1,L=1,Rn=13,reglist={r0,r15} */
+    uint32_t ldm_instr =
+        (0xEu << 28) | (1u << 27) | (1u << 23) | (1u << 22) | (1u << 21) | (1u << 20) | (13u << 16) | 0x8001u;
+    put32(ps, 0x08, ldm_instr);
+    arm7tdmi_step(&ps->cpu);
+
+    assert(ps->cpu.r[0] == 0xDEADBEEFu);
+    assert(ps->cpu.r[15] == 0x54u);
+    assert(ps->cpu.cpsr == old_cpsr);
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_USR);
+    /* Writeback lands in SVC's own r13 (0x308) before the mode switch back
+       to USR swaps in USR's own banked r13 (0x9000) - the SVC-mode value
+       is still safely preserved in its bank, just not the visible register. */
+    assert(ps->cpu.r[13] == 0x9000u);
+
+    psemu_destroy(ps);
+    printf("test_arm_ldm_exception_return OK\n");
+}
+
 static void test_thumb_basic(void) {
     psemu_t *ps = make_thumb_cpu();
 
@@ -479,6 +518,7 @@ int main(void) {
     test_arm_control_flow();
     test_arm_exceptions_and_psr();
     test_arm_exception_return();
+    test_arm_ldm_exception_return();
     test_thumb_basic();
     test_thumb_memory_and_control();
     test_timer_and_irq();
