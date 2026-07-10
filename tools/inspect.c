@@ -63,7 +63,14 @@ static const char *mode_name(uint32_t cpsr) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <bios.bin> [app.bin] [max_instructions] [button_sim]\n", argv[0]);
+        fprintf(
+            stderr, "usage: %s <bios.bin> [app.bin] [max_instructions] [button_sim] [select_block] [raw]\n",
+            argv[0]);
+        fprintf(
+            stderr, "  select_block: pokes RAM u16 @0x00D0 to this value after reset (app-slot selector)\n");
+        fprintf(
+            stderr, "  raw: if \"raw\", app.bin is memcpy'd directly into flash (bypassing psemu_load_app's\n"
+                    "       Title Sector validation) - use for a full directory+data flash image\n");
         return 1;
     }
 
@@ -81,6 +88,8 @@ int main(int argc, char **argv) {
     }
     free(bios);
 
+    int raw_flash = argc >= 7 && strcmp(argv[6], "raw") == 0;
+
     if (argc >= 3) {
         size_t app_size = 0;
         uint8_t *app = read_file(argv[2], &app_size);
@@ -88,12 +97,23 @@ int main(int argc, char **argv) {
             fprintf(stderr, "failed to read app %s\n", argv[2]);
             return 1;
         }
-        psemu_status st = psemu_load_app(ps, app, app_size);
-        printf(st == PSEMU_OK ? "app loaded ok\n" : "app load failed: %d\n", st);
+        if (raw_flash) {
+            size_t copy_size = app_size < sizeof(ps->flash.data) ? app_size : sizeof(ps->flash.data);
+            memcpy(ps->flash.data, app, copy_size);
+            printf("raw flash image loaded: %zu bytes\n", copy_size);
+        } else {
+            psemu_status st = psemu_load_app(ps, app, app_size);
+            printf(st == PSEMU_OK ? "app loaded ok\n" : "app load failed: %d\n", st);
+        }
         free(app);
     }
 
     psemu_reset(ps);
+
+    int select_block = argc >= 6 ? atoi(argv[5]) : 0;
+    if (select_block > 0) {
+        printf("forcing RAM u16 @0x00D0 = %d every instruction (diagnostic)\n", select_block);
+    }
 
     long max_instr = argc >= 4 ? atol(argv[3]) : 2000000;
     int button_sim = argc >= 5 && atoi(argv[4]) != 0;
@@ -112,6 +132,11 @@ int main(int argc, char **argv) {
                has a chance to see both an edge (press) and a held state. */
             long phase = i % 20000;
             psemu_set_buttons(ps, phase < 1000 ? PSEMU_BUTTON_FIRE : 0);
+        }
+
+        if (select_block > 0) {
+            ps->bus.ram[0xD0] = (uint8_t)(select_block & 0xFF);
+            ps->bus.ram[0xD1] = (uint8_t)((select_block >> 8) & 0xFF);
         }
 
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
