@@ -6,6 +6,7 @@ option(PSEMU_BUILD_DESKTOP "Build the SDL2 desktop frontend" ON)
 option(PSEMU_BUILD_TESTS "Build the smoke test" ON)
 
 add_subdirectory(core)
+add_subdirectory(tools)
 
 if(PSEMU_BUILD_LIBRETRO)
     add_subdirectory(frontends/libretro)
