@@ -444,6 +444,34 @@ static void test_boot_ready_stub(void) {
     printf("test_boot_ready_stub OK\n");
 }
 
+static void test_flash_bank_select(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* Distinct markers at FLASH2 block 0 and block 1 (8192 bytes apart). */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 0, 0xAAAAAAAAu);
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 8192, 0xBBBBBBBBu);
+
+    /* Before any bank-select write, FLASH1 aliases block 0 (offset 0). */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH1_BASE) == 0xAAAAAAAAu);
+
+    /* Select block 1 the same way the real BIOS does: bitmask to +8, then
+       the observed commit value 2 to +0 (see docs/hardware-notes.md). */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 8, 1u << 1);
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u);
+
+    /* FLASH1 now windows onto block 1; FLASH2 stays a plain physical view. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH1_BASE) == 0xBBBBBBBBu);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE) == 0xAAAAAAAAu);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 8192) == 0xBBBBBBBBu);
+
+    /* Writes through FLASH1 land at the windowed offset, not the base. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH1_BASE + 4, 0xCCCCCCCCu);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 8192 + 4) == 0xCCCCCCCCu);
+
+    psemu_destroy(ps);
+    printf("test_flash_bank_select OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -455,6 +483,7 @@ int main(void) {
     test_thumb_memory_and_control();
     test_timer_and_irq();
     test_boot_ready_stub();
+    test_flash_bank_select();
     printf("all cpu tests passed\n");
     return 0;
 }

@@ -26,14 +26,16 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_BIOS_BASE && addr < PSEMU_BIOS_BASE + PSEMU_BIOS_SIZE) {
         return bus->bios[addr - PSEMU_BIOS_BASE];
     }
-    /* FLASH1 is meant to be a banked window onto FLASH2 selected via
-       F_BANK_FLG; until bank switching is implemented both ranges alias
-       the same underlying flash. */
+    /* FLASH1 is a banked window onto FLASH2, offset by the block selected
+       via FLASH_CTRL (see docs/hardware-notes.md). */
     if (addr >= PSEMU_FLASH1_BASE && addr < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) {
-        return flash_read8(bus->flash, addr - PSEMU_FLASH1_BASE);
+        return flash1_read8(bus->flash, addr - PSEMU_FLASH1_BASE);
     }
     if (addr >= PSEMU_FLASH2_BASE && addr < PSEMU_FLASH2_BASE + PSEMU_FLASH_SIZE) {
         return flash_read8(bus->flash, addr - PSEMU_FLASH2_BASE);
+    }
+    if (addr >= PSEMU_FLASH_CTRL_BASE && addr < PSEMU_FLASH_CTRL_BASE + FLASH_CTRL_SPAN) {
+        return flash_ctrl_read8(bus->flash, addr - PSEMU_FLASH_CTRL_BASE);
     }
     if (addr >= PSEMU_LCD_VRAM_BASE && addr < PSEMU_LCD_VRAM_BASE + LCD_VRAM_SIZE) {
         return lcd_read8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE);
@@ -62,10 +64,15 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         return;
     }
     if (addr >= PSEMU_FLASH1_BASE && addr < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) {
-        return; /* read-only window until bank switching exists */
+        flash1_write8(bus->flash, addr - PSEMU_FLASH1_BASE, value);
+        return;
     }
     if (addr >= PSEMU_FLASH2_BASE && addr < PSEMU_FLASH2_BASE + PSEMU_FLASH_SIZE) {
-        bus->flash->data[addr - PSEMU_FLASH2_BASE] = value;
+        flash_write8(bus->flash, addr - PSEMU_FLASH2_BASE, value);
+        return;
+    }
+    if (addr >= PSEMU_FLASH_CTRL_BASE && addr < PSEMU_FLASH_CTRL_BASE + FLASH_CTRL_SPAN) {
+        flash_ctrl_write8(bus->flash, addr - PSEMU_FLASH_CTRL_BASE, value);
         return;
     }
     if (addr >= PSEMU_LCD_VRAM_BASE && addr < PSEMU_LCD_VRAM_BASE + LCD_VRAM_SIZE) {

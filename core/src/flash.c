@@ -7,6 +7,9 @@
 
 void flash_init(flash_t *flash) {
     memset(flash->data, 0, sizeof(flash->data));
+    flash->bank_mask = 0;
+    flash->last_command = 0;
+    flash->bank_offset = 0;
 }
 
 psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
@@ -24,4 +27,54 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
 
 uint8_t flash_read8(flash_t *flash, uint32_t addr) {
     return flash->data[addr % PSEMU_FLASH_SIZE];
+}
+
+void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
+    flash->data[addr % PSEMU_FLASH_SIZE] = value;
+}
+
+uint8_t flash1_read8(flash_t *flash, uint32_t addr) {
+    return flash->data[(flash->bank_offset + addr) % PSEMU_FLASH_SIZE];
+}
+
+void flash1_write8(flash_t *flash, uint32_t addr, uint8_t value) {
+    flash->data[(flash->bank_offset + addr) % PSEMU_FLASH_SIZE] = value;
+}
+
+static void flash_commit_bank(flash_t *flash) {
+    if (flash->bank_mask == 0) {
+        flash->bank_offset = 0;
+        return;
+    }
+    uint32_t first_block = 0;
+    for (uint32_t i = 0; i < 32; i++) {
+        if (flash->bank_mask & (1u << i)) {
+            first_block = i;
+            break;
+        }
+    }
+    flash->bank_offset = first_block * FLASH_BLOCK_SIZE;
+}
+
+uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {
+    uint32_t reg = (offset / 4u == 2u) ? flash->bank_mask : flash->last_command;
+    return (uint8_t)(reg >> ((offset % 4u) * 8u));
+}
+
+void flash_ctrl_write8(flash_t *flash, uint32_t offset, uint8_t value) {
+    uint32_t reg_index = offset / 4u;
+    uint32_t shift = (offset % 4u) * 8u;
+
+    if (reg_index == 2u) { /* +8: block bitmask */
+        flash->bank_mask = (flash->bank_mask & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        return;
+    }
+    if (reg_index == 0u) { /* +0: commit/activate trigger */
+        flash->last_command = (flash->last_command & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        /* The real BIOS always writes the bitmask before the command, so the
+           mask is already complete by the time any byte of the command
+           register is written - safe to recompute on every such write. */
+        flash_commit_bank(flash);
+        return;
+    }
 }
