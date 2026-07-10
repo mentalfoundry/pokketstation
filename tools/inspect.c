@@ -27,6 +27,19 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
     return buf;
 }
 
+static void print_framebuffer(const psemu_t *ps) {
+    const uint8_t *fb = psemu_get_framebuffer(ps);
+    for (int row = 0; row < PSEMU_LCD_HEIGHT; row++) {
+        for (int col = 0; col < PSEMU_LCD_WIDTH; col++) {
+            int byte_index = row * PSEMU_LCD_STRIDE + col / 8;
+            int bit_index = col % 8;
+            int on = (fb[byte_index] >> bit_index) & 1;
+            putchar(on ? '#' : '.');
+        }
+        putchar('\n');
+    }
+}
+
 static const char *mode_name(uint32_t cpsr) {
     switch (cpsr & CPSR_MODE_MASK) {
     case ARM_MODE_USR:
@@ -50,7 +63,7 @@ static const char *mode_name(uint32_t cpsr) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <bios.bin> [app.bin] [max_instructions]\n", argv[0]);
+        fprintf(stderr, "usage: %s <bios.bin> [app.bin] [max_instructions] [button_sim]\n", argv[0]);
         return 1;
     }
 
@@ -83,17 +96,36 @@ int main(int argc, char **argv) {
     psemu_reset(ps);
 
     long max_instr = argc >= 4 ? atol(argv[3]) : 2000000;
+    int button_sim = argc >= 5 && atoi(argv[4]) != 0;
     uint32_t last_mode = ps->cpu.cpsr & CPSR_MODE_MASK;
     uint32_t last_pc = ps->cpu.r[15];
     long same_pc_count = 0;
+    long fb_changes = 0;
+    long fb_prints = 0;
 
     for (long i = 0; i < max_instr; i++) {
         uint32_t pc_before = ps->cpu.r[15];
         uint32_t cpsr_before = ps->cpu.cpsr;
 
+        if (button_sim) {
+            /* Hold Fire for 1000 instructions out of every 20000, so the app
+               has a chance to see both an edge (press) and a held state. */
+            long phase = i % 20000;
+            psemu_set_buttons(ps, phase < 1000 ? PSEMU_BUTTON_FIRE : 0);
+        }
+
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
         if (timer_tick(&ps->timer, step_cycles)) {
             arm_request_irq(&ps->cpu);
+        }
+
+        if (psemu_framebuffer_dirty(ps)) {
+            fb_changes++;
+            if (fb_prints < 20) {
+                printf("instr #%ld: LCD framebuffer changed:\n", i);
+                print_framebuffer(ps);
+                fb_prints++;
+            }
         }
 
         if (ps->cpu.unimplemented) {
@@ -138,18 +170,8 @@ int main(int argc, char **argv) {
         printf("  r%-2d = 0x%08X\n", i, ps->cpu.r[i]);
     }
 
-    int fb_changed = psemu_framebuffer_dirty(ps);
-    printf("\nLCD framebuffer %s. Final contents:\n", fb_changed ? "changed at least once" : "never changed");
-    const uint8_t *fb = psemu_get_framebuffer(ps);
-    for (int row = 0; row < PSEMU_LCD_HEIGHT; row++) {
-        for (int col = 0; col < PSEMU_LCD_WIDTH; col++) {
-            int byte_index = row * PSEMU_LCD_STRIDE + col / 8;
-            int bit_index = col % 8;
-            int on = (fb[byte_index] >> bit_index) & 1;
-            putchar(on ? '#' : '.');
-        }
-        putchar('\n');
-    }
+    printf("\nLCD framebuffer changed %ld time(s) total (shown %ld above). Final contents:\n", fb_changes, fb_prints);
+    print_framebuffer(ps);
 
     psemu_destroy(ps);
     return 0;
