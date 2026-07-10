@@ -43,11 +43,17 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_HW_READY_BASE && addr < PSEMU_HW_READY_BASE + 4u) {
         return (uint8_t)(PSEMU_HW_READY_VALUE >> ((addr - PSEMU_HW_READY_BASE) * 8u));
     }
-    if (addr == PSEMU_INT_INPUT) {
-        return (uint8_t)io_read_input(bus->io);
+    if (addr == PSEMU_HW_READY2_BASE + PSEMU_HW_READY2_CHECK_OFFSET) {
+        return 1u;
     }
-    if (addr == PSEMU_INT_LATCH) {
-        return (uint8_t)io_read_latch(bus->io);
+    if (addr >= PSEMU_HW_READY2_BASE && addr < PSEMU_HW_READY2_BASE + 0x10u) {
+        return 0;
+    }
+    if (addr >= PSEMU_INT_INPUT && addr < PSEMU_INT_INPUT + 4u) {
+        return (uint8_t)(io_read_input(bus->io) >> ((addr - PSEMU_INT_INPUT) * 8u));
+    }
+    if (addr >= PSEMU_INT_LATCH && addr < PSEMU_INT_LATCH + 4u) {
+        return (uint8_t)(io_read_latch(bus->io) >> ((addr - PSEMU_INT_LATCH) * 8u));
     }
     if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + 8u) {
         return (uint8_t)ir_read(bus->ir, addr - PSEMU_IR_BASE);
@@ -79,8 +85,11 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         lcd_write8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE, value);
         return;
     }
-    if (addr == PSEMU_INT_LATCH) {
-        io_write_latch(bus->io, value);
+    if (addr >= PSEMU_INT_LATCH && addr < PSEMU_INT_LATCH + 4u) {
+        uint32_t shift = (addr - PSEMU_INT_LATCH) * 8u;
+        uint32_t current = io_read_latch(bus->io);
+        current = (current & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        io_write_latch(bus->io, current);
         return;
     }
     if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + 8u) {

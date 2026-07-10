@@ -402,7 +402,11 @@ static void exec_long_branch_link(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) 
         cpu->r[14] = (pc + 4u) + (uint32_t)offset_high;
     } else {
         uint32_t target = cpu->r[14] + (offset11 << 1);
-        cpu->r[14] = pc + 2u;
+        /* LR's bit0 is set to tag the return address as Thumb, so a later
+           "BX LR" correctly stays in Thumb instead of switching to ARM -
+           true since Thumb BL was introduced (ARMv4T), not an ARMv5 BLX
+           feature. Confirmed against real ARMv4T architecture behavior. */
+        cpu->r[14] = (pc + 2u) | 1u;
         cpu->r[15] = target;
     }
 }

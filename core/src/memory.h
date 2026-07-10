@@ -20,6 +20,12 @@
    Modeled here as "always ready" (bit 4 set) purely to get past the poll. */
 #define PSEMU_HW_READY_BASE 0x0B000000u
 #define PSEMU_HW_READY_VALUE 0x00000010u
+/* A second, separate undocumented hardware region (not a typo/alias of
+   PSEMU_HW_READY_BASE - 0x800000 apart). Real BIOS checks byte offset +0xC
+   against 1 in a loop after passing the check above; also writes 1 to +4
+   twice per failed iteration (purpose unknown, harmlessly no-op'd). */
+#define PSEMU_HW_READY2_BASE 0x0B800000u
+#define PSEMU_HW_READY2_CHECK_OFFSET 0x0Cu
 #define PSEMU_IR_BASE 0x0C800000u
 #define PSEMU_LCD_VRAM_BASE 0x0D000100u
 

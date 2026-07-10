@@ -424,10 +424,36 @@ static void test_thumb_memory_and_control(void) {
     arm7tdmi_step(&ps->cpu); /* high half: LR = pc+4 */
     arm7tdmi_step(&ps->cpu); /* low half: PC = LR + offset_low*2, LR = return addr */
     assert(ps->cpu.r[15] == (0x50u + 4u + 4u));
-    assert(ps->cpu.r[14] == 0x54u);
+    assert(ps->cpu.r[14] == 0x55u); /* bit0 tags the return address as Thumb, for a later BX LR */
 
     psemu_destroy(ps);
     printf("test_thumb_memory_and_control OK\n");
+}
+
+static void test_thumb_bl_bx_lr_stays_thumb(void) {
+    psemu_t *ps = make_thumb_cpu();
+
+    /* BL 0x100 at pc=0: high half offset_high=0 (LR becomes pc+4=4), low
+       half offset_low=0x7E so target = 4 + 0x7E*2 = 0x100. */
+    put16(ps, 0, (uint16_t)((0x1Eu << 11) | 0u));
+    put16(ps, 2, (uint16_t)((0x1Fu << 11) | 0x7Eu));
+    arm7tdmi_step(&ps->cpu); /* high half */
+    arm7tdmi_step(&ps->cpu); /* low half: PC=0x100, LR=(2+2)|1=5 */
+    assert(ps->cpu.r[15] == 0x100u);
+    assert(ps->cpu.r[14] == 5u);
+
+    /* BX LR at 0x100: format5, op=3(BX), H2=1, Rs field=6 (+8 -> r14). */
+    uint32_t bx_lr = (0x11u << 10) | (3u << 8) | (1u << 6) | (6u << 3);
+    put16(ps, 0x100, (uint16_t)bx_lr);
+    arm7tdmi_step(&ps->cpu);
+
+    /* This is exactly the case that broke against a real BIOS+app: without
+       the bit0 tag, BX LR would incorrectly switch to ARM mode here. */
+    assert(ps->cpu.cpsr & CPSR_T);
+    assert(ps->cpu.r[15] == 4u);
+
+    psemu_destroy(ps);
+    printf("test_thumb_bl_bx_lr_stays_thumb OK\n");
 }
 
 static void test_timer_and_irq(void) {
@@ -479,6 +505,14 @@ static void test_boot_ready_stub(void) {
        a real boot sequence hangs forever. */
     assert(psemu_bus_read32(&ps->bus, PSEMU_HW_READY_BASE) & 0x10u);
 
+    /* Real BIOS also polls bit 9 of INT_INPUT (LDR/LSR#10/BLO) during early
+       boot, separately from the button bits - must read back set too. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_INT_INPUT) & (1u << 9));
+
+    /* A third, separate undocumented region: real BIOS loops on byte offset
+       +0xC of this base equalling 1. */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_HW_READY2_BASE + PSEMU_HW_READY2_CHECK_OFFSET) == 1u);
+
     psemu_destroy(ps);
     printf("test_boot_ready_stub OK\n");
 }
@@ -521,6 +555,7 @@ int main(void) {
     test_arm_ldm_exception_return();
     test_thumb_basic();
     test_thumb_memory_and_control();
+    test_thumb_bl_bx_lr_stays_thumb();
     test_timer_and_irq();
     test_boot_ready_stub();
     test_flash_bank_select();

@@ -10,7 +10,7 @@ void io_set_buttons(io_t *io, uint32_t buttons) {
 }
 
 uint32_t io_read_input(io_t *io) {
-    return io->buttons & 0x1Fu;
+    return (io->buttons & 0x1Fu) | INT_INPUT_READY_BIT;
 }
 
 uint32_t io_read_latch(io_t *io) {
