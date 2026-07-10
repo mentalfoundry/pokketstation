@@ -14,6 +14,12 @@
 #define PSEMU_INT_LATCH 0x0A000000u
 #define PSEMU_INT_INPUT 0x0A000004u
 #define PSEMU_TIMER_BASE 0x0A800000u
+/* Polled by the real BIOS at boot (empirically observed: LDR/TST #0x10/BEQ
+   loop before flash-control init) - address and exact semantics are not in
+   any sourced documentation, only reverse-engineered from that boot loop.
+   Modeled here as "always ready" (bit 4 set) purely to get past the poll. */
+#define PSEMU_HW_READY_BASE 0x0B000000u
+#define PSEMU_HW_READY_VALUE 0x00000010u
 #define PSEMU_IR_BASE 0x0C800000u
 #define PSEMU_LCD_VRAM_BASE 0x0D000100u
 

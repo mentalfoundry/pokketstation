@@ -426,7 +426,7 @@ void arm_execute(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         exec_data_processing(cpu, instr, pc);
         return;
     }
-    if ((instr & 0x0E000000u) == 0x04000000u) {
+    if ((instr & 0x0C000000u) == 0x04000000u) {
         exec_single_transfer(cpu, instr, pc);
         return;
     }

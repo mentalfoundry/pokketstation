@@ -16,6 +16,7 @@ ARM7TDMI (ARM/THUMB), Atmel-fabricated. Variable clock, max ~7.995 MHz; drops to
 | `0x0A000000` | — | `INT_LATCH`. |
 | `0x0A000004` | — | `INT_INPUT` — buttons, bits 0–4 (Up/Right/Down/Left/Fire). |
 | `0x0A800000`+ | — | Timers. Register layout (count/reload/ctrl) implemented in `core/src/timer.c` is a **best-effort approximation**, not sourced from primary documentation - revise once real register details surface. |
+| `0x0B000000`+ | — | **Not in any sourced doc.** A real BIOS dump polls a register here (`LDR/TST #0x10/BEQ`) before touching flash control, apparently waiting for some hardware-ready signal. Modeled in `core/src/memory.c` as always reading back with bit 4 set, purely to get the observed boot sequence unstuck - semantics otherwise unknown. |
 | `0x0C800000`+ | — | IR registers (protocol/send-receive mode at `+0`, beam on/off at `+4`). Exact bit-level IR timing is **unverified** —  |
 | `0x0D000100` | 128B | LCD VRAM. |
 
@@ -38,6 +39,16 @@ PocketStation apps are **not** VMS (that's Dreamcast VMU) or GME (that's the Dex
 - If the identifier is `MCX1`: an `0x800`-byte snapshot follows (saved ARM register/RAM state), then the function table and executable body. `MCX0` skips the snapshot.
 
 Source: the documented file-header/icons page.
+
+## Confirmed against a real BIOS dump
+
+`tools/inspect.c` (a small headless CLI, not part of the automated test suite) loads a real BIOS + a real app extracted from a memory card and free-runs the interpreter, logging mode transitions and stopping on any unrecognized opcode. Real dumps are never committed - see `testdata/` (gitignored). Findings so far, running two different real PocketStation apps for 2M+ instructions each with no unimplemented-opcode hits:
+
+- Reset genuinely starts in Supervisor mode, ARM state, and the very first ~12 instructions visit FIQ then IRQ then back to SVC - textbook ARM startup code initializing each mode's banked SP in turn. Confirms the banked-register model works for real code, not just hand-written tests.
+- The SWI vector is at `0x00000008` and does live in RAM (as expected - the BIOS populates the low-memory vector table itself; there's no separate hidden vector ROM).
+- After boot, the kernel switches to User mode and runs the loaded app directly; the app periodically re-enters the kernel via `SWI` (a real syscall, not a crash) and returns - looks like a per-frame "wait for something, then continue" cycle, consistent with a vblank/LCD-refresh wait.
+- The app does write to LCD VRAM (`psemu_framebuffer_dirty()` goes true during the run) - real, working end-to-end LCD I/O.
+- Real register-offset addressing (`LDR/STR reg,[reg,reg]`) is what caught a genuine dispatch bug: the single-data-transfer class check incorrectly required the I-bit (bit 25, a data field selecting immediate-vs-register offset) to be 0, when the real class boundary is only the top 2 bits (`27:26 == "01"`). No hand-written test had exercised register-offset addressing through `arm_execute`'s dispatch before this.
 
 ## Licensing note
 

@@ -163,6 +163,24 @@ static void test_arm_memory(void) {
     assert(ps->cpu.r[9] == 0x22u);
     assert(ps->cpu.r[4] == 0x208u);
 
+    /* Register-offset addressing (I=1 in the single-transfer encoding) is a
+       data field within the "01" class, not a class discriminator - this
+       regressed once already (real BIOS code hit it before any hand-written
+       test did), so pin it down explicitly. */
+    ps->cpu.r[10] = 0x200;
+    ps->cpu.r[11] = 0x10;
+    uint32_t str_reg_offset =
+        (0xEu << 28) | (1u << 26) | (1u << 25) | (1u << 24) | (1u << 23) | (10u << 16) | (1u << 12) | 11u;
+    put32(ps, 24, str_reg_offset);
+    arm7tdmi_step(&ps->cpu);
+    assert(psemu_bus_read32(&ps->bus, 0x210) == 0x12345678u);
+
+    uint32_t ldr_reg_offset = (0xEu << 28) | (1u << 26) | (1u << 25) | (1u << 24) | (1u << 23) | (1u << 20) |
+                              (10u << 16) | (12u << 12) | 11u;
+    put32(ps, 28, ldr_reg_offset);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[12] == 0x12345678u);
+
     psemu_destroy(ps);
     printf("test_arm_memory OK\n");
 }
@@ -414,6 +432,18 @@ static void test_timer_and_irq(void) {
     printf("test_timer_and_irq OK\n");
 }
 
+static void test_boot_ready_stub(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* Real BIOS polls this address (LDR/TST #0x10/BEQ) before flash-control
+       init; see docs/hardware-notes.md. Must read back with bit 4 set or
+       a real boot sequence hangs forever. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_HW_READY_BASE) & 0x10u);
+
+    psemu_destroy(ps);
+    printf("test_boot_ready_stub OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -424,6 +454,7 @@ int main(void) {
     test_thumb_basic();
     test_thumb_memory_and_control();
     test_timer_and_irq();
+    test_boot_ready_stub();
     printf("all cpu tests passed\n");
     return 0;
 }

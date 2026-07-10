@@ -38,6 +38,9 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_LCD_VRAM_BASE && addr < PSEMU_LCD_VRAM_BASE + LCD_VRAM_SIZE) {
         return lcd_read8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE);
     }
+    if (addr >= PSEMU_HW_READY_BASE && addr < PSEMU_HW_READY_BASE + 4u) {
+        return (uint8_t)(PSEMU_HW_READY_VALUE >> ((addr - PSEMU_HW_READY_BASE) * 8u));
+    }
     if (addr == PSEMU_INT_INPUT) {
         return (uint8_t)io_read_input(bus->io);
     }
