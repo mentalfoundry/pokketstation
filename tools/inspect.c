@@ -172,6 +172,22 @@ int main(int argc, char **argv) {
             last_mode = new_mode;
         }
 
+        /* An SWI vector entry (pc==8) reached from inside FLASH1 is the app
+           issuing a real syscall - decode the syscall number and dispatch
+           table entry the same way the real BIOS handler does. */
+        if (pc_before == 8 && ps->cpu.r[14] >= 0x02000000u && ps->cpu.r[14] < 0x03000000u) {
+            uint32_t caller_cpsr = ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)];
+            uint32_t swi_addr = (caller_cpsr & CPSR_T) ? ps->cpu.r[14] - 2u : ps->cpu.r[14] - 4u;
+            uint32_t swi_word = (caller_cpsr & CPSR_T) ? psemu_bus_read16(&ps->bus, swi_addr)
+                                                        : psemu_bus_read32(&ps->bus, swi_addr);
+            uint32_t syscall_num = swi_word & 0xFFu;
+            uint32_t table_base = psemu_bus_read32(&ps->bus, 0xE0u);
+            uint32_t handler = psemu_bus_read32(&ps->bus, table_base + syscall_num * 4u);
+            printf(
+                "  app SWI from 0x%08X: syscall #0x%02X, table_base=0x%08X, handler=0x%08X\n", swi_addr,
+                syscall_num, table_base, handler);
+        }
+
         if (pc_before == 8 && !dumped_vectors) {
             dumped_vectors = 1;
             printf("vector table @ instr #%ld:\n", i);
