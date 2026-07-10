@@ -1,0 +1,64 @@
+#ifndef PSEMU_H
+#define PSEMU_H
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define PSEMU_LCD_WIDTH 32
+#define PSEMU_LCD_HEIGHT 32
+#define PSEMU_LCD_STRIDE (PSEMU_LCD_WIDTH / 8)
+
+#define PSEMU_BIOS_SIZE (16 * 1024)
+#define PSEMU_FLASH_SIZE (128 * 1024)
+
+typedef enum {
+    PSEMU_BUTTON_UP = 1 << 0,
+    PSEMU_BUTTON_RIGHT = 1 << 1,
+    PSEMU_BUTTON_DOWN = 1 << 2,
+    PSEMU_BUTTON_LEFT = 1 << 3,
+    PSEMU_BUTTON_FIRE = 1 << 4
+} psemu_button;
+
+typedef enum {
+    PSEMU_OK = 0,
+    PSEMU_ERR_BAD_SIZE = -1,
+    PSEMU_ERR_BAD_FORMAT = -2,
+    PSEMU_ERR_NO_BIOS = -3
+} psemu_status;
+
+typedef struct psemu psemu_t;
+
+psemu_t *psemu_create(void);
+void psemu_destroy(psemu_t *ps);
+void psemu_reset(psemu_t *ps);
+
+/* `data` must be exactly PSEMU_BIOS_SIZE bytes. */
+psemu_status psemu_load_bios(psemu_t *ps, const uint8_t *data, size_t size);
+
+/* Loads a PSX Title Sector app image into flash. See docs/hardware-notes.md. */
+psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size);
+
+void psemu_set_buttons(psemu_t *ps, uint32_t buttons);
+
+/* Runs for approximately `cycles` CPU cycles; returns cycles actually executed. */
+uint32_t psemu_run(psemu_t *ps, uint32_t cycles);
+
+/* 1bpp, row-major, PSEMU_LCD_STRIDE bytes per row, bit0 = leftmost pixel. */
+const uint8_t *psemu_get_framebuffer(const psemu_t *ps);
+
+/* Returns nonzero exactly once per framebuffer change, then clears the flag. */
+int psemu_framebuffer_dirty(psemu_t *ps);
+
+size_t psemu_state_size(const psemu_t *ps);
+psemu_status psemu_save_state(const psemu_t *ps, void *buf, size_t size);
+psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif
