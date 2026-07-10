@@ -3,8 +3,9 @@ FetchContent_Declare(
     libretro-common
     GIT_REPOSITORY https://github.com/libretro/libretro-common.git
     GIT_TAG master
+    SOURCE_SUBDIR nonexistent-headers-only # we only want the headers, not its own CMake build
 )
-FetchContent_Populate(libretro-common)
+FetchContent_MakeAvailable(libretro-common)
 
 add_library(pokketstation_libretro MODULE libretro.c)
 target_include_directories(pokketstation_libretro PRIVATE ${libretro-common_SOURCE_DIR}/include)
