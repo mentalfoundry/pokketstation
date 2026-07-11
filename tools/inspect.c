@@ -124,6 +124,15 @@ int main(int argc, char **argv) {
     int select_block = argc >= 6 ? atoi(argv[5]) : 0;
     if (select_block > 0) {
         printf("forcing RAM u16 @0x00D0 = %d every instruction (diagnostic)\n", select_block);
+    } else if (select_block < 0) {
+        /* Negative: poke once at reset instead of every instruction - the
+           real BIOS may use 0x00D0 as scratch for something unrelated
+           later in execution, and forcing it every step could corrupt
+           that instead of just selecting an app slot. */
+        int slot = -select_block;
+        ps->bus.ram[0xD0] = (uint8_t)(slot & 0xFF);
+        ps->bus.ram[0xD1] = (uint8_t)((slot >> 8) & 0xFF);
+        printf("poked RAM u16 @0x00D0 = %d once at reset (diagnostic)\n", slot);
     }
 
     long max_instr = argc >= 4 ? atol(argv[3]) : 2000000;
@@ -213,6 +222,45 @@ int main(int argc, char **argv) {
             printf("instr #%ld: docking IRQ handler (0x4001cf4) entered\n", i);
         }
 
+        {
+            /* BIOS code coverage: which addresses actually get executed
+               across the whole run, to sanity-check how far execution
+               has really gotten relative to the dispatch function.
+               Bucketed at 16 bytes so nearby instructions merge into
+               visible code regions instead of one line per instruction. */
+#define COVERAGE_BUCKET 16u
+            static uint8_t covered[PSEMU_BIOS_SIZE / COVERAGE_BUCKET + 1];
+            if (pc_before >= PSEMU_BIOS_BASE && pc_before < PSEMU_BIOS_BASE + PSEMU_BIOS_SIZE) {
+                covered[(pc_before - PSEMU_BIOS_BASE) / COVERAGE_BUCKET] = 1;
+            }
+            if (i == max_instr - 1) {
+                long num_buckets = (long)(PSEMU_BIOS_SIZE / COVERAGE_BUCKET);
+                long run_start = -1;
+                printf("=== BIOS code coverage ranges (16-byte buckets) ===\n");
+                for (long b = 0; b <= num_buckets; b++) {
+                    int hit = (b < num_buckets) && covered[b];
+                    if (hit && run_start < 0) {
+                        run_start = b;
+                    } else if (!hit && run_start >= 0) {
+                        printf(
+                            "  0x%08X - 0x%08X\n", (unsigned)(PSEMU_BIOS_BASE + run_start * COVERAGE_BUCKET),
+                            (unsigned)(PSEMU_BIOS_BASE + b * COVERAGE_BUCKET - 1));
+                        run_start = -1;
+                    }
+                }
+            }
+        }
+
+        if (pc_before == 0x04001AF8u) {
+            static long count = 0;
+            count++;
+            if (count <= 10) {
+                printf(
+                    "instr #%ld: dispatch-function tail (0x4001af8) reached, count=%ld, r3(entry pt)=0x%08X\n", i,
+                    count, ps->cpu.r[3]);
+            }
+        }
+
         if (pc_before == 0x04003784u) {
             printf("instr #%ld: button-action hold-bit handler (0x4003784) entered\n", i);
         }
@@ -283,6 +331,11 @@ int main(int argc, char **argv) {
                        ps->cpu.r[15]);
                 last_3f0 = v3f0;
             }
+        }
+
+        if (i % 2000000 == 0) {
+            printf("instr #%ld: periodic framebuffer snapshot:\n", i);
+            print_framebuffer(ps);
         }
 
         if (psemu_framebuffer_dirty(ps)) {
