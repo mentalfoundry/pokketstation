@@ -2,11 +2,12 @@ add_library(psemu STATIC
     src/arm_exec.c
     src/cpu.c
     src/flash.c
-    src/io.c
+    src/intc.c
     src/ir.c
     src/lcd.c
     src/memory.c
     src/psemu.c
+    src/rtc.c
     src/thumb_exec.c
     src/timer.c
 )

@@ -11,12 +11,14 @@ psemu_t *psemu_create(void) {
         return NULL;
     }
     lcd_init(&ps->lcd);
-    io_init(&ps->io);
+    intc_init(&ps->intc);
     flash_init(&ps->flash);
     ir_init(&ps->ir);
     timer_init(&ps->timer);
-    psemu_bus_init(&ps->bus, &ps->lcd, &ps->io, &ps->flash, &ps->ir, &ps->timer);
+    rtc_init(&ps->rtc);
+    psemu_bus_init(&ps->bus, &ps->lcd, &ps->intc, &ps->flash, &ps->ir, &ps->timer, &ps->rtc);
     arm7tdmi_init(&ps->cpu, &ps->bus);
+    ps->buttons = 0;
     ps->has_bios = 0;
     return ps;
 }
@@ -43,7 +45,29 @@ psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size) {
 }
 
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons) {
-    io_set_buttons(&ps->io, buttons);
+    /* Real hardware asserts a button's interrupt line on every press/release
+       edge (see docs/hardware-notes.md), not as a polled level - translate
+       our own PSEMU_BUTTON_* bits (an emulator-side convention, not real
+       hardware's bit layout) to the real INT_BTN_* bits per source. */
+    static const struct {
+        uint32_t psemu_bit;
+        uint32_t int_bit;
+    } button_map[] = {
+        {PSEMU_BUTTON_UP, INT_BTN_UP},
+        {PSEMU_BUTTON_RIGHT, INT_BTN_RIGHT},
+        {PSEMU_BUTTON_DOWN, INT_BTN_DOWN},
+        {PSEMU_BUTTON_LEFT, INT_BTN_LEFT},
+        {PSEMU_BUTTON_FIRE, INT_BTN_ACTION},
+    };
+    uint32_t changed = buttons ^ ps->buttons;
+    size_t i;
+
+    for (i = 0; i < sizeof(button_map) / sizeof(button_map[0]); i++) {
+        if (changed & button_map[i].psemu_bit) {
+            intc_set_line(&ps->intc, button_map[i].int_bit, (buttons & button_map[i].psemu_bit) != 0);
+        }
+    }
+    ps->buttons = buttons;
 }
 
 uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
@@ -53,9 +77,8 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     uint32_t ran = 0;
     while (ran < cycles) {
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
-        if (timer_tick(&ps->timer, step_cycles)) {
-            arm_request_irq(&ps->cpu);
-        }
+        timer_tick(&ps->timer, &ps->intc, step_cycles);
+        rtc_tick(&ps->rtc, &ps->intc, step_cycles);
         ran += step_cycles;
     }
     return ran;
@@ -93,10 +116,11 @@ psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
        copy above carries over stale addresses from whatever psemu_t the
        state was saved from, so they must be re-linked to this instance. */
     ps->bus.lcd = &ps->lcd;
-    ps->bus.io = &ps->io;
+    ps->bus.intc = &ps->intc;
     ps->bus.flash = &ps->flash;
     ps->bus.ir = &ps->ir;
     ps->bus.timer = &ps->timer;
+    ps->bus.rtc = &ps->rtc;
     ps->cpu.bus = &ps->bus;
     return PSEMU_OK;
 }

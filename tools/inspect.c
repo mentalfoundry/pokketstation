@@ -123,6 +123,13 @@ int main(int argc, char **argv) {
     long fb_changes = 0;
     long fb_prints = 0;
     int dumped_vectors = 0;
+    long fb_ever_nonzero_at = -1;
+    long fb_nonzero_events = 0;
+    int fb_was_nonzero = 0;
+    long flash1_first_pc_at = -1;
+    long flash1_hit_count = 0;
+    long dispatch_first_pc_at = -1;
+    long dispatch_hit_count = 0;
 
 #define TRACE_SIZE 4000
     static uint32_t trace_pc[TRACE_SIZE];
@@ -167,10 +174,28 @@ int main(int argc, char **argv) {
             ps->bus.ram[0xD1] = (uint8_t)((select_block >> 8) & 0xFF);
         }
 
-        uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
-        if (timer_tick(&ps->timer, step_cycles)) {
-            arm_request_irq(&ps->cpu);
+        if (pc_before >= 0x02000000u && pc_before < 0x03000000u) {
+            flash1_hit_count++;
+            if (flash1_first_pc_at < 0) {
+                flash1_first_pc_at = i;
+                printf("instr #%ld: FIRST execution inside FLASH1 (app code), pc=0x%08X\n", i, pc_before);
+            }
         }
+
+        if (pc_before >= 0x04001900u && pc_before < 0x04001C00u && !(cpsr_before & CPSR_T)) {
+            dispatch_hit_count++;
+            if (dispatch_first_pc_at < 0) {
+                dispatch_first_pc_at = i;
+                printf("instr #%ld: FIRST execution inside app-dispatch routine, pc=0x%08X\n", i, pc_before);
+            }
+            printf(
+                "  [dispatch] instr #%ld: pc=0x%08X r0=0x%08X r1=0x%08X r2=0x%08X r3=0x%08X lr=0x%08X\n", i,
+                pc_before, ps->cpu.r[0], ps->cpu.r[1], ps->cpu.r[2], ps->cpu.r[3], ps->cpu.r[14]);
+        }
+
+        uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
+        timer_tick(&ps->timer, &ps->intc, step_cycles);
+        rtc_tick(&ps->rtc, &ps->intc, step_cycles);
 
         if (psemu_framebuffer_dirty(ps)) {
             fb_changes++;
@@ -178,6 +203,30 @@ int main(int argc, char **argv) {
                 printf("instr #%ld: LCD framebuffer changed:\n", i);
                 print_framebuffer(ps);
                 fb_prints++;
+            }
+            {
+                const uint8_t *fb = psemu_get_framebuffer(ps);
+                int is_nonzero = 0;
+                for (int b = 0; b < PSEMU_LCD_HEIGHT * PSEMU_LCD_STRIDE; b++) {
+                    if (fb[b] != 0) {
+                        is_nonzero = 1;
+                        break;
+                    }
+                }
+                if (is_nonzero) {
+                    fb_nonzero_events++;
+                    if (fb_ever_nonzero_at < 0) {
+                        fb_ever_nonzero_at = i;
+                        printf("instr #%ld: FIRST NONZERO framebuffer byte, pc=0x%08X:\n", i, ps->cpu.r[15]);
+                        print_framebuffer(ps);
+                    }
+                    if (!fb_was_nonzero && fb_nonzero_events > 1) {
+                        printf("instr #%ld: framebuffer went nonzero again after being cleared, pc=0x%08X\n", i, ps->cpu.r[15]);
+                    }
+                } else if (fb_was_nonzero) {
+                    printf("instr #%ld: framebuffer CLEARED back to all-zero, pc=0x%08X\n", i, ps->cpu.r[15]);
+                }
+                fb_was_nonzero = is_nonzero;
             }
         }
 
@@ -249,6 +298,15 @@ int main(int argc, char **argv) {
 
     printf("\nLCD framebuffer changed %ld time(s) total (shown %ld above). Final contents:\n", fb_changes, fb_prints);
     print_framebuffer(ps);
+    printf("\nFLASH1 (app code) executed %ld instruction(s) total; first at #%ld\n", flash1_hit_count, flash1_first_pc_at);
+    printf("app-dispatch routine executed %ld instruction(s) total; first at #%ld\n", dispatch_hit_count, dispatch_first_pc_at);
+    if (fb_ever_nonzero_at >= 0) {
+        printf(
+            "\nfirst nonzero framebuffer byte observed at instr #%ld (nonzero at %ld of %ld dirty events)\n",
+            fb_ever_nonzero_at, fb_nonzero_events, fb_changes);
+    } else {
+        printf("\nframebuffer was ALL ZERO for the entire run (every dirty event wrote all-zero data)\n");
+    }
 
     psemu_destroy(ps);
     return 0;

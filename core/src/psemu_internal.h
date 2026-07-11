@@ -3,21 +3,24 @@
 
 #include "cpu.h"
 #include "flash.h"
-#include "io.h"
+#include "intc.h"
 #include "ir.h"
 #include "lcd.h"
 #include "memory.h"
 #include "psemu/psemu.h"
+#include "rtc.h"
 #include "timer.h"
 
 struct psemu {
     arm7tdmi_t cpu;
     psemu_bus_t bus;
     lcd_t lcd;
-    io_t io;
+    intc_t intc;
     flash_t flash;
     ir_t ir;
     timer_t timer;
+    rtc_t rtc;
+    uint32_t buttons; /* last-set PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;
 };
 

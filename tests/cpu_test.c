@@ -285,7 +285,8 @@ static void test_arm_exception_return(void) {
     ps->cpu.cpsr &= ~CPSR_I; /* unmask so the IRQ can actually deliver */
     old_cpsr = ps->cpu.cpsr;
     ps->cpu.r[15] = 0x60;
-    arm_request_irq(&ps->cpu);
+    ps->intc.enable |= INT_TIMER0;
+    intc_set_line(&ps->intc, INT_TIMER0, 1); /* assert a real (enabled) interrupt source */
     arm7tdmi_step(&ps->cpu); /* delivers the IRQ instead of fetching at 0x60; LR_irq = 0x64 */
     assert(ps->cpu.r[15] == ARM_IRQ_VECTOR);
     assert(ps->cpu.r[14] == 0x64u);
@@ -459,14 +460,23 @@ static void test_thumb_bl_bx_lr_stays_thumb(void) {
 static void test_timer_and_irq(void) {
     psemu_t *ps = make_arm_cpu();
 
-    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0, 10u); /* count */
-    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 4, 10u); /* reload */
-    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 8, TIMER_CTRL_ENABLE | TIMER_CTRL_IRQ_ENABLE);
-    assert(psemu_bus_read32(&ps->bus, PSEMU_TIMER_BASE + 4) == 10u);
+    /* Timer0: period=count=10, enabled; also enable its source in the INTC -
+       hold alone isn't enough to assert IRQ, matching real hardware.
+       Control bits 0-1 are left at 0 -> the slowest selectable divisor is
+       actually /2 (0 and 3 both mean /2, per both an earlier, unconfirmed source's timer-start function and
+       the officially documented divider table) - confirmed real behavior, not
+       a raw 1:1 cycle-to-count ratio, so the cycle counts below are
+       doubled relative to `period` to account for it. */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 10u); /* period */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 10u); /* count */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x8, TIMER_CTRL_ENABLE);
+    ps->intc.enable |= INT_TIMER0;
+    assert(psemu_bus_read32(&ps->bus, PSEMU_TIMER_BASE + 0x0) == 10u);
 
-    assert(!timer_tick(&ps->timer, 5u));  /* fewer than `reload` cycles: no underflow yet */
-    assert(timer_tick(&ps->timer, 5u));   /* the rest pushes it past the reload value */
-    arm_request_irq(&ps->cpu);
+    timer_tick(&ps->timer, &ps->intc, 10u);
+    assert(!intc_irq_asserted(&ps->intc)); /* fewer than `period` /2-divided ticks: no expiry yet */
+    timer_tick(&ps->timer, &ps->intc, 10u);
+    assert(intc_irq_asserted(&ps->intc)); /* the rest pushes it past the period value */
 
     /* Give USR mode its own SP so we can confirm IRQ entry banks r13/r14/SPSR
        independently of it, then trigger delivery via a single step. */
@@ -482,19 +492,41 @@ static void test_timer_and_irq(void) {
     assert(ps->cpu.r[15] == ARM_IRQ_VECTOR);
     assert(ps->cpu.r[14] == 0x34u); /* 0x30 + 4, per the SUBS PC,LR,#4 exit convention */
     assert(ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)] == old_cpsr);
-    assert(!ps->cpu.irq_pending);
     assert(ps->cpu.cpsr & CPSR_I); /* IRQs disabled on entry until the handler re-enables them */
 
-    /* With IRQs masked, a fresh request must stay pending rather than fire. */
-    arm_request_irq(&ps->cpu);
+    /* With IRQs masked (I set), the still-asserted line must not re-deliver -
+       real hardware is level-triggered, not a one-shot request. */
     uint32_t pc_before = ps->cpu.r[15];
     put32(ps, pc_before, 0xE1A00000u); /* MOV R0,R0 (no-op) */
     arm7tdmi_step(&ps->cpu);
-    assert(ps->cpu.irq_pending);                              /* still pending - never delivered while masked */
     assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_IRQ); /* unchanged, no re-entry happened */
+    assert(ps->cpu.r[15] == pc_before + 4u);                 /* normal execution proceeded instead */
 
     psemu_destroy(ps);
     printf("test_timer_and_irq OK\n");
+}
+
+static void test_timer_clock_divisor(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* Control bits 0-1 = 1 selects /32 (confirmed via both an earlier, unconfirmed source's
+       timer_start and the officially documented divider table) - an earlier
+       version of timer_tick ignored this entirely and decremented count
+       by raw cycles directly, which would fire this timer 16x too often
+       relative to the /2 case. period=count=1 so a single expiry needs
+       exactly one selected timer tick, i.e. 32 raw cycles. */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 1u); /* period */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 1u); /* count */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x8, TIMER_CTRL_ENABLE | 1u); /* /32, enabled */
+    ps->intc.enable |= INT_TIMER0;
+
+    timer_tick(&ps->timer, &ps->intc, 31u);
+    assert(!intc_irq_asserted(&ps->intc)); /* one short of a full /32 tick: must not expire yet */
+    timer_tick(&ps->timer, &ps->intc, 1u);
+    assert(intc_irq_asserted(&ps->intc)); /* the 32nd raw cycle completes the tick */
+
+    psemu_destroy(ps);
+    printf("test_timer_clock_divisor OK\n");
 }
 
 static void test_boot_ready_stub(void) {
@@ -505,16 +537,57 @@ static void test_boot_ready_stub(void) {
        a real boot sequence hangs forever. */
     assert(psemu_bus_read32(&ps->bus, PSEMU_HW_READY_BASE) & 0x10u);
 
-    /* Real BIOS also polls bit 9 of INT_INPUT (LDR/LSR#10/BLO) during early
-       boot, separately from the button bits - must read back set too. */
-    assert(psemu_bus_read32(&ps->bus, PSEMU_INT_INPUT) & (1u << 9));
-
-    /* A third, separate undocumented region: real BIOS loops on byte offset
-       +0xC of this base equalling 1. */
-    assert(psemu_bus_read8(&ps->bus, PSEMU_HW_READY2_BASE + PSEMU_HW_READY2_CHECK_OFFSET) == 1u);
+    /* Bit 9 of INT_INPUT is the RTC's toggling interrupt line, not a static
+       flag - see test_rtc_defaults_and_increment for its actual behavior. */
 
     psemu_destroy(ps);
     printf("test_boot_ready_stub OK\n");
+}
+
+static void test_rtc_defaults_and_increment(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* Real silicon power-on-reset values per the real register
+       table: date 1998-01-01, time 00:00:00 with day-of-week BCD 4 - see
+       rtc.h for why this isn't an earlier, unconfirmed source's arbitrary 1999-01-01. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0xC) == 0x00980101u); /* date: day,month,year,(unused) */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) == 0x04000000u); /* time: sec,min,hour,dow */
+
+    /* Writing 1 to control while it's already 1 increments the field
+       selected by mode>>1 (4 = day) - the real "write 1 twice" idiom.
+       mode's bit0 (PRGSEL) is left clear (0 = paused/program mode) so the
+       later auto-advance-on-tick check below doesn't also perturb `date`
+       via the manual write path under test here. */
+    psemu_bus_write32(&ps->bus, PSEMU_RTC_BASE + 0x0, (4u << 1) | 1u); /* mode = day, paused */
+    psemu_bus_write8(&ps->bus, PSEMU_RTC_BASE + 0x4, 1u);       /* control: 0 -> 1, just stored */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0xC) == 0x00980101u); /* unchanged so far */
+    psemu_bus_write8(&ps->bus, PSEMU_RTC_BASE + 0x4, 1u);       /* control: 1 -> increments day */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0xC) == 0x00980102u); /* day is now 2 */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_RTC_BASE + 0x4) == 0u);           /* control reset to 0 */
+
+    /* Real BIOS waits for a full pulse (rising then falling) on the RTC's
+       line in INTC status, not just a level - a constant value can't
+       satisfy that. Still paused (mode bit0 set above), so this exercises
+       the faster ~4096Hz paused tick rate and must NOT auto-advance time. */
+    uint32_t time_before_tick = psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8);
+    rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_PAUSED);
+    assert(intc_get_line(&ps->intc, INT_RTC) != 0u);
+    assert((psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 0x4) & INT_RTC) != 0u);
+    rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_PAUSED);
+    assert(intc_get_line(&ps->intc, INT_RTC) == 0u);
+    assert((psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 0x4) & INT_RTC) == 0u);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) == time_before_tick); /* paused: no auto-advance */
+
+    /* Switch to running mode (bit0 clear) and confirm the tick now both
+       pulses INT_RTC and auto-advances the seconds field - the behavior
+       missing entirely before this fix (only the interrupt line toggled,
+       the clock itself never moved on its own). */
+    psemu_bus_write32(&ps->bus, PSEMU_RTC_BASE + 0x0, 0u); /* mode = running */
+    rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_RUN);
+    assert((psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) & 0xFFu) == 0x01u); /* seconds: 0 -> 1 */
+
+    psemu_destroy(ps);
+    printf("test_rtc_defaults_and_increment OK\n");
 }
 
 static void test_flash_bank_select(void) {
@@ -557,7 +630,9 @@ int main(void) {
     test_thumb_memory_and_control();
     test_thumb_bl_bx_lr_stays_thumb();
     test_timer_and_irq();
+    test_timer_clock_divisor();
     test_boot_ready_stub();
+    test_rtc_defaults_and_increment();
     test_flash_bank_select();
     printf("all cpu tests passed\n");
     return 0;

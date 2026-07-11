@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "intc.h"
+
 static int bank_index(uint32_t mode) {
     switch (mode & CPSR_MODE_MASK) {
     case ARM_MODE_FIQ:
@@ -36,7 +38,6 @@ void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector) {
     cpu->r[15] = reset_vector;
     cpu->halted = 0;
     cpu->unimplemented = 0;
-    cpu->irq_pending = 0;
 }
 
 int arm_condition_passed(arm7tdmi_t *cpu, uint32_t cond) {
@@ -209,16 +210,15 @@ void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32
     cpu->r[15] = vector;
 }
 
-void arm_request_irq(arm7tdmi_t *cpu) {
-    cpu->irq_pending = 1;
-}
-
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     if (cpu->halted) {
         return 1;
     }
-    if (cpu->irq_pending && !(cpu->cpsr & CPSR_I)) {
-        cpu->irq_pending = 0;
+    /* IRQ is level-triggered on real hardware (the interrupt controller's
+       hold & enable & INT_IRQ_MASK, not a one-shot request) - poll it live
+       every step rather than latching a "pending" flag, so the CPU keeps
+       re-entering the handler for as long as the line stays asserted. */
+    if (!(cpu->cpsr & CPSR_I) && intc_irq_asserted(cpu->bus->intc)) {
         /* Return address follows the "SUBS PC, LR, #4" handler-exit
            convention: LR_irq = address of the next instruction + 4. */
         arm_enter_exception(cpu, ARM_MODE_IRQ, ARM_IRQ_VECTOR, cpu->r[15] + 4u);

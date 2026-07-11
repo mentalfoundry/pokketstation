@@ -3,20 +3,23 @@
 #include <string.h>
 
 #include "flash.h"
-#include "io.h"
+#include "intc.h"
 #include "ir.h"
 #include "lcd.h"
+#include "rtc.h"
 #include "timer.h"
 
 void psemu_bus_init(
-    psemu_bus_t *bus, struct lcd *lcd, struct io *io, struct flash *flash, struct ir *ir, struct timer *timer) {
+    psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
+    struct rtc *rtc) {
     memset(bus->ram, 0, sizeof(bus->ram));
     memset(bus->bios, 0, sizeof(bus->bios));
     bus->lcd = lcd;
-    bus->io = io;
+    bus->intc = intc;
     bus->flash = flash;
     bus->ir = ir;
     bus->timer = timer;
+    bus->rtc = rtc;
 }
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
@@ -43,17 +46,11 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_HW_READY_BASE && addr < PSEMU_HW_READY_BASE + 4u) {
         return (uint8_t)(PSEMU_HW_READY_VALUE >> ((addr - PSEMU_HW_READY_BASE) * 8u));
     }
-    if (addr == PSEMU_HW_READY2_BASE + PSEMU_HW_READY2_CHECK_OFFSET) {
-        return 1u;
+    if (addr >= PSEMU_RTC_BASE && addr < PSEMU_RTC_BASE + RTC_REG_SPAN) {
+        return rtc_read8(bus->rtc, addr - PSEMU_RTC_BASE);
     }
-    if (addr >= PSEMU_HW_READY2_BASE && addr < PSEMU_HW_READY2_BASE + 0x10u) {
-        return 0;
-    }
-    if (addr >= PSEMU_INT_INPUT && addr < PSEMU_INT_INPUT + 4u) {
-        return (uint8_t)(io_read_input(bus->io) >> ((addr - PSEMU_INT_INPUT) * 8u));
-    }
-    if (addr >= PSEMU_INT_LATCH && addr < PSEMU_INT_LATCH + 4u) {
-        return (uint8_t)(io_read_latch(bus->io) >> ((addr - PSEMU_INT_LATCH) * 8u));
+    if (addr >= PSEMU_INTC_BASE && addr < PSEMU_INTC_BASE + INTC_REG_SPAN) {
+        return intc_read8(bus->intc, addr - PSEMU_INTC_BASE);
     }
     if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + 8u) {
         return (uint8_t)ir_read(bus->ir, addr - PSEMU_IR_BASE);
@@ -85,11 +82,12 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         lcd_write8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE, value);
         return;
     }
-    if (addr >= PSEMU_INT_LATCH && addr < PSEMU_INT_LATCH + 4u) {
-        uint32_t shift = (addr - PSEMU_INT_LATCH) * 8u;
-        uint32_t current = io_read_latch(bus->io);
-        current = (current & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        io_write_latch(bus->io, current);
+    if (addr >= PSEMU_RTC_BASE && addr < PSEMU_RTC_BASE + RTC_REG_SPAN) {
+        rtc_write8(bus->rtc, addr - PSEMU_RTC_BASE, value);
+        return;
+    }
+    if (addr >= PSEMU_INTC_BASE && addr < PSEMU_INTC_BASE + INTC_REG_SPAN) {
+        intc_write8(bus->intc, addr - PSEMU_INTC_BASE, value);
         return;
     }
     if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + 8u) {
