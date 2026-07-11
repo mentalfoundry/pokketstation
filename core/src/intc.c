@@ -72,8 +72,20 @@ void intc_set_line(intc_t *intc, uint32_t line, int state) {
         return;
     }
     if (state) {
+        /* Every asserted source latches into `hold` (this drives real IRQ
+           delivery via hold & enable & INT_IRQ_MASK) - STATUS_MASK bits
+           (buttons, RTC) ALSO latch into `status` for direct polling.
+           Earlier this only put STATUS_MASK bits into `status`, NEVER
+           `hold` - confirmed wrong by disassembling the real BIOS: its
+           top-level IRQ handler tests `hold & enable & 0x200` (RTC) and
+           its installed periodic callback tests `hold & 1` (Action
+           button), both landing on real handlers (RTC ack + day-rollover
+           bookkeeping; see docs/hardware-notes.md) that never ran under
+           the old status-only routing - buttons/RTC could never
+           interrupt-deliver at all, only be seen by code that happened
+           to poll `status` directly. */
+        intc->hold |= line;
         intc->status |= line & INT_STATUS_MASK;
-        intc->hold |= line & ~INT_STATUS_MASK;
     } else {
         intc->status &= ~line;
         intc->hold &= ~line;

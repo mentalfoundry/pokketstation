@@ -5,19 +5,26 @@
 
 #define INTC_REG_SPAN 0x14u
 
-/* Real PocketStation interrupt controller and sources, confirmed via
-   an earlier, unconfirmed source - see
-   docs/hardware-notes.md. Registers at 0x0A000000: hold(+0x0, read-only
-   from software's view - "invalid write" per real hardware), status(+0x4,
-   likewise read-only), enable(+0x8, write ORs bits in), mask(+0xC, write
-   ANDs matching bits out of enable), acknowledge(+0x10, write-only,
-   clears matching bits from both hold and status).
+/* Real PocketStation interrupt controller and sources, independently
+   corrected against a real BIOS disassembly - see docs/hardware-notes.md. Registers
+   at 0x0A000000: hold(+0x0, read-only from software's view - "invalid
+   write" per real hardware), status(+0x4, likewise read-only), enable
+   (+0x8, write ORs bits in), mask(+0xC, write ANDs matching bits out of
+   enable), acknowledge(+0x10, write-only, clears matching bits from both
+   hold and status).
 
-   Button presses and the RTC tick are asserted into STATUS (bits within
-   INT_STATUS_MASK); everything else (timers, IR, battery, etc.) is
-   asserted into HOLD. Only HOLD, gated by ENABLE, actually drives the
-   CPU's IRQ/FIQ lines - STATUS is polled directly by software (e.g. the
-   RTC wait-for-pulse loop), not delivered as an interrupt. */
+   Every asserted source latches into HOLD, which (gated by ENABLE) drives
+   the CPU's IRQ/FIQ lines. Button presses and the RTC tick (bits within
+   INT_STATUS_MASK) ALSO latch into STATUS, for direct polling without
+   disturbing the interrupt-delivery state (e.g. the RTC wait-for-pulse
+   loop). this codebase's own interrupt-routing logic originally put STATUS_MASK bits into `status`
+   ONLY, never `hold` - this was ported faithfully at first, but a real
+   BIOS disassembly showed its top-level IRQ handler testing
+   `hold & enable & 0x200` (RTC) and its installed periodic callback
+   testing `hold & 1` (Action button), both landing on real handlers
+   (confirmed by tracing them) that could never run under
+   that status-only routing. Real hardware evidently asserts these sources
+   into both registers. */
 #define INT_BTN_ACTION 0x00000001u
 #define INT_BTN_RIGHT 0x00000002u
 #define INT_BTN_LEFT 0x00000004u

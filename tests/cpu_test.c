@@ -457,6 +457,39 @@ static void test_thumb_bl_bx_lr_stays_thumb(void) {
     printf("test_thumb_bl_bx_lr_stays_thumb OK\n");
 }
 
+static void test_intc_status_sources_also_latch_hold(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* Buttons and the RTC tick (INT_STATUS_MASK bits) must latch into
+       BOTH status and hold, not status only. An earlier version of
+       intc_set_line only set `status` for these bits (ported directly
+       - confirmed wrong by disassembling
+       the real BIOS: its top-level IRQ handler tests
+       `hold & enable & INT_RTC` and its installed periodic callback
+       tests `hold & INT_BTN_ACTION`, both driving real handlers that
+       could never run if these bits never reached `hold`. Without this,
+       button presses and RTC ticks could be polled via `status` but
+       could never actually raise a real IRQ. */
+    ps->intc.enable |= INT_RTC;
+    intc_set_line(&ps->intc, INT_RTC, 1);
+    assert((ps->intc.hold & INT_RTC) != 0u);
+    assert((ps->intc.status & INT_RTC) != 0u);
+    assert(intc_irq_asserted(&ps->intc));
+
+    ps->intc.enable |= INT_BTN_ACTION;
+    intc_set_line(&ps->intc, INT_BTN_ACTION, 1);
+    assert((ps->intc.hold & INT_BTN_ACTION) != 0u);
+    assert((ps->intc.status & INT_BTN_ACTION) != 0u);
+
+    /* Clearing (e.g. via acknowledge) must still drop both. */
+    intc_set_line(&ps->intc, INT_RTC, 0);
+    assert((ps->intc.hold & INT_RTC) == 0u);
+    assert((ps->intc.status & INT_RTC) == 0u);
+
+    psemu_destroy(ps);
+    printf("test_intc_status_sources_also_latch_hold OK\n");
+}
+
 static void test_timer_and_irq(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -629,6 +662,7 @@ int main(void) {
     test_thumb_basic();
     test_thumb_memory_and_control();
     test_thumb_bl_bx_lr_stays_thumb();
+    test_intc_status_sources_also_latch_hold();
     test_timer_and_irq();
     test_timer_clock_divisor();
     test_boot_ready_stub();

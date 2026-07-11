@@ -64,13 +64,17 @@ static const char *mode_name(uint32_t cpsr) {
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(
-            stderr, "usage: %s <bios.bin> [app.bin] [max_instructions] [button_sim] [select_block] [raw]\n",
+            stderr,
+            "usage: %s <bios.bin> [app.bin] [max_instructions] [button_sim] [select_block] [raw] [dock]\n",
             argv[0]);
         fprintf(
             stderr, "  select_block: pokes RAM u16 @0x00D0 to this value after reset (app-slot selector)\n");
         fprintf(
             stderr, "  raw: if \"raw\", app.bin is memcpy'd directly into flash (bypassing psemu_load_app's\n"
                     "       Title Sector validation) - use for a full directory+data flash image\n");
+        fprintf(
+            stderr, "  dock: if \"dock\", asserts INT_IOP (docked-to-PSX sensing) once at instr #5000 -\n"
+                    "        This is a real wake/launch trigger, separate from buttons\n");
         return 1;
     }
 
@@ -89,6 +93,7 @@ int main(int argc, char **argv) {
     free(bios);
 
     int raw_flash = argc >= 7 && strcmp(argv[6], "raw") == 0;
+    int dock_sim = argc >= 8 && strcmp(argv[7], "dock") == 0;
 
     if (argc >= 3) {
         size_t app_size = 0;
@@ -172,6 +177,43 @@ int main(int argc, char **argv) {
         if (select_block > 0) {
             ps->bus.ram[0xD0] = (uint8_t)(select_block & 0xFF);
             ps->bus.ram[0xD1] = (uint8_t)((select_block >> 8) & 0xFF);
+        }
+
+        if (dock_sim && i == 5000) {
+            printf("instr #%ld: simulating dock-to-PSX (asserting INT_IOP)\n", i);
+            intc_set_line(&ps->intc, INT_IOP, 1);
+        }
+
+        if (pc_before == 0x04001CF4u) {
+            printf("instr #%ld: docking IRQ handler (0x4001cf4) entered\n", i);
+        }
+
+        if (pc_before == 0x04003784u) {
+            printf("instr #%ld: button-action hold-bit handler (0x4003784) entered\n", i);
+        }
+        if (pc_before == 0x04000672u) {
+            printf("instr #%ld: RTC hold-bit ack/bookkeeping handler (0x4000672) entered\n", i);
+        }
+
+        if (pc_before == 0x04001414u) {
+            static uint32_t last_cb1 = 0xFFFFFFFFu, last_cb2 = 0xFFFFFFFFu;
+            uint32_t cb1 = psemu_bus_read32(&ps->bus, 0xFCu);
+            uint32_t cb2 = psemu_bus_read32(&ps->bus, 0x100u);
+            if (cb1 != last_cb1 || cb2 != last_cb2) {
+                printf("instr #%ld: IRQ callback hooks: [0xFC]=0x%08X [0x100]=0x%08X\n", i, cb1, cb2);
+                last_cb1 = cb1;
+                last_cb2 = cb2;
+            }
+        }
+
+        {
+            static uint32_t last_enable = 0;
+            if (ps->intc.enable != last_enable) {
+                printf(
+                    "instr #%ld: INTC enable changed: 0x%08X -> 0x%08X (IOP bit %s)\n", i, last_enable,
+                    ps->intc.enable, (ps->intc.enable & INT_IOP) ? "SET" : "clear");
+                last_enable = ps->intc.enable;
+            }
         }
 
         if (pc_before >= 0x02000000u && pc_before < 0x03000000u) {
