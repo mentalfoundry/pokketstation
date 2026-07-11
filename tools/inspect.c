@@ -68,6 +68,8 @@ int main(int argc, char **argv) {
             "usage: %s <bios.bin> [app.bin] [max_instructions] [button_sim] [select_block] [raw] [dock]\n",
             argv[0]);
         fprintf(
+            stderr, "  button_sim: 1 = periodic Fire only; 2 = Down-then-Fire navigation sequence\n");
+        fprintf(
             stderr, "  select_block: pokes RAM u16 @0x00D0 to this value after reset (app-slot selector)\n");
         fprintf(
             stderr, "  raw: if \"raw\", app.bin is memcpy'd directly into flash (bypassing psemu_load_app's\n"
@@ -75,6 +77,9 @@ int main(int argc, char **argv) {
         fprintf(
             stderr, "  dock: if \"dock\", asserts INT_IOP (docked-to-PSX sensing) once at instr #5000 -\n"
                     "        This is a real wake/launch trigger, separate from buttons\n");
+        fprintf(
+            stderr, "  intctrace: if \"intctrace\", logs every real INTC register access with its real PC\n"
+                    "        for instr #0-60000 (one full button_sim=2 navigation cycle)\n");
         return 1;
     }
 
@@ -94,6 +99,7 @@ int main(int argc, char **argv) {
 
     int raw_flash = argc >= 7 && strcmp(argv[6], "raw") == 0;
     int dock_sim = argc >= 8 && strcmp(argv[7], "dock") == 0;
+    int intc_trace_sim = argc >= 9 && strcmp(argv[8], "intctrace") == 0;
 
     if (argc >= 3) {
         size_t app_size = 0;
@@ -121,7 +127,7 @@ int main(int argc, char **argv) {
     }
 
     long max_instr = argc >= 4 ? atol(argv[3]) : 2000000;
-    int button_sim = argc >= 5 && atoi(argv[4]) != 0;
+    int button_sim = argc >= 5 ? atoi(argv[4]) : 0;
     uint32_t last_mode = ps->cpu.cpsr & CPSR_MODE_MASK;
     uint32_t last_pc = ps->cpu.r[15];
     long same_pc_count = 0;
@@ -146,6 +152,10 @@ int main(int argc, char **argv) {
         uint32_t pc_before = ps->cpu.r[15];
         uint32_t cpsr_before = ps->cpu.cpsr;
 
+        if (intc_trace_sim) {
+            psemu_intc_trace_enabled = (i < 60000);
+        }
+
         trace_pc[trace_pos % TRACE_SIZE] = pc_before;
         trace_cpsr[trace_pos % TRACE_SIZE] = cpsr_before;
         trace_pos++;
@@ -167,11 +177,26 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (button_sim) {
+        if (button_sim == 1) {
             /* Hold Fire for 1000 instructions out of every 20000, so the app
                has a chance to see both an edge (press) and a held state. */
             long phase = i % 20000;
             psemu_set_buttons(ps, phase < 1000 ? PSEMU_BUTTON_FIRE : 0);
+        } else if (button_sim == 2) {
+            /* Navigation sequence: Down (move selection), then Fire
+               (confirm/launch) - the system-tick callback only ever
+               tests the Action-button hold bit, never Up/Right/Down/Left,
+               so plain repeated Fire presses may never actually navigate
+               the real menu. 60000-instruction phase: Down for 1000,
+               gap, Fire for 1000, gap. */
+            long phase = i % 60000;
+            uint32_t buttons = 0;
+            if (phase < 1000) {
+                buttons = PSEMU_BUTTON_DOWN;
+            } else if (phase >= 30000 && phase < 31000) {
+                buttons = PSEMU_BUTTON_FIRE;
+            }
+            psemu_set_buttons(ps, buttons);
         }
 
         if (select_block > 0) {
@@ -238,6 +263,27 @@ int main(int argc, char **argv) {
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
         timer_tick(&ps->timer, &ps->intc, step_cycles);
         rtc_tick(&ps->rtc, &ps->intc, step_cycles);
+
+        {
+            /* Watch the menu loop's action-dispatch value ([r4+0x24] with
+               r4=0x230 -> abs 0x254) and its other dispatch source
+               ([r7+0x20] with r7=0x3D0 -> abs 0x3F0) for ANY write, to
+               find what actually drives menu navigation empirically
+               rather than by continuing to hand-trace disassembly. */
+            static uint32_t last_254 = 0xFFFFFFFFu, last_3f0 = 0xFFFFFFFFu;
+            uint32_t v254 = psemu_bus_read32(&ps->bus, 0x254u);
+            uint32_t v3f0 = psemu_bus_read32(&ps->bus, 0x3F0u);
+            if (v254 != last_254) {
+                printf("instr #%ld: [0x254] changed 0x%08X -> 0x%08X, pc(after)=0x%08X\n", i, last_254, v254,
+                       ps->cpu.r[15]);
+                last_254 = v254;
+            }
+            if (v3f0 != last_3f0) {
+                printf("instr #%ld: [0x3F0] changed 0x%08X -> 0x%08X, pc(after)=0x%08X\n", i, last_3f0, v3f0,
+                       ps->cpu.r[15]);
+                last_3f0 = v3f0;
+            }
+        }
 
         if (psemu_framebuffer_dirty(ps)) {
             fb_changes++;

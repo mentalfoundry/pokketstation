@@ -51,6 +51,14 @@ void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector);
 /* Executes one instruction, returns cycles consumed (approximate: 1 per instruction for now). */
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu);
 
+/* TEMPORARY diagnostic hook (see intc.c's psemu_intc_trace_enabled): the PC
+   of the instruction currently executing, updated at the top of every
+   arm7tdmi_step. Lets intc_read8/write8 log real accesses with their real
+   PC and CPU mode, since a real BIOS mixes ARM/Thumb code in a way that
+   defeats static disassembly without mode-tracking. Remove once the
+   button-input investigation in docs/hardware-notes.md is resolved. */
+extern uint32_t psemu_debug_current_pc;
+
 /* Shared helpers used by arm_exec.c / thumb_exec.c, implemented in cpu.c. */
 int arm_condition_passed(arm7tdmi_t *cpu, uint32_t cond);
 uint32_t arm_read_reg(arm7tdmi_t *cpu, int n, uint32_t pc, int thumb);

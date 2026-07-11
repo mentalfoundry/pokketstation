@@ -481,7 +481,20 @@ static void test_intc_status_sources_also_latch_hold(void) {
     assert((ps->intc.hold & INT_BTN_ACTION) != 0u);
     assert((ps->intc.status & INT_BTN_ACTION) != 0u);
 
-    /* Clearing (e.g. via acknowledge) must still drop both. */
+    /* Clearing (e.g. a button release, or the RTC's own alternating
+       tick) drops both. A tempting-looking alternative was tried and
+       disproved empirically: making only STATUS follow de-assertion
+       (leaving HOLD latched until an explicit acknowledge, matching
+       the documented INT_INPUT-vs-INT_LATCH naming and the real RTC handler's
+       own explicit ack) sounds plausible, but the real button-action
+       callback (traced at 0x04003784) never acknowledges its bit -
+       making a button release leave it latched forever caused the CPU
+       to re-enter the IRQ handler on nearly every subsequent instruction
+       after a single press (559034 re-entries across a 20M-instruction
+       real-BIOS run). A real, usable device can't work that way, so
+       buttons (and by extension everything else, for consistency -
+       ack already clears both regardless) clear both hold and status
+       on release. */
     intc_set_line(&ps->intc, INT_RTC, 0);
     assert((ps->intc.hold & INT_RTC) == 0u);
     assert((ps->intc.status & INT_RTC) == 0u);

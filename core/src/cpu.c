@@ -210,7 +210,10 @@ void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32
     cpu->r[15] = vector;
 }
 
+uint32_t psemu_debug_current_pc = 0;
+
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
+    psemu_debug_current_pc = cpu->r[15];
     if (cpu->halted) {
         return 1;
     }

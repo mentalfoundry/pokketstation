@@ -60,6 +60,9 @@ void intc_init(intc_t *intc);
 uint8_t intc_read8(intc_t *intc, uint32_t offset);
 void intc_write8(intc_t *intc, uint32_t offset, uint8_t value);
 
+/* TEMPORARY diagnostic flag - see intc.c. */
+extern int psemu_intc_trace_enabled;
+
 /* Sets or clears an interrupt source (see INT_* above), routing it to
    STATUS or HOLD per INT_STATUS_MASK - mirrors real hardware's
    set_interrupt_line. Passing line=0 is a no-op (asserted state is always

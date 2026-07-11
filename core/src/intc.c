@@ -1,5 +1,31 @@
 #include "intc.h"
 
+#include <stdio.h>
+
+#include "cpu.h"
+
+/* TEMPORARY diagnostic flag - see cpu.h's psemu_debug_current_pc. Off by
+   default so it costs nothing in normal use; tools/inspect.c flips it on
+   to log every real INTC access with its real PC, since static
+   disassembly can't reliably tell ARM from Thumb code without tracking
+   runtime mode. Remove once the button-input investigation is resolved. */
+int psemu_intc_trace_enabled = 0;
+
+static const char *offset_name(uint32_t word_index) {
+    switch (word_index) {
+    case 0:
+        return "hold";
+    case 1:
+        return "status";
+    case 2:
+        return "enable";
+    case 3:
+        return "mask";
+    default:
+        return "ack";
+    }
+}
+
 void intc_init(intc_t *intc) {
     intc->hold = 0;
     intc->status = 0;
@@ -29,6 +55,12 @@ uint8_t intc_read8(intc_t *intc, uint32_t offset) {
         value = 0;
         break;
     }
+    if (psemu_intc_trace_enabled) {
+        printf(
+            "[intc trace] pc=0x%08X READ %s (+0x%X) byte@shift%u = 0x%02X (full=0x%08X)\n",
+            psemu_debug_current_pc, offset_name(word_index), (unsigned)offset, (unsigned)shift,
+            (unsigned)((value >> shift) & 0xFFu), value);
+    }
     return (uint8_t)(value >> shift);
 }
 
@@ -39,6 +71,12 @@ static void accumulate_byte(uint32_t *scratch, uint32_t shift, uint8_t value) {
 void intc_write8(intc_t *intc, uint32_t offset, uint8_t value) {
     uint32_t word_index = offset / 4u;
     uint32_t shift = (offset % 4u) * 8u;
+
+    if (psemu_intc_trace_enabled) {
+        printf(
+            "[intc trace] pc=0x%08X WRITE %s (+0x%X) byte@shift%u = 0x%02X\n", psemu_debug_current_pc,
+            offset_name(word_index), (unsigned)offset, (unsigned)shift, (unsigned)value);
+    }
 
     switch (word_index) {
     case 0: /* hold: invalid write on real hardware, no effect */
@@ -87,6 +125,19 @@ void intc_set_line(intc_t *intc, uint32_t line, int state) {
         intc->hold |= line;
         intc->status |= line & INT_STATUS_MASK;
     } else {
+        /* Tried making only STATUS follow de-assertion here (distinguishes INT_INPUT "Raw Interrupt Signal Levels" from
+           INT_LATCH "Interrupt Request Flags", and the real RTC handler
+           does explicitly acknowledge its own bit) - but disproved
+           empirically: the real button-action callback (traced at
+           0x04003784) never acknowledges bit 0, so making a button
+           release leave `hold` latched forever caused the CPU to
+           re-enter the IRQ handler on nearly every subsequent
+           instruction after a single press (559034 re-entries in 20M
+           instructions in one test - clearly not how a real, usable
+           device behaves). Buttons evidently clear `hold` on release
+           same as `status`; only RTC's real handler happens to also
+           ack explicitly, which is harmless here either way since ack
+           already clears both. */
         intc->status &= ~line;
         intc->hold &= ~line;
     }
