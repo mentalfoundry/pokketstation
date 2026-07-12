@@ -1,5 +1,6 @@
 add_library(psemu STATIC
     src/arm_exec.c
+    src/clk.c
     src/cpu.c
     src/dac.c
     src/flash.c

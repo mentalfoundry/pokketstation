@@ -1,7 +1,10 @@
 #include "memory.h"
 
+#include <stdio.h>
 #include <string.h>
 
+#include "clk.h"
+#include "cpu.h"
 #include "dac.h"
 #include "flash.h"
 #include "intc.h"
@@ -10,9 +13,16 @@
 #include "rtc.h"
 #include "timer.h"
 
+/* TEMPORARY diagnostic flag - see intc.c's psemu_intc_trace_enabled for the
+   same pattern. tools/inspect.c flips this on to log every real CLK_MODE
+   and DAC_CTRL write with its real PC - used to confirm the real BIOS
+   raises CLK_MODE during audio playback (see clk.h/docs/hardware-notes.md).
+   Remove once the audio/animation-speed investigation is resolved. */
+int psemu_clk_trace_enabled = 0;
+
 void psemu_bus_init(
     psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
-    struct rtc *rtc, struct dac *dac) {
+    struct rtc *rtc, struct dac *dac, struct clk *clk) {
     memset(bus->ram, 0, sizeof(bus->ram));
     memset(bus->bios, 0, sizeof(bus->bios));
     bus->lcd = lcd;
@@ -22,6 +32,7 @@ void psemu_bus_init(
     bus->timer = timer;
     bus->rtc = rtc;
     bus->dac = dac;
+    bus->clk = clk;
 }
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
@@ -45,8 +56,8 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_LCD_VRAM_BASE && addr < PSEMU_LCD_VRAM_BASE + LCD_VRAM_SIZE) {
         return lcd_read8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE);
     }
-    if (addr >= PSEMU_HW_READY_BASE && addr < PSEMU_HW_READY_BASE + 4u) {
-        return (uint8_t)(PSEMU_HW_READY_VALUE >> ((addr - PSEMU_HW_READY_BASE) * 8u));
+    if (addr >= PSEMU_CLK_BASE && addr < PSEMU_CLK_BASE + CLK_REG_SPAN) {
+        return clk_read8(bus->clk, addr - PSEMU_CLK_BASE);
     }
     if (addr >= PSEMU_RTC_BASE && addr < PSEMU_RTC_BASE + RTC_REG_SPAN) {
         return rtc_read8(bus->rtc, addr - PSEMU_RTC_BASE);
@@ -87,6 +98,15 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         lcd_write8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE, value);
         return;
     }
+    if (addr >= PSEMU_CLK_BASE && addr < PSEMU_CLK_BASE + CLK_REG_SPAN) {
+        if (psemu_clk_trace_enabled) {
+            printf(
+                "[clk trace] pc=0x%08X WRITE CLK_MODE (+0x%X) = 0x%02X\n", psemu_debug_current_pc,
+                (unsigned)(addr - PSEMU_CLK_BASE), (unsigned)value);
+        }
+        clk_write8(bus->clk, addr - PSEMU_CLK_BASE, value);
+        return;
+    }
     if (addr >= PSEMU_RTC_BASE && addr < PSEMU_RTC_BASE + RTC_REG_SPAN) {
         rtc_write8(bus->rtc, addr - PSEMU_RTC_BASE, value);
         return;
@@ -104,6 +124,11 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         return;
     }
     if (addr >= PSEMU_DAC_BASE && addr < PSEMU_DAC_BASE + DAC_REG_SPAN) {
+        if (psemu_clk_trace_enabled && addr == PSEMU_DAC_BASE) {
+            printf(
+                "[clk trace] pc=0x%08X WRITE DAC_CTRL = 0x%02X (enable=%d)\n", psemu_debug_current_pc,
+                (unsigned)value, value & 1);
+        }
         dac_write8(bus->dac, addr - PSEMU_DAC_BASE, value);
         return;
     }

@@ -103,6 +103,7 @@ int main(int argc, char **argv) {
     int raw_flash = argc >= 7 && strcmp(argv[6], "raw") == 0;
     int dock_sim = argc >= 8 && strcmp(argv[7], "dock") == 0;
     int intc_trace_sim = argc >= 9 && strcmp(argv[8], "intctrace") == 0;
+    int clk_trace_sim = argc >= 9 && strcmp(argv[8], "clktrace") == 0;
 
     if (argc >= 3) {
         size_t app_size = 0;
@@ -169,6 +170,13 @@ int main(int argc, char **argv) {
 
         if (intc_trace_sim) {
             psemu_intc_trace_enabled = (i < 60000);
+        }
+
+        if (clk_trace_sim) {
+            psemu_clk_trace_enabled = 1;
+            if (i % 50000 == 0) {
+                printf("[clk trace] --- instr #%ld ---\n", i);
+            }
         }
 
         trace_pc[trace_pos % TRACE_SIZE] = pc_before;

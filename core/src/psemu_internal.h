@@ -1,6 +1,7 @@
 #ifndef PSEMU_INTERNAL_H
 #define PSEMU_INTERNAL_H
 
+#include "clk.h"
 #include "cpu.h"
 #include "dac.h"
 #include "flash.h"
@@ -22,6 +23,7 @@ struct psemu {
     timer_t timer;
     rtc_t rtc;
     dac_t dac;
+    clk_t clk;
     uint32_t buttons; /* last-set PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;
 };

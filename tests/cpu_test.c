@@ -615,13 +615,41 @@ static void test_boot_ready_stub(void) {
     /* Real BIOS polls this address (LDR/TST #0x10/BEQ) before flash-control
        init; see docs/hardware-notes.md. Must read back with bit 4 set or
        a real boot sequence hangs forever. */
-    assert(psemu_bus_read32(&ps->bus, PSEMU_HW_READY_BASE) & 0x10u);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_CLK_BASE) & 0x10u);
 
     /* Bit 9 of INT_INPUT is the RTC's toggling interrupt line, not a static
        flag - see test_rtc_defaults_and_increment for its actual behavior. */
 
     psemu_destroy(ps);
     printf("test_boot_ready_stub OK\n");
+}
+
+static void test_clk_mode_scales_run_speed(void) {
+    /* Real hardware ties CPU/timer/DAC speed to the same CLK_MODE-selected
+       oscillator (confirmed via tracing: the BIOS sets mode 7, ~7.995MHz,
+       while bit-banging DAC audio, then drops to mode 4, ~1.016MHz, once
+       done - see docs/hardware-notes.md). psemu_run's cycle budget is
+       expressed at the PSEMU_ASSUMED_CPU_HZ reference rate (~mode 4), so
+       raising CLK_MODE to max should let noticeably more raw cycles run
+       in the same budget than the low-power idle default (mode 0). */
+    psemu_t *ps_idle = make_arm_cpu();
+    psemu_t *ps_max = make_arm_cpu();
+    ps_idle->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
+    ps_max->has_bios = 1;
+
+    psemu_bus_write32(&ps_max->bus, PSEMU_CLK_BASE, 7u);
+
+    uint32_t ran_idle = psemu_run(ps_idle, 100000u);
+    uint32_t ran_max = psemu_run(ps_max, 100000u);
+
+    /* Mode 7 (~7.995MHz) is ~125x mode 0's ~63.5kHz - assert a conservative
+       lower bound (10x) to avoid coupling this test to the exact table
+       values while still catching a completely unscaled psemu_run. */
+    assert(ran_max > ran_idle * 10u);
+
+    psemu_destroy(ps_idle);
+    psemu_destroy(ps_max);
+    printf("test_clk_mode_scales_run_speed OK\n");
 }
 
 static void test_rtc_defaults_and_increment(void) {
@@ -782,6 +810,7 @@ int main(void) {
     test_timer_and_irq();
     test_timer_clock_divisor();
     test_boot_ready_stub();
+    test_clk_mode_scales_run_speed();
     test_rtc_defaults_and_increment();
     test_flash_bank_select();
     test_flash_ctrl_busy_wait_bits();

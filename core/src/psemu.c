@@ -17,7 +17,8 @@ psemu_t *psemu_create(void) {
     timer_init(&ps->timer);
     rtc_init(&ps->rtc);
     dac_init(&ps->dac);
-    psemu_bus_init(&ps->bus, &ps->lcd, &ps->intc, &ps->flash, &ps->ir, &ps->timer, &ps->rtc, &ps->dac);
+    clk_init(&ps->clk);
+    psemu_bus_init(&ps->bus, &ps->lcd, &ps->intc, &ps->flash, &ps->ir, &ps->timer, &ps->rtc, &ps->dac, &ps->clk);
     arm7tdmi_init(&ps->cpu, &ps->bus);
     ps->buttons = 0;
     ps->has_bios = 0;
@@ -97,9 +98,31 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     if (!ps->has_bios) {
         return 0;
     }
+    /* `cycles` is a time budget expressed at the reference clock rate
+       PSEMU_ASSUMED_CPU_HZ (see dac.h) - real hardware's actual clock
+       varies with CLK_MODE (see clk.h): tracing a real boot+beep sequence
+       confirmed the BIOS raises it to max speed (~7.995MHz) while
+       bit-banging DAC audio, then drops it to a slower mode once done,
+       rather than holding one fixed rate throughout. This emulator
+       previously ran a single fixed cycle count per frame regardless of
+       CLK_MODE, so any BIOS code that runs while the real clock is faster
+       than the reference rate (like the audio-bit-banging loop) got
+       proportionally starved relative to real hardware - the reported
+       symptom of animation logic (concurrent with the beep) rendering
+       too slowly specifically while audio plays.
+       Converting the fixed budget to real elapsed time via the currently
+       active clk_current_hz() lets a faster CLK_MODE run proportionally
+       more real cycles per frame, exactly as real hardware would. Timer/
+       RTC/DAC already expect raw cycles at the PSEMU_ASSUMED_CPU_HZ
+       reference rate, so step_cycles is passed to them unscaled - when
+       CLK_MODE speeds up, everything downstream speeds up together,
+       matching real hardware's shared-oscillator design. */
+    double budget_seconds = (double)cycles / (double)PSEMU_ASSUMED_CPU_HZ;
+    double elapsed_seconds = 0.0;
     uint32_t ran = 0;
-    while (ran < cycles) {
+    while (elapsed_seconds < budget_seconds) {
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
+        elapsed_seconds += (double)step_cycles / (double)clk_current_hz(&ps->clk);
         timer_tick(&ps->timer, &ps->intc, step_cycles);
         rtc_tick(&ps->rtc, &ps->intc, step_cycles);
         dac_tick(&ps->dac, step_cycles);
@@ -146,6 +169,7 @@ psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
     ps->bus.timer = &ps->timer;
     ps->bus.rtc = &ps->rtc;
     ps->bus.dac = &ps->dac;
+    ps->bus.clk = &ps->clk;
     ps->cpu.bus = &ps->bus;
     return PSEMU_OK;
 }

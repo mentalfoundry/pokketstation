@@ -17,12 +17,11 @@
 #define PSEMU_INTC_BASE 0x0A000000u
 /* Confirmed against real hardware: 3 independent timers (see timer.h). */
 #define PSEMU_TIMER_BASE 0x0A800000u
-/* Polled by the real BIOS at boot (empirically observed: LDR/TST #0x10/BEQ
-   loop before flash-control init) - address and exact semantics are not in
-   any sourced documentation, only reverse-engineered from that boot loop.
-   Modeled here as "always ready" (bit 4 set) purely to get past the poll. */
-#define PSEMU_HW_READY_BASE 0x0B000000u
-#define PSEMU_HW_READY_VALUE 0x00000010u
+/* Confirmed against real hardware: CLK_MODE, CPU/timer clock speed
+   control (see clk.h). A real BIOS boot loop polls this (LDR/TST #0x10/BEQ)
+   before touching flash control, waiting for the clock to stabilize after a
+   speed change. */
+#define PSEMU_CLK_BASE 0x0B000000u
 /* Confirmed against real hardware: the real-time clock (see rtc.h). */
 #define PSEMU_RTC_BASE 0x0B800000u
 #define PSEMU_IR_BASE 0x0C800000u
@@ -38,6 +37,7 @@ struct ir;
 struct timer;
 struct rtc;
 struct dac;
+struct clk;
 
 typedef struct psemu_bus {
     uint8_t ram[PSEMU_RAM_SIZE];
@@ -49,11 +49,12 @@ typedef struct psemu_bus {
     struct timer *timer;
     struct rtc *rtc;
     struct dac *dac;
+    struct clk *clk;
 } psemu_bus_t;
 
 void psemu_bus_init(
     psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
-    struct rtc *rtc, struct dac *dac);
+    struct rtc *rtc, struct dac *dac, struct clk *clk);
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr);
 uint16_t psemu_bus_read16(psemu_bus_t *bus, uint32_t addr);
@@ -61,5 +62,8 @@ uint32_t psemu_bus_read32(psemu_bus_t *bus, uint32_t addr);
 void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value);
 void psemu_bus_write16(psemu_bus_t *bus, uint32_t addr, uint16_t value);
 void psemu_bus_write32(psemu_bus_t *bus, uint32_t addr, uint32_t value);
+
+/* TEMPORARY diagnostic flag - see memory.c. */
+extern int psemu_clk_trace_enabled;
 
 #endif
