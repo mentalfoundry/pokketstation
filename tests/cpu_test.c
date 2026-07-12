@@ -652,6 +652,44 @@ static void test_clk_mode_scales_run_speed(void) {
     printf("test_clk_mode_scales_run_speed OK\n");
 }
 
+static void test_clk_mode_keeps_rtc_and_dac_on_real_time(void) {
+    /* Unlike Timer (see test_clk_mode_scales_run_speed - real timer
+       periods are genuinely CPU_FREQ-derived, confirmed against real hardware), RTC is
+       a separate, CPU-clock-independent real 1Hz oscillator (real hardware's RTC
+       ticks via a flat real-time timer, not anything CPU_FREQ-scaled),
+       and this emulator's own DAC resampling needs the same real-time
+       independence for its fixed PSEMU_DAC_SAMPLE_RATE_HZ output rate.
+       An earlier version of psemu_run fed both raw (CLK_MODE-scaled)
+       cycles, letting them race ahead of real time whenever CLK_MODE rose
+       above the reference rate - audible as distorted DAC playback speed
+       (reported directly: a beep "starts too slow and speeds up to
+       sounding ok"). For the same real-time budget, RTC/DAC progress must
+       come out the same regardless of CLK_MODE. */
+    psemu_t *ps_idle = make_arm_cpu();
+    psemu_t *ps_max = make_arm_cpu();
+    ps_idle->has_bios = 1;
+    ps_max->has_bios = 1;
+
+    psemu_bus_write32(&ps_max->bus, PSEMU_CLK_BASE, 7u);
+
+    uint32_t budget = PSEMU_ASSUMED_CPU_HZ / 10u; /* ~0.1 real second */
+    psemu_run(ps_idle, budget);
+    psemu_run(ps_max, budget);
+
+    long rtc_diff = (long)ps_idle->rtc.tick_accumulator - (long)ps_max->rtc.tick_accumulator;
+    assert(rtc_diff > -20 && rtc_diff < 20); /* small final-step overshoot only, not a CLK_MODE-scaled race */
+
+    int16_t buf_idle[4096], buf_max[4096];
+    uint32_t n_idle = psemu_get_audio_samples(ps_idle, buf_idle, 4096u);
+    uint32_t n_max = psemu_get_audio_samples(ps_max, buf_max, 4096u);
+    long sample_diff = (long)n_idle - (long)n_max;
+    assert(sample_diff > -2 && sample_diff < 2);
+
+    psemu_destroy(ps_idle);
+    psemu_destroy(ps_max);
+    printf("test_clk_mode_keeps_rtc_and_dac_on_real_time OK\n");
+}
+
 static void test_rtc_defaults_and_increment(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -811,6 +849,7 @@ int main(void) {
     test_timer_clock_divisor();
     test_boot_ready_stub();
     test_clk_mode_scales_run_speed();
+    test_clk_mode_keeps_rtc_and_dac_on_real_time();
     test_rtc_defaults_and_increment();
     test_flash_bank_select();
     test_flash_ctrl_busy_wait_bits();

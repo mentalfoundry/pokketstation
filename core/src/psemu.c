@@ -22,6 +22,7 @@ psemu_t *psemu_create(void) {
     arm7tdmi_init(&ps->cpu, &ps->bus);
     ps->buttons = 0;
     ps->has_bios = 0;
+    ps->real_time_cycle_carry = 0.0;
     return ps;
 }
 
@@ -107,25 +108,52 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
        previously ran a single fixed cycle count per frame regardless of
        CLK_MODE, so any BIOS code that runs while the real clock is faster
        than the reference rate (like the audio-bit-banging loop) got
-       proportionally starved relative to real hardware - the reported
-       symptom of animation logic (concurrent with the beep) rendering
-       too slowly specifically while audio plays.
-       Converting the fixed budget to real elapsed time via the currently
-       active clk_current_hz() lets a faster CLK_MODE run proportionally
-       more real cycles per frame, exactly as real hardware would. Timer/
-       RTC/DAC already expect raw cycles at the PSEMU_ASSUMED_CPU_HZ
-       reference rate, so step_cycles is passed to them unscaled - when
-       CLK_MODE speeds up, everything downstream speeds up together,
-       matching real hardware's shared-oscillator design. */
+       proportionally starved relative to real hardware. Converting the
+       fixed budget to real elapsed time via the currently active
+       clk_current_hz() lets a faster CLK_MODE run proportionally more
+       real cycles per frame, exactly as real hardware would.
+
+       Timer, however, is NOT the same currency as RTC/DAC here.
+       driver confirms real timer periods are derived directly from
+       CPU_FREQ[mode] (they speed up and slow down with the CPU clock),
+       so timer_tick correctly takes raw, unscaled step_cycles. RTC is
+       the opposite: real hardware's RTC ticks via a flat, CPU-clock-independent
+       real 1Hz timer (a genuinely separate oscillator, as real RTOSs
+       need for accurate timekeeping regardless of CPU speed) - and this
+       emulator's own DAC output needs the same real-time independence,
+       since its resampling target (PSEMU_DAC_SAMPLE_RATE_HZ) is a fixed
+       real-time rate for our own audio device, not something that should
+       speed up just because the BIOS happens to be running the CPU
+       faster. Passing raw step_cycles to rtc_tick/dac_tick here (an
+       earlier version of this function did exactly that) let both race
+       ahead of real elapsed time whenever CLK_MODE went above the
+       reference rate - audible as DAC samples being captured at an
+       effectively higher real rate than PSEMU_DAC_SAMPLE_RATE_HZ but
+       still labeled as if 1/PSEMU_DAC_SAMPLE_RATE_HZ apart, distorting
+       playback speed/pitch for exactly the CLK_MODE-elevated portion of
+       a sequence (reported directly: a beep "starts too slow and speeds
+       up to sounding ok").
+       Fixed by re-deriving each step's real elapsed time (dt) via
+       clk_current_hz(), then converting dt back into the fixed
+       PSEMU_ASSUMED_CPU_HZ reference currency RTC/DAC already assume -
+       a fractional carry (ps->real_time_cycle_carry) preserves real time
+       exactly across steps/calls despite the integer truncation, the
+       same accumulator pattern dac_tick already uses internally. */
     double budget_seconds = (double)cycles / (double)PSEMU_ASSUMED_CPU_HZ;
     double elapsed_seconds = 0.0;
     uint32_t ran = 0;
     while (elapsed_seconds < budget_seconds) {
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
-        elapsed_seconds += (double)step_cycles / (double)clk_current_hz(&ps->clk);
+        double dt = (double)step_cycles / (double)clk_current_hz(&ps->clk);
+        elapsed_seconds += dt;
         timer_tick(&ps->timer, &ps->intc, step_cycles);
-        rtc_tick(&ps->rtc, &ps->intc, step_cycles);
-        dac_tick(&ps->dac, step_cycles);
+
+        ps->real_time_cycle_carry += dt * (double)PSEMU_ASSUMED_CPU_HZ;
+        uint32_t real_time_cycles = (uint32_t)ps->real_time_cycle_carry;
+        ps->real_time_cycle_carry -= (double)real_time_cycles;
+        rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
+        dac_tick(&ps->dac, real_time_cycles);
+
         ran += step_cycles;
     }
     return ran;
