@@ -2,6 +2,7 @@
 #define PSEMU_INTERNAL_H
 
 #include "cpu.h"
+#include "dac.h"
 #include "flash.h"
 #include "intc.h"
 #include "ir.h"
@@ -20,6 +21,7 @@ struct psemu {
     ir_t ir;
     timer_t timer;
     rtc_t rtc;
+    dac_t dac;
     uint32_t buttons; /* last-set PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;
 };

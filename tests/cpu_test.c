@@ -692,6 +692,46 @@ static void test_flash_ctrl_busy_wait_bits(void) {
     printf("test_flash_ctrl_busy_wait_bits OK\n");
 }
 
+static void test_dac_basic(void) {
+    psemu_t *ps = make_arm_cpu();
+    int16_t samples[4];
+    uint32_t n;
+
+    /* Disabled (ctrl's enable bit clear): always silence, regardless of
+       whatever DACV is held. */
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x4, 0x100u << 6);
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == 0);
+
+    /* Enabled, positive DACV: rescaled to a full int16 range (*64). */
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x0, 1u);
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x4, 0x100u << 6);
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == (int16_t)(0x100 * 64));
+
+    /* Negative DACV (10-bit two's complement, -1 = 0x3FF) sign-extends
+       correctly rather than reading as a large positive value. */
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x4, 0x3FFu << 6);
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == (int16_t)(-1 * 64));
+
+    /* Real hardware has no fixed sample rate of its own (software bit-
+       bangs DAC_DATA) - dac_tick resamples at a fixed internal rate, so
+       N cycles must produce N/DAC_CYCLES_PER_SAMPLE output samples. */
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE * 3u);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 3u);
+
+    psemu_destroy(ps);
+    printf("test_dac_basic OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -710,6 +750,7 @@ int main(void) {
     test_rtc_defaults_and_increment();
     test_flash_bank_select();
     test_flash_ctrl_busy_wait_bits();
+    test_dac_basic();
     printf("all cpu tests passed\n");
     return 0;
 }

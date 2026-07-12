@@ -36,14 +36,26 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels) {
             int byte_index = row * PSEMU_LCD_STRIDE + col / 8;
             int bit_index = col % 8;
             int on = (fb[byte_index] >> bit_index) & 1;
-            pixels[row * PSEMU_LCD_WIDTH + col] = on ? 0xFF000000u : 0xFFFFFFFFu;
+            /* SDL_PIXELFORMAT_RGBA8888 packs a 32-bit value as
+               (R<<24)|(G<<16)|(B<<8)|A regardless of host endianness -
+               0xFF000000 is R=0xFF,G=0,B=0,A=0 (pure red, alpha-
+               transparent), not opaque black. SDL_RenderCopy's default
+               blend mode ignores the source alpha and blits RGB as-is,
+               so "on" pixels rendered solid red instead of black. */
+            pixels[row * PSEMU_LCD_WIDTH + col] = on ? 0x000000FFu : 0xFFFFFFFFu;
         }
     }
 }
 
 int main(int argc, char **argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s <bios.bin> <app.pss>\n", argv[0]);
+        fprintf(stderr, "usage: %s <bios.bin> <app.pss | memory-card.mcr>\n", argv[0]);
+        fprintf(
+            stderr,
+            "  a %d-byte file is loaded as a raw memory card image (with its own directory) -\n"
+            "  navigate and launch apps from the real BIOS menu with the keyboard, same as real\n"
+            "  hardware. Anything else is loaded as a single Title Sector app (MCX0/MCX1).\n",
+            PSEMU_FLASH_SIZE);
         return 1;
     }
 
@@ -60,13 +72,18 @@ int main(int argc, char **argv) {
         fprintf(stderr, "invalid BIOS image (expected %d bytes)\n", PSEMU_BIOS_SIZE);
         return 1;
     }
-    if (psemu_load_app(ps, app, app_size) != PSEMU_OK) {
+    if (app_size == PSEMU_FLASH_SIZE) {
+        if (psemu_load_flash_image(ps, app, app_size) != PSEMU_OK) {
+            fprintf(stderr, "failed to load memory card image\n");
+            return 1;
+        }
+    } else if (psemu_load_app(ps, app, app_size) != PSEMU_OK) {
         fprintf(stderr, "invalid app image\n");
         return 1;
     }
     psemu_reset(ps);
 
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         return 1;
     }
@@ -77,8 +94,24 @@ int main(int argc, char **argv) {
     SDL_Texture *texture = SDL_CreateTexture(
         renderer, SDL_PIXELFORMAT_RGBA8888, SDL_TEXTUREACCESS_STREAMING, PSEMU_LCD_WIDTH, PSEMU_LCD_HEIGHT);
 
+    SDL_AudioSpec audio_spec;
+    SDL_zero(audio_spec);
+    audio_spec.freq = PSEMU_AUDIO_SAMPLE_RATE_HZ;
+    audio_spec.format = AUDIO_S16SYS;
+    audio_spec.channels = 1;
+    audio_spec.samples = 512;
+    SDL_AudioDeviceID audio_dev = SDL_OpenAudioDevice(NULL, 0, &audio_spec, NULL, 0);
+    if (audio_dev == 0) {
+        fprintf(stderr, "SDL_OpenAudioDevice failed: %s (continuing without sound)\n", SDL_GetError());
+    } else {
+        SDL_PauseAudioDevice(audio_dev, 0);
+    }
+
     uint32_t pixels[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
+    int16_t audio_buf[1024];
     int running = 1;
+    uint32_t frame = 0;
+    uint32_t last_buttons = 0;
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -96,7 +129,43 @@ int main(int argc, char **argv) {
         if (keys[SDL_SCANCODE_Z]) buttons |= PSEMU_BUTTON_FIRE;
         psemu_set_buttons(ps, buttons);
 
+        /* TEMPORARY diagnostic: log every button edge with the frame
+           number, to help track down a reported reliability issue with
+           held key presses (redirect stdout to a file and share it when
+           reporting problems). Remove once resolved. */
+        if (buttons != last_buttons) {
+            printf(
+                "frame %u: buttons 0x%02X -> 0x%02X (U=%d D=%d L=%d R=%d FIRE=%d)\n", frame, last_buttons, buttons,
+                (buttons & PSEMU_BUTTON_UP) != 0, (buttons & PSEMU_BUTTON_DOWN) != 0,
+                (buttons & PSEMU_BUTTON_LEFT) != 0, (buttons & PSEMU_BUTTON_RIGHT) != 0,
+                (buttons & PSEMU_BUTTON_FIRE) != 0);
+            fflush(stdout);
+            last_buttons = buttons;
+        }
+
+        /* 33000 cycles at a 32Hz refresh (~1.056MHz effective) - reverted
+           from an earlier attempt to match rtc.h's RTC_TICK_CYCLES
+           (~4MHz), which turned out to be an unvalidated guess matching
+           one uncalibrated constant to another: real-hardware testing
+           showed that "fix" made on-screen blinking visibly too fast.
+           Real hardware genuinely runs at a variable clock (up to
+           ~7.995MHz, see the CPU_FREQ table referenced in
+           docs/hardware-notes.md), and this emulator doesn't model
+           per-instruction cycle counts or CLK_MODE at all, so any single
+           fixed rate is an approximation - 33000/frame is kept here
+           specifically because it's the value empirically confirmed to
+           look right, not because it's independently derived. See
+           dac.h's PSEMU_ASSUMED_CPU_HZ for the matching audio-rate
+           conversion (33000 * 32) - keep both in sync if this ever
+           changes. */
         psemu_run(ps, 33000);
+
+        if (audio_dev != 0) {
+            uint32_t n = psemu_get_audio_samples(ps, audio_buf, sizeof(audio_buf) / sizeof(audio_buf[0]));
+            if (n > 0) {
+                SDL_QueueAudio(audio_dev, audio_buf, n * sizeof(audio_buf[0]));
+            }
+        }
 
         render_framebuffer(ps, pixels);
         SDL_UpdateTexture(texture, NULL, pixels, PSEMU_LCD_WIDTH * sizeof(uint32_t));
@@ -104,8 +173,12 @@ int main(int argc, char **argv) {
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
         SDL_Delay(31); /* ~32Hz, matching the real LCD refresh */
+        frame++;
     }
 
+    if (audio_dev != 0) {
+        SDL_CloseAudioDevice(audio_dev);
+    }
     SDL_DestroyTexture(texture);
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

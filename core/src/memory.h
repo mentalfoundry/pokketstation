@@ -27,6 +27,9 @@
 #define PSEMU_RTC_BASE 0x0B800000u
 #define PSEMU_IR_BASE 0x0C800000u
 #define PSEMU_LCD_VRAM_BASE 0x0D000100u
+/* Confirmed via the documentation: the
+   audio DAC (see dac.h). */
+#define PSEMU_DAC_BASE 0x0D800010u
 
 struct lcd;
 struct intc;
@@ -34,6 +37,7 @@ struct flash;
 struct ir;
 struct timer;
 struct rtc;
+struct dac;
 
 typedef struct psemu_bus {
     uint8_t ram[PSEMU_RAM_SIZE];
@@ -44,11 +48,12 @@ typedef struct psemu_bus {
     struct ir *ir;
     struct timer *timer;
     struct rtc *rtc;
+    struct dac *dac;
 } psemu_bus_t;
 
 void psemu_bus_init(
     psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
-    struct rtc *rtc);
+    struct rtc *rtc, struct dac *dac);
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr);
 uint16_t psemu_bus_read16(psemu_bus_t *bus, uint32_t addr);

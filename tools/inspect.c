@@ -112,9 +112,12 @@ int main(int argc, char **argv) {
             return 1;
         }
         if (raw_flash) {
-            size_t copy_size = app_size < sizeof(ps->flash.data) ? app_size : sizeof(ps->flash.data);
-            memcpy(ps->flash.data, app, copy_size);
-            printf("raw flash image loaded: %zu bytes\n", copy_size);
+            psemu_status st = psemu_load_flash_image(ps, app, app_size);
+            if (st == PSEMU_OK) {
+                printf("raw flash image loaded: %zu bytes\n", app_size);
+            } else {
+                printf("raw flash image load failed: %d\n", st);
+            }
         } else {
             psemu_status st = psemu_load_app(ps, app, app_size);
             printf(st == PSEMU_OK ? "app loaded ok\n" : "app load failed: %d\n", st);
@@ -242,6 +245,16 @@ int main(int argc, char **argv) {
                 buttons = PSEMU_BUTTON_FIRE;
             }
             psemu_set_buttons(ps, buttons);
+        } else if (button_sim == 4) {
+            /* Diagnostic: hold Fire down continuously from instr #0 for
+               the entire run, with no release - matching a user
+               physically holding a key down in the interactive desktop
+               frontend, to check whether a genuinely sustained level on
+               the INTC hold bit causes the CPU to livelock (immediately
+               re-entering the IRQ handler on every subsequent step,
+               never letting the resumed USR instruction execute) rather
+               than letting real forward progress continue while held. */
+            psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
         }
 
         if (select_block > 0) {

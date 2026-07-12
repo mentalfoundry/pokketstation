@@ -1,6 +1,7 @@
 # Build directories
 build/
 build-*/
+build_*/
 
 # Local test assets (BIOS dumps, memory card images, etc.) - never commit
 # copyrighted firmware or commercial save/game data.

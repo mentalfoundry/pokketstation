@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "dac.h"
 #include "flash.h"
 #include "intc.h"
 #include "ir.h"
@@ -11,7 +12,7 @@
 
 void psemu_bus_init(
     psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
-    struct rtc *rtc) {
+    struct rtc *rtc, struct dac *dac) {
     memset(bus->ram, 0, sizeof(bus->ram));
     memset(bus->bios, 0, sizeof(bus->bios));
     bus->lcd = lcd;
@@ -20,6 +21,7 @@ void psemu_bus_init(
     bus->ir = ir;
     bus->timer = timer;
     bus->rtc = rtc;
+    bus->dac = dac;
 }
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
@@ -57,6 +59,9 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     }
     if (addr >= PSEMU_TIMER_BASE && addr < PSEMU_TIMER_BASE + TIMER_REG_SPAN) {
         return timer_read8(bus->timer, addr - PSEMU_TIMER_BASE);
+    }
+    if (addr >= PSEMU_DAC_BASE && addr < PSEMU_DAC_BASE + DAC_REG_SPAN) {
+        return dac_read8(bus->dac, addr - PSEMU_DAC_BASE);
     }
     return 0;
 }
@@ -96,6 +101,10 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
     }
     if (addr >= PSEMU_TIMER_BASE && addr < PSEMU_TIMER_BASE + TIMER_REG_SPAN) {
         timer_write8(bus->timer, addr - PSEMU_TIMER_BASE, value);
+        return;
+    }
+    if (addr >= PSEMU_DAC_BASE && addr < PSEMU_DAC_BASE + DAC_REG_SPAN) {
+        dac_write8(bus->dac, addr - PSEMU_DAC_BASE, value);
         return;
     }
 }

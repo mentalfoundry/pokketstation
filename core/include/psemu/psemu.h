@@ -42,6 +42,15 @@ psemu_status psemu_load_bios(psemu_t *ps, const uint8_t *data, size_t size);
 /* Loads a PSX Title Sector app image into flash. See docs/hardware-notes.md. */
 psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size);
 
+/* Loads a raw FLASH2 image (e.g. a whole memory card dump) directly into
+   flash, bypassing psemu_load_app's single-Title-Sector validation. Use
+   this to load a real card image containing its own directory - the real
+   BIOS's app-selection menu (see docs/hardware-notes.md) then navigates
+   and launches apps from it the same way real hardware does, entirely
+   through psemu_set_buttons - no other setup is required. `data` may be
+   shorter than PSEMU_FLASH_SIZE; the rest of flash is left zeroed. */
+psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t size);
+
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons);
 
 /* Runs for approximately `cycles` CPU cycles; returns cycles actually executed. */
@@ -52,6 +61,17 @@ const uint8_t *psemu_get_framebuffer(const psemu_t *ps);
 
 /* Returns nonzero exactly once per framebuffer change, then clears the flag. */
 int psemu_framebuffer_dirty(psemu_t *ps);
+
+/* Fixed output rate of psemu_get_audio_samples - real hardware has no
+   fixed sample rate of its own (software bit-bangs the DAC directly, see
+   dac.h), so this is this emulator's own choice of resampling rate. */
+#define PSEMU_AUDIO_SAMPLE_RATE_HZ 8000
+
+/* Drains up to max_samples of mono, signed 16-bit PCM audio (at
+   PSEMU_AUDIO_SAMPLE_RATE_HZ) into buf, returns the number actually
+   written. Call periodically (e.g. once per rendered frame) and feed the
+   result to a real audio output API. */
+uint32_t psemu_get_audio_samples(psemu_t *ps, int16_t *buf, uint32_t max_samples);
 
 size_t psemu_state_size(const psemu_t *ps);
 psemu_status psemu_save_state(const psemu_t *ps, void *buf, size_t size);
