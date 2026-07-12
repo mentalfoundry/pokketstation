@@ -503,6 +503,40 @@ static void test_intc_status_sources_also_latch_hold(void) {
     printf("test_intc_status_sources_also_latch_hold OK\n");
 }
 
+static void test_button_hold_pulses_not_sustained(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* A real, confirmed bug found via direct real-hardware testing: on
+       the real device, holding Action does nothing (whatever's blinking
+       keeps blinking normally) and only releasing it confirms - but this
+       emulator's button HOLD bit used to stay latched as a sustained
+       level for the entire physical hold duration. A real BIOS callback
+       branches on `hold & INT_BTN_ACTION` *before* its RTC-driven redraw
+       check, so a continuously-set hold bit permanently skipped that
+       redraw path for as long as the button was held, confirmed via a
+       runtime watchpoint showing the RTC-driven blink counter frozen
+       throughout a sustained hold. Fixed: HOLD only pulses on the press
+       edge; a still-held button clears HOLD again (but not STATUS,
+       which keeps tracking the live level) on the next
+       psemu_set_buttons call with no new edge. */
+    ps->intc.enable |= INT_BTN_ACTION;
+
+    psemu_set_buttons(ps, PSEMU_BUTTON_FIRE); /* press edge */
+    assert((ps->intc.hold & INT_BTN_ACTION) != 0u);
+    assert((ps->intc.status & INT_BTN_ACTION) != 0u);
+
+    psemu_set_buttons(ps, PSEMU_BUTTON_FIRE); /* still held, no edge */
+    assert((ps->intc.hold & INT_BTN_ACTION) == 0u);
+    assert((ps->intc.status & INT_BTN_ACTION) != 0u); /* status still reflects the live level */
+
+    psemu_set_buttons(ps, 0); /* release */
+    assert((ps->intc.hold & INT_BTN_ACTION) == 0u);
+    assert((ps->intc.status & INT_BTN_ACTION) == 0u);
+
+    psemu_destroy(ps);
+    printf("test_button_hold_pulses_not_sustained OK\n");
+}
+
 static void test_timer_and_irq(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -744,6 +778,7 @@ int main(void) {
     test_thumb_memory_and_control();
     test_thumb_bl_bx_lr_stays_thumb();
     test_intc_status_sources_also_latch_hold();
+    test_button_hold_pulses_not_sustained();
     test_timer_and_irq();
     test_timer_clock_divisor();
     test_boot_ready_stub();

@@ -255,6 +255,26 @@ int main(int argc, char **argv) {
                never letting the resumed USR instruction execute) rather
                than letting real forward progress continue while held. */
             psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
+        } else if (button_sim == 5) {
+            /* Diagnostic: replicate the confirmed real power-on sequence
+               up through Down (landing on the time-setting screen), then
+               hold Action CONTINUOUSLY from instr #650000 onward with no
+               release - checking a specific, real-hardware-confirmed
+               claim: holding Action on the real time-setting screen does
+               nothing (the year keeps blinking as normal), and only
+               releasing it actually sets the date. If our emulator's
+               blink animation (framebuffer/RTC/timer activity) stops
+               advancing while held, that's a confirmed, real behavioral
+               bug distinct from the later icon-list screen (which
+               button_sim=4 already confirmed does NOT stall while held). */
+            long phase = i % 2500000;
+            uint32_t buttons = 0;
+            if (phase >= 200000 && phase < 350000) {
+                buttons = PSEMU_BUTTON_DOWN;
+            } else if (i >= 650000) {
+                buttons = PSEMU_BUTTON_FIRE;
+            }
+            psemu_set_buttons(ps, buttons);
         }
 
         if (select_block > 0) {
@@ -400,8 +420,22 @@ int main(int argc, char **argv) {
             }
         }
 
+        {
+            /* Watch RAM 0x260 (the flag cleared by the button-action
+               hold-bit handler at 0x04003784) to see whether continuously
+               clearing it while Action is held prevents the blink/redraw
+               logic from ever seeing it set. */
+            static uint32_t last_260 = 0xFFFFFFFFu;
+            uint32_t v260 = psemu_bus_read32(&ps->bus, 0x260u);
+            if (v260 != last_260) {
+                printf("instr #%ld: [0x260] changed 0x%08X -> 0x%08X, pc(after)=0x%08X\n", i, last_260, v260,
+                       ps->cpu.r[15]);
+                last_260 = v260;
+            }
+        }
+
         if (i % 2000000 == 0 || i == 5000 || i == 10000 || i == 20000 || i == 50000 || i == 100000 ||
-            i == 200000 || i == 500000 || i == 1000000) {
+            i == 200000 || i == 500000 || i == 1000000 || (i >= 400000 && i <= 2000000 && i % 100000 == 0)) {
             printf("instr #%ld: periodic framebuffer snapshot:\n", i);
             print_framebuffer(ps);
         }

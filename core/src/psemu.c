@@ -75,6 +75,19 @@ void psemu_set_buttons(psemu_t *ps, uint32_t buttons) {
     for (i = 0; i < sizeof(button_map) / sizeof(button_map[0]); i++) {
         if (changed & button_map[i].psemu_bit) {
             intc_set_line(&ps->intc, button_map[i].int_bit, (buttons & button_map[i].psemu_bit) != 0);
+        } else if (buttons & button_map[i].psemu_bit) {
+            /* Still held, no fresh edge this call - HOLD should only
+               pulse on the press edge, not stay latched as a sustained
+               level for the whole physical hold duration. Confirmed via
+               a real-hardware discrepancy: the generic system-tick
+               callback branches on `hold & INT_BTN_ACTION` *before* its
+               RTC check, so a continuously-set hold bit permanently
+               skips the RTC-driven redraw path for as long as the
+               button is held - but real hardware keeps redrawing/
+               blinking normally while held, only acting on release.
+               STATUS (unaffected here) keeps tracking the live level for
+               any code that polls it directly. */
+            intc_clear_hold_only(&ps->intc, button_map[i].int_bit);
         }
     }
     ps->buttons = buttons;

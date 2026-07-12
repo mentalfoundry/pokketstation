@@ -110,8 +110,28 @@ int main(int argc, char **argv) {
     uint32_t pixels[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
     int16_t audio_buf[1024];
     int running = 1;
-    uint32_t frame = 0;
-    uint32_t last_buttons = 0;
+
+    /* Minimum number of frames a button reads as pressed once detected,
+       stretching a quick real tap to match the duration already
+       confirmed (via scripted headless testing) to reliably register
+       with the real BIOS. At 32Hz, a real ~40ms tap is only ~1.3 frames -
+       if it lands awkwardly between two per-frame SDL_GetKeyboardState
+       polls, the emulator could see it for a small fraction of a frame,
+       too short for the BIOS's own input handling to count it as a
+       completed press. */
+#define BUTTON_LATCH_FRAMES 5
+    static const struct {
+        SDL_Scancode scancode;
+        uint32_t bit;
+    } button_scancodes[] = {
+        {SDL_SCANCODE_UP, PSEMU_BUTTON_UP},
+        {SDL_SCANCODE_DOWN, PSEMU_BUTTON_DOWN},
+        {SDL_SCANCODE_LEFT, PSEMU_BUTTON_LEFT},
+        {SDL_SCANCODE_RIGHT, PSEMU_BUTTON_RIGHT},
+        {SDL_SCANCODE_Z, PSEMU_BUTTON_FIRE},
+    };
+    int latch_frames_remaining[sizeof(button_scancodes) / sizeof(button_scancodes[0])] = {0};
+
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -122,26 +142,19 @@ int main(int argc, char **argv) {
 
         const uint8_t *keys = SDL_GetKeyboardState(NULL);
         uint32_t buttons = 0;
-        if (keys[SDL_SCANCODE_UP]) buttons |= PSEMU_BUTTON_UP;
-        if (keys[SDL_SCANCODE_DOWN]) buttons |= PSEMU_BUTTON_DOWN;
-        if (keys[SDL_SCANCODE_LEFT]) buttons |= PSEMU_BUTTON_LEFT;
-        if (keys[SDL_SCANCODE_RIGHT]) buttons |= PSEMU_BUTTON_RIGHT;
-        if (keys[SDL_SCANCODE_Z]) buttons |= PSEMU_BUTTON_FIRE;
-        psemu_set_buttons(ps, buttons);
-
-        /* TEMPORARY diagnostic: log every button edge with the frame
-           number, to help track down a reported reliability issue with
-           held key presses (redirect stdout to a file and share it when
-           reporting problems). Remove once resolved. */
-        if (buttons != last_buttons) {
-            printf(
-                "frame %u: buttons 0x%02X -> 0x%02X (U=%d D=%d L=%d R=%d FIRE=%d)\n", frame, last_buttons, buttons,
-                (buttons & PSEMU_BUTTON_UP) != 0, (buttons & PSEMU_BUTTON_DOWN) != 0,
-                (buttons & PSEMU_BUTTON_LEFT) != 0, (buttons & PSEMU_BUTTON_RIGHT) != 0,
-                (buttons & PSEMU_BUTTON_FIRE) != 0);
-            fflush(stdout);
-            last_buttons = buttons;
+        size_t bi;
+        for (bi = 0; bi < sizeof(button_scancodes) / sizeof(button_scancodes[0]); bi++) {
+            int held = keys[button_scancodes[bi].scancode] != 0;
+            if (held) {
+                latch_frames_remaining[bi] = BUTTON_LATCH_FRAMES;
+            } else if (latch_frames_remaining[bi] > 0) {
+                latch_frames_remaining[bi]--;
+            }
+            if (held || latch_frames_remaining[bi] > 0) {
+                buttons |= button_scancodes[bi].bit;
+            }
         }
+        psemu_set_buttons(ps, buttons);
 
         /* 33000 cycles at a 32Hz refresh (~1.056MHz effective) - reverted
            from an earlier attempt to match rtc.h's RTC_TICK_CYCLES
@@ -173,7 +186,6 @@ int main(int argc, char **argv) {
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
         SDL_Delay(31); /* ~32Hz, matching the real LCD refresh */
-        frame++;
     }
 
     if (audio_dev != 0) {

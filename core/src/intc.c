@@ -125,8 +125,9 @@ void intc_set_line(intc_t *intc, uint32_t line, int state) {
         intc->hold |= line;
         intc->status |= line & INT_STATUS_MASK;
     } else {
-        /* Tried making only STATUS follow de-assertion here (distinguishes INT_INPUT "Raw Interrupt Signal Levels" from
-           INT_LATCH "Interrupt Request Flags", and the real RTC handler
+        /* Tried making only STATUS follow de-assertion here (INT_INPUT
+           "Raw Interrupt Signal Levels" is distinct from INT_LATCH
+           "Interrupt Request Flags", and the real RTC handler
            does explicitly acknowledge its own bit) - but disproved
            empirically: the real button-action callback (traced at
            0x04003784) never acknowledges bit 0, so making a button
@@ -145,6 +146,10 @@ void intc_set_line(intc_t *intc, uint32_t line, int state) {
 
 uint32_t intc_get_line(intc_t *intc, uint32_t line) {
     return intc->status & line;
+}
+
+void intc_clear_hold_only(intc_t *intc, uint32_t line) {
+    intc->hold &= ~line;
 }
 
 int intc_irq_asserted(intc_t *intc) {

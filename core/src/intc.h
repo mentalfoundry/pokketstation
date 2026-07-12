@@ -17,14 +17,14 @@
    the CPU's IRQ/FIQ lines. Button presses and the RTC tick (bits within
    INT_STATUS_MASK) ALSO latch into STATUS, for direct polling without
    disturbing the interrupt-delivery state (e.g. the RTC wait-for-pulse
-   loop). this codebase's own interrupt-routing logic originally put STATUS_MASK bits into `status`
-   ONLY, never `hold` - this was ported faithfully at first, but a real
-   BIOS disassembly showed its top-level IRQ handler testing
-   `hold & enable & 0x200` (RTC) and its installed periodic callback
-   testing `hold & 1` (Action button), both landing on real handlers
-   (confirmed by tracing them) that could never run under
-   that status-only routing. Real hardware evidently asserts these sources
-   into both registers. */
+   loop). This codebase's own interrupt-routing logic originally put
+   STATUS_MASK bits into `status` ONLY, never `hold` - that was the
+   initial implementation, but a real BIOS disassembly showed its top-level
+   IRQ handler testing `hold & enable & 0x200` (RTC) and its installed
+   periodic callback testing `hold & 1` (Action button), both landing on
+   real handlers (confirmed by tracing them) that could never run under
+   that status-only routing. Real hardware evidently
+   asserts these sources into both registers. */
 #define INT_BTN_ACTION 0x00000001u
 #define INT_BTN_RIGHT 0x00000002u
 #define INT_BTN_LEFT 0x00000004u
@@ -65,11 +65,25 @@ extern int psemu_intc_trace_enabled;
 
 /* Sets or clears an interrupt source (see INT_* above), routing it to
    STATUS or HOLD per INT_STATUS_MASK - mirrors real hardware's
-   set_interrupt_line. Passing line=0 is a no-op (asserted state is always
+   interrupt-routing logic. Passing line=0 is a no-op (asserted state is always
    computed on demand by intc_irq_asserted/intc_fiq_asserted, so unlike
    real hardware there is no separate "recompute" step to trigger). */
 void intc_set_line(intc_t *intc, uint32_t line, int state);
 uint32_t intc_get_line(intc_t *intc, uint32_t line);
+
+/* Clears `line` from HOLD only, leaving STATUS untouched - used for
+   sources whose HOLD pulse should represent only the initiating edge,
+   not a sustained level for as long as the source's live condition
+   remains true (see psemu_set_buttons in psemu.c for why buttons need
+   this: a real BIOS callback branches on `hold` to decide which source
+   to service, and a held button whose hold bit never clears would
+   permanently starve every other source checked after it in that same
+   branch chain - confirmed via a real-hardware discrepancy: the button-
+   action branch sits before the RTC check in the callback, so a
+   continuously-set hold bit would block RTC-driven redraws for as long
+   as the button is held, when real hardware evidently keeps redrawing
+   normally and only acts on release). */
+void intc_clear_hold_only(intc_t *intc, uint32_t line);
 
 int intc_irq_asserted(intc_t *intc);
 int intc_fiq_asserted(intc_t *intc);
