@@ -102,38 +102,38 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
         return 0;
     }
     /* `cycles` is a time budget expressed at the reference clock rate
-       PSEMU_ASSUMED_CPU_HZ (see dac.h). Two earlier attempts at this
-       function are worth knowing about (see docs/hardware-notes.md for
-       the full story):
-         1. Scaling raw step_cycles by clk_current_hz() and feeding that
-            same scaled value to Timer, RTC, and DAC alike fixed a real
-            bug (HELLO rendering too slowly while audio played, since
-            real hardware genuinely runs more instructions per real
-            frame while CLK_MODE is elevated) but broke audio pitch/
-            tempo - RTC/DAC raced ahead of real time, and separately
-            Timer (and the app's Timer1-IRQ-driven audio-generation
-            loop, ) sped up by
-            the same factor, which a real device confirmed sounds wrong.
-         2. Reverting CLK_MODE-scaling entirely fixed the audio
-            regression but reopened the animation bug, since there was
-            (at the time) no known way to boost throughput for
-            animation-adjacent code without also boosting the Timer-
-            driven audio loop sharing the same instruction stream.
-       The actual fix: CLK_MODE genuinely should scale overall CPU
-       throughput (more real instructions execute per real frame while
-       elevated - this is what fixes animation timing), but Timer, RTC,
-       and DAC all need to stay pinned to real elapsed time rather than
-       raw (CLK_MODE-scaled) cycles - confirmed directly (tools/
-       frame_audio_probe.c, forcing CLK_MODE to different fixed values)
-       that Timer1's real-time IRQ-firing rate, and hence the app's
-       audio content rate, stays constant this way regardless of
-       CLK_MODE, while overall throughput still scales for the
-       animation fix. A fractional carry (ps->real_time_cycle_carry)
-       converts each step's real elapsed time (via the *currently
-       active* clk_current_hz()) back into the fixed PSEMU_ASSUMED_CPU_HZ
-       reference currency Timer/RTC/DAC already assume, preserving real
-       time exactly across steps despite integer truncation - the same
-       accumulator pattern dac_tick already uses internally. */
+       PSEMU_ASSUMED_CPU_HZ (see dac.h). This function's history is worth
+       knowing (see docs/hardware-notes.md for the full story) - it has
+       gone back and forth on whether Timer should track CLK_MODE or be
+       pinned to real time, and landed here:
+
+       Timer follows raw, CLK_MODE-scaled step_cycles - confirmed via
+       the documentation ("Timers are clocked by the System
+       Clock" - i.e. genuinely tied to the CPU's variable clock, not an
+       independent oscillator) and via direct measurement: with Timer
+       pinned to a fixed reference rate instead, the HELLO animation
+       (driven by the same Timer1 heartbeat that drives audio - both are
+       GUI-code uses of the same IRQ, ) ran ~4x too
+       slow during CLK_MODE=7, and the date-setting screen's blink ran
+       ~2x too fast during CLK_MODE=4 - both errors matching the ratio
+       between CLK_MODE=7/4's real Hz and the fixed reference rate
+       almost exactly (3.97x and 2.01x respectively), confirming Timer's
+       rate needs to track CLK_MODE for real, not be decoupled from it.
+
+       RTC and DAC remain pinned to real elapsed time regardless of
+       CLK_MODE, for different reasons: RTC is a genuinely separate,
+       CPU-clock-independent oscillator (confirmed via an earlier, unconfirmed source's RTC ticking
+       at a flat real 1Hz, unrelated to CPU_FREQ), and this emulator's
+       DAC resampling needs a fixed real-time OUTPUT rate to feed a
+       standard audio API, regardless of how often the app actually
+       writes new DACV content (which, via Timer, does still track
+       CLK_MODE - that's the audio content/pitch itself, correctly
+       varying with CLK_MODE same as real hardware). A fractional carry
+       (ps->real_time_cycle_carry) converts each step's real elapsed time
+       (via the *currently active* clk_current_hz()) back into the fixed
+       PSEMU_ASSUMED_CPU_HZ reference currency RTC/DAC assume, preserving
+       real time exactly across steps despite integer truncation - the
+       same accumulator pattern dac_tick already uses internally. */
     double budget_seconds = (double)cycles / (double)PSEMU_ASSUMED_CPU_HZ;
     double elapsed_seconds = 0.0;
     uint32_t ran = 0;
@@ -146,7 +146,7 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
         uint32_t real_time_cycles = (uint32_t)ps->real_time_cycle_carry;
         ps->real_time_cycle_carry -= (double)real_time_cycles;
 
-        timer_tick(&ps->timer, &ps->intc, real_time_cycles);
+        timer_tick(&ps->timer, &ps->intc, step_cycles);
         rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
         dac_tick(&ps->dac, real_time_cycles);
         ran += step_cycles;

@@ -632,9 +632,9 @@ static void test_clk_mode_scales_run_speed(void) {
        done). psemu_run's cycle budget is expressed at the
        PSEMU_ASSUMED_CPU_HZ reference rate, so raising CLK_MODE to max
        should let noticeably more raw cycles run in the same budget than
-       the low-power idle default (mode 0). See
-       test_clk_mode_keeps_timer_rtc_dac_on_real_time for why Timer/RTC/
-       DAC must NOT also scale with this. */
+       the low-power idle default (mode 0). Timer scales with this too
+       (see test_timer_scales_with_clk_mode) - only RTC/DAC stay pinned
+       to real time (see test_clk_mode_keeps_rtc_dac_on_real_time). */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
@@ -655,26 +655,26 @@ static void test_clk_mode_scales_run_speed(void) {
     printf("test_clk_mode_scales_run_speed OK\n");
 }
 
-static void test_clk_mode_keeps_timer_rtc_dac_on_real_time(void) {
-    /* Two earlier attempts got this wrong in opposite directions (see
-       docs/hardware-notes.md for the full story): first, feeding Timer/
-       RTC/DAC the same CLK_MODE-scaled raw cycles as the outer loop let
-       them race ahead of real time - Timer specifically drives the app's
-       Timer1-IRQ audio-generation loop (confirmed via the documented documentation), so this made a real beep play far too fast, confirmed
-       directly against real hardware. Reverting CLK_MODE-scaling
-       entirely fixed that but reopened the animation-during-audio bug,
-       since there was seemingly no way to boost throughput for
-       animation-adjacent code without also boosting Timer/audio sharing
-       the same instruction stream. The actual fix: convert each step's
-       real elapsed time (via the currently active clk_current_hz()) back
-       into the fixed PSEMU_ASSUMED_CPU_HZ reference currency for Timer/
-       RTC/DAC specifically, decoupling all three from CLK_MODE while
-       letting the outer loop's overall throughput still scale - direct
-       measurement (tools/frame_audio_probe.c, forcing CLK_MODE to
-       different values mid-run) confirmed this keeps Timer1's real-time
-       firing rate constant regardless of CLK_MODE. For the same
-       real-time budget, Timer/RTC/DAC progress must come out the same
-       regardless of CLK_MODE. */
+static void test_timer_scales_with_clk_mode(void) {
+    /* This function's history (see docs/hardware-notes.md): Timer was
+       twice made to stay pinned to real time like RTC/DAC, reasoning
+       that it drives the app's Timer1-IRQ audio-generation loop
+       () and shouldn't race
+       ahead of real time. That fixed a real "beep plays far too fast"
+       complaint, but direct measurement later showed it broke something
+       else: with Timer decoupled, the HELLO animation (driven by the
+       SAME Timer1 heartbeat - both audio and general GUI ticking are
+       official-documentation-confirmed uses of the same IRQ) ran ~4x too slow during
+       CLK_MODE=7, and a date-setting screen's blink ran ~2x too fast
+       during CLK_MODE=4 - both errors matching the ratio between those
+       CLK_MODEs' real Hz and the fixed reference rate almost exactly.
+       real timers are clocked by the
+       System Clock, which genuinely varies with CLK_MODE. Timer now
+       tracks CLK_MODE like the outer loop's own throughput - the
+       earlier "beep too fast" complaint is believed to have actually
+       been the separate DAC output-pacing bug fixed by
+       test_clk_mode_keeps_rtc_dac_on_real_time below, not something
+       caused by Timer following CLK_MODE. */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1;
@@ -682,25 +682,56 @@ static void test_clk_mode_keeps_timer_rtc_dac_on_real_time(void) {
 
     psemu_bus_write32(&ps_max->bus, PSEMU_CLK_BASE, 7u);
 
-    /* Enable Timer1 identically on both, matching the real audio-IRQ
-       usage, so its cycle_accumulator is exercised by this test too. */
-    psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x10, 1000u); /* T1 period */
-    psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x14, 1000u); /* T1 count */
+    /* period/count large enough that it never expires (and hence never
+       reloads/wraps) within this test's budget, at either CLK_MODE - so
+       (initial count - final count), in ticks, cumulatively reflects
+       total raw cycles fed, unlike cycle_accumulator (which is only the
+       sub-divisor remainder, not cumulative). */
+    uint32_t big = 100000000u;
+    psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x10, big); /* T1 period */
+    psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x14, big); /* T1 count */
     psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x18, TIMER_CTRL_ENABLE);
-    psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x10, 1000u);
-    psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x14, 1000u);
+    psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x10, big);
+    psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x14, big);
     psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x18, TIMER_CTRL_ENABLE);
 
     uint32_t budget = PSEMU_ASSUMED_CPU_HZ / 10u; /* ~0.1 real second */
     psemu_run(ps_idle, budget);
     psemu_run(ps_max, budget);
 
-    long timer_diff =
-        (long)ps_idle->timer.timers[1].cycle_accumulator - (long)ps_max->timer.timers[1].cycle_accumulator;
-    assert(timer_diff > -20 && timer_diff < 20); /* small final-step overshoot only */
+    uint32_t idle_ticks = big - ps_idle->timer.timers[1].count;
+    uint32_t max_ticks = big - ps_max->timer.timers[1].count;
+
+    /* Mode 7 is ~4MHz vs mode 0's ~32.768kHz - Timer1 should have ticked
+       much further under the elevated clock. */
+    assert(max_ticks > idle_ticks * 10u);
+
+    psemu_destroy(ps_idle);
+    psemu_destroy(ps_max);
+    printf("test_timer_scales_with_clk_mode OK\n");
+}
+
+static void test_clk_mode_keeps_rtc_dac_on_real_time(void) {
+    /* Unlike Timer (see test_timer_scales_with_clk_mode), RTC is a
+       separate, CPU-clock-independent real 1Hz oscillator (confirmed
+       via real hardware: the RTC ticks flat regardless of CPU_FREQ), and this
+       emulator's DAC resampling needs the same real-time independence
+       for its fixed PSEMU_DAC_SAMPLE_RATE_HZ output rate - regardless of
+       CLK_MODE, RTC/DAC progress must come out the same for the same
+       real-time budget. */
+    psemu_t *ps_idle = make_arm_cpu();
+    psemu_t *ps_max = make_arm_cpu();
+    ps_idle->has_bios = 1;
+    ps_max->has_bios = 1;
+
+    psemu_bus_write32(&ps_max->bus, PSEMU_CLK_BASE, 7u);
+
+    uint32_t budget = PSEMU_ASSUMED_CPU_HZ / 10u; /* ~0.1 real second */
+    psemu_run(ps_idle, budget);
+    psemu_run(ps_max, budget);
 
     long rtc_diff = (long)ps_idle->rtc.tick_accumulator - (long)ps_max->rtc.tick_accumulator;
-    assert(rtc_diff > -20 && rtc_diff < 20);
+    assert(rtc_diff > -20 && rtc_diff < 20); /* small final-step overshoot only */
 
     int16_t buf_idle[4096], buf_max[4096];
     uint32_t n_idle = psemu_get_audio_samples(ps_idle, buf_idle, 4096u);
@@ -710,7 +741,7 @@ static void test_clk_mode_keeps_timer_rtc_dac_on_real_time(void) {
 
     psemu_destroy(ps_idle);
     psemu_destroy(ps_max);
-    printf("test_clk_mode_keeps_timer_rtc_dac_on_real_time OK\n");
+    printf("test_clk_mode_keeps_rtc_dac_on_real_time OK\n");
 }
 
 static void test_rtc_defaults_and_increment(void) {
@@ -908,7 +939,8 @@ int main(void) {
     test_timer_clock_divisor();
     test_boot_ready_stub();
     test_clk_mode_scales_run_speed();
-    test_clk_mode_keeps_timer_rtc_dac_on_real_time();
+    test_timer_scales_with_clk_mode();
+    test_clk_mode_keeps_rtc_dac_on_real_time();
     test_rtc_defaults_and_increment();
     test_flash_bank_select();
     test_flash_ctrl_busy_wait_bits();
