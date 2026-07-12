@@ -664,6 +664,34 @@ static void test_flash_bank_select(void) {
     printf("test_flash_bank_select OK\n");
 }
 
+static void test_flash_ctrl_busy_wait_bits(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* Two real, confirmed bugs, both busy-wait loops in real BIOS/app code
+       that this emulator silently hung forever - found only once real app
+       execution got far enough to reach them (see
+       docs/hardware-notes.md's app-dispatch investigation). */
+
+    /* Bug 1: +0 (command/commit trigger) is write-command/read-status on
+       real hardware, not a plain mirror. A real routine writes 2 here
+       then busy-waits on this same address's bit 0 reading back 1
+       ("ready"). Echoing back the raw command value (bit 0 of 2 is 0)
+       left that loop spinning forever. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u);
+    assert((psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0) & 1u) != 0u);
+
+    /* Bug 2: +0x10 (F_WAIT2,"waitstates, and FLASH-Write-
+       Control-and-Status") wasn't modeled at all (span stopped at +0xC) -
+       a real app's own flash-write routine polls bit 2 here, expecting
+       it to read back set once the write completes. A default/unmapped
+       read of 0 left that loop spinning too. Since writes complete
+       instantly here, it should always report "not busy". */
+    assert((psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x10) & 0x04u) != 0u);
+
+    psemu_destroy(ps);
+    printf("test_flash_ctrl_busy_wait_bits OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -681,6 +709,7 @@ int main(void) {
     test_boot_ready_stub();
     test_rtc_defaults_and_increment();
     test_flash_bank_select();
+    test_flash_ctrl_busy_wait_bits();
     printf("all cpu tests passed\n");
     return 0;
 }

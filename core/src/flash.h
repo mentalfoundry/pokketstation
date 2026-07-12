@@ -7,7 +7,18 @@
 #include "psemu/psemu.h"
 
 #define FLASH_BLOCK_SIZE 8192u
-#define FLASH_CTRL_SPAN 12u
+/* +0 command/status, +4 unused/mirror, +8 bank bitmask, +0xC F_WAIT1,
+   +0x10 F_WAIT2 ("waitstates, and FLASH-Write-Control-and-
+   Status") - a real, confirmed bug: a real BIOS flash-write routine
+   polls +0x10 waiting for bit 2 to read back set, and this register
+   wasn't modeled at all (span stopped at 0xC), so a default/unmapped
+   read of 0 left that loop spinning forever - the second of two
+   busy-wait bugs blocking every real app launch this session traced
+   far enough to reach (the first being flash_ctrl_read8's +0 command
+   readback, see there). Since this emulator doesn't model real flash
+   write timing at all (writes complete instantly), +0x10 always reads
+   back "not busy". */
+#define FLASH_CTRL_SPAN 0x14u
 
 typedef struct flash {
     uint8_t data[PSEMU_FLASH_SIZE];

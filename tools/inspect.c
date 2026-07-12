@@ -68,7 +68,10 @@ int main(int argc, char **argv) {
             "usage: %s <bios.bin> [app.bin] [max_instructions] [button_sim] [select_block] [raw] [dock]\n",
             argv[0]);
         fprintf(
-            stderr, "  button_sim: 1 = periodic Fire only; 2 = Down-then-Fire navigation sequence\n");
+            stderr,
+            "  button_sim: 1 = periodic Fire only; 2 = Down-then-Fire navigation sequence;\n"
+            "              3 = real-hardware-confirmed power-on sequence: HELLO animation ->\n"
+            "              heart -> beep -> time-setting screen, then Down once then Action\n");
         fprintf(
             stderr, "  select_block: pokes RAM u16 @0x00D0 to this value after reset (app-slot selector)\n");
         fprintf(
@@ -206,6 +209,39 @@ int main(int argc, char **argv) {
                 buttons = PSEMU_BUTTON_FIRE;
             }
             psemu_set_buttons(ps, buttons);
+        } else if (button_sim == 3) {
+            /* Real-hardware-confirmed power-on sequence (from directly
+               testing a real PocketStation with a fresh battery insert):
+               1) "HELLO" renders one letter at a time, 2) a heart icon
+               shows for a bit, 3) a beep, 4) the time-setting screen
+               appears - press Down once, then Action, to continue, which
+               5) lands on a clock screen - Right from there moves to the
+               first app in the list (then presumably Action launches it -
+               not yet confirmed on real hardware, but the natural next
+               step). Each real tap is ~40ms, which at the real ~4MHz
+               clock is roughly 160000 cycles - a much earlier version of
+               this simulation held each button for only 500 instructions
+               (~300x too short given the 1-cycle-per-instruction
+               approximation), which could fail to register at all if the
+               BIOS debounces or requires a minimum press duration.
+               2500000-instruction phase, generously spaced so each stage
+               of the animation/screen transition has time to settle
+               before the next press, repeating so a later cycle still
+               lands correctly if an earlier one is too early: Down
+               (200000-350000), Action (500000-650000), Right
+               (900000-1050000), Action (1300000-1450000), gap. */
+            long phase = i % 2500000;
+            uint32_t buttons = 0;
+            if (phase >= 200000 && phase < 350000) {
+                buttons = PSEMU_BUTTON_DOWN;
+            } else if (phase >= 500000 && phase < 650000) {
+                buttons = PSEMU_BUTTON_FIRE;
+            } else if (phase >= 900000 && phase < 1050000) {
+                buttons = PSEMU_BUTTON_RIGHT;
+            } else if (phase >= 1300000 && phase < 1450000) {
+                buttons = PSEMU_BUTTON_FIRE;
+            }
+            psemu_set_buttons(ps, buttons);
         }
 
         if (select_block > 0) {
@@ -248,6 +284,24 @@ int main(int argc, char **argv) {
                         run_start = -1;
                     }
                 }
+            }
+        }
+
+        {
+            /* Watch the RTC's mode/control registers for ANY change, to
+               see whether button presses are actually reaching the
+               real clock-setup wizard's input processing at all. */
+            static uint32_t last_mode = 0xFFFFFFFFu, last_control = 0xFFFFFFFFu;
+            if (ps->rtc.mode != last_mode) {
+                printf("instr #%ld: RTC mode changed 0x%08X -> 0x%08X, pc=0x%08X\n", i, last_mode, ps->rtc.mode,
+                       ps->cpu.r[15]);
+                last_mode = ps->rtc.mode;
+            }
+            if (ps->rtc.control != last_control) {
+                printf(
+                    "instr #%ld: RTC control changed 0x%08X -> 0x%08X, pc=0x%08X\n", i, last_control,
+                    ps->rtc.control, ps->cpu.r[15]);
+                last_control = ps->rtc.control;
             }
         }
 
@@ -333,7 +387,8 @@ int main(int argc, char **argv) {
             }
         }
 
-        if (i % 2000000 == 0) {
+        if (i % 2000000 == 0 || i == 5000 || i == 10000 || i == 20000 || i == 50000 || i == 100000 ||
+            i == 200000 || i == 500000 || i == 1000000) {
             printf("instr #%ld: periodic framebuffer snapshot:\n", i);
             print_framebuffer(ps);
         }
