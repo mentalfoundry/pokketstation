@@ -21,12 +21,7 @@ int main(void) {
 
     psemu_reset(ps);
     uint32_t ran = psemu_run(ps, 100);
-    /* Not "ran >= 100": psemu_run's argument is a time budget at a
-       reference clock rate (see clk.h), and CLK_MODE defaults to the
-       low-power idle rate until something writes it - a slower real
-       clock than the reference means fewer raw cycles fit in the same
-       budget. Just check forward progress happened at all. */
-    assert(ran >= 1);
+    assert(ran >= 100);
 
     const uint8_t *fb = psemu_get_framebuffer(ps);
     assert(fb != NULL);
