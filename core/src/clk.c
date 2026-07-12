@@ -2,15 +2,15 @@
 
 #define CLK_STEADY 0x10u
 
-/* Confirmed via the documentation table (PMFrequency/CLK_MODE,
-   and SWI 04h SetCpuSpeed's argument table): FREQ 0 = 32.768kHz, doubling
+/* PMFrequency/CLK_MODE and SWI 04h SetCpuSpeed's argument table: FREQ 0 = 32.768kHz, doubling
    each step, FREQ 7 = ~4MHz, FREQ 8 and above all alias the max ~8MHz -
    a clean power-of-two PLL progression. An earlier version of this table
-   used CPU-frequency values that read ~2x higher at every corresponding
-   index (e.g. "mode 7" read ~7.995MHz, not the confirmed ~4MHz) - those
-   higher numbers were
+   used CPU-frequency values that were ~2x too high at every index
+   (e.g. "mode 7" read ~7.995MHz, not the confirmed ~4MHz) - those higher numbers were
    never independently confirmed and shouldn't be relied on (see the
-   note at the top of docs/hardware-notes.md). */
+   note at the top of docs/hardware-notes.md). Tried setting mode 7 to
+   8MHz instead, to compare against real hardware - the
+   user reported it back out, so the confirmed ~4MHz value stands. */
 static const uint32_t CPU_FREQ[16] = {
     32768u,   65536u,   131072u,  262144u,  524288u,  1048576u, 2097152u, 4194304u,
     8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u,
