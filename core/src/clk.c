@@ -2,12 +2,18 @@
 
 #define CLK_STEADY 0x10u
 
-/* Confirmed via an earlier, unconfirmed source's CPU-frequency table - indices 7-15 all
-   alias the same maximum rate (~7.995MHz); index 0 is the low-power idle
-   rate (~63.5kHz). */
+/* Confirmed via the documentation table (PMFrequency/CLK_MODE,
+   and SWI 04h SetCpuSpeed's argument table): FREQ 0 = 32.768kHz, doubling
+   each step, FREQ 7 = ~4MHz, FREQ 8 and above all alias the max ~8MHz -
+   a clean power-of-two PLL progression. An earlier version of this table
+   used CPU-frequency values that read ~2x higher at every corresponding
+   index (e.g. "mode 7" read ~7.995MHz, not the confirmed ~4MHz) - those
+   higher numbers were
+   never independently confirmed and shouldn't be relied on (see the
+   note at the top of docs/hardware-notes.md). */
 static const uint32_t CPU_FREQ[16] = {
-    0x00f800u, 0x01f000u, 0x03e000u, 0x07c000u, 0x0f8000u, 0x1e8000u, 0x3d0000u, 0x7a0000u,
-    0x7a0000u, 0x7a0000u, 0x7a0000u, 0x7a0000u, 0x7a0000u, 0x7a0000u, 0x7a0000u, 0x7a0000u,
+    32768u,   65536u,   131072u,  262144u,  524288u,  1048576u, 2097152u, 4194304u,
+    8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u,
 };
 
 void clk_init(clk_t *clk) {

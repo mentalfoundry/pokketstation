@@ -8,6 +8,7 @@
 #include "dac.h"
 #include "flash.h"
 #include "intc.h"
+#include "iop.h"
 #include "ir.h"
 #include "lcd.h"
 #include "rtc.h"
@@ -22,7 +23,7 @@ int psemu_clk_trace_enabled = 0;
 
 void psemu_bus_init(
     psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
-    struct rtc *rtc, struct dac *dac, struct clk *clk) {
+    struct rtc *rtc, struct dac *dac, struct clk *clk, struct iop *iop) {
     memset(bus->ram, 0, sizeof(bus->ram));
     memset(bus->bios, 0, sizeof(bus->bios));
     bus->lcd = lcd;
@@ -33,6 +34,7 @@ void psemu_bus_init(
     bus->rtc = rtc;
     bus->dac = dac;
     bus->clk = clk;
+    bus->iop = iop;
 }
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
@@ -73,6 +75,9 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     }
     if (addr >= PSEMU_DAC_BASE && addr < PSEMU_DAC_BASE + DAC_REG_SPAN) {
         return dac_read8(bus->dac, addr - PSEMU_DAC_BASE);
+    }
+    if (addr >= PSEMU_IOP_BASE && addr < PSEMU_IOP_BASE + IOP_REG_SPAN) {
+        return iop_read8(bus->iop, addr - PSEMU_IOP_BASE);
     }
     return 0;
 }
@@ -130,6 +135,14 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
                 (unsigned)value, value & 1);
         }
         dac_write8(bus->dac, addr - PSEMU_DAC_BASE, value);
+        return;
+    }
+    if (addr >= PSEMU_IOP_BASE && addr < PSEMU_IOP_BASE + IOP_REG_SPAN) {
+        iop_write8(bus->iop, addr - PSEMU_IOP_BASE, value);
+        /* Mirror the sound-enable gate into the DAC directly - both it
+           and DAC_CTRL's own enable bit must be set for audio to play
+           (see iop.h/dac.h). */
+        dac_set_iop_muted(bus->dac, !iop_sound_enabled(bus->iop));
         return;
     }
 }

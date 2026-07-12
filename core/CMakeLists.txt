@@ -5,6 +5,7 @@ add_library(psemu STATIC
     src/dac.c
     src/flash.c
     src/intc.c
+    src/iop.c
     src/ir.c
     src/lcd.c
     src/memory.c

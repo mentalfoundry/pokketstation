@@ -624,24 +624,17 @@ static void test_boot_ready_stub(void) {
     printf("test_boot_ready_stub OK\n");
 }
 
-static void test_clk_mode_does_not_affect_run_speed(void) {
-    /* CLK_MODE is tracked (clk.c/clk.h) purely so code that polls it back
-       sees whatever the BIOS actually wrote, but psemu_run deliberately
-       does NOT scale cycle throughput by it. An earlier version did,
-       reasoning that real hardware runs proportionally
-       more cycles per real frame while CLK_MODE is elevated - this did
-       fix a real animation-pacing bug, but direct measurement
-       (tools/frame_audio_probe.c) showed the app's own audio-generation
-       loop is a raw busy-wait, not Timer-tick-gated, so the SAME
-       throughput boost applied to "give animation-adjacent code enough
-       cycles" inescapably sped up that loop by the same factor -
-       confirmed directly against real hardware: the beep played far too
-       fast. There's no way to separate "cycles for animation timing" from
-       "cycles for audio bit-banging" once both share one instruction
-       stream, and any unconfirmed ratios/model here are not independently
-       confirmed - so psemu_run's cycle budget must stay exactly `cycles`
-       regardless of CLK_MODE, matching real-hardware-validated audio
-       pitch over the (still open) animation-during-audio pacing issue. */
+static void test_clk_mode_scales_run_speed(void) {
+    /* Real hardware genuinely runs more raw instructions per real frame
+       while CLK_MODE is elevated (confirmed via tracing a real boot+beep
+       sequence: the BIOS sets mode 7 - ~4MHz per the documented CLK_MODE/SetCpuSpeed table, NOT an earlier, unconfirmed source's ~7.995MHz, see clk.c - for
+       the whole HELLO/heart/beep window, dropping to a slower mode once
+       done). psemu_run's cycle budget is expressed at the
+       PSEMU_ASSUMED_CPU_HZ reference rate, so raising CLK_MODE to max
+       should let noticeably more raw cycles run in the same budget than
+       the low-power idle default (mode 0). See
+       test_clk_mode_keeps_timer_rtc_dac_on_real_time for why Timer/RTC/
+       DAC must NOT also scale with this. */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
@@ -652,12 +645,72 @@ static void test_clk_mode_does_not_affect_run_speed(void) {
     uint32_t ran_idle = psemu_run(ps_idle, 100000u);
     uint32_t ran_max = psemu_run(ps_max, 100000u);
 
-    assert(ran_idle >= 100000u);
-    assert(ran_idle == ran_max); /* identical regardless of CLK_MODE */
+    /* Mode 7 (~4MHz) is ~128x mode 0's ~32.768kHz - assert a conservative
+       lower bound (10x) to avoid coupling this test to the exact table
+       values while still catching a completely unscaled psemu_run. */
+    assert(ran_max > ran_idle * 10u);
 
     psemu_destroy(ps_idle);
     psemu_destroy(ps_max);
-    printf("test_clk_mode_does_not_affect_run_speed OK\n");
+    printf("test_clk_mode_scales_run_speed OK\n");
+}
+
+static void test_clk_mode_keeps_timer_rtc_dac_on_real_time(void) {
+    /* Two earlier attempts got this wrong in opposite directions (see
+       docs/hardware-notes.md for the full story): first, feeding Timer/
+       RTC/DAC the same CLK_MODE-scaled raw cycles as the outer loop let
+       them race ahead of real time - Timer specifically drives the app's
+       Timer1-IRQ audio-generation loop (confirmed via the documented documentation), so this made a real beep play far too fast, confirmed
+       directly against real hardware. Reverting CLK_MODE-scaling
+       entirely fixed that but reopened the animation-during-audio bug,
+       since there was seemingly no way to boost throughput for
+       animation-adjacent code without also boosting Timer/audio sharing
+       the same instruction stream. The actual fix: convert each step's
+       real elapsed time (via the currently active clk_current_hz()) back
+       into the fixed PSEMU_ASSUMED_CPU_HZ reference currency for Timer/
+       RTC/DAC specifically, decoupling all three from CLK_MODE while
+       letting the outer loop's overall throughput still scale - direct
+       measurement (tools/frame_audio_probe.c, forcing CLK_MODE to
+       different values mid-run) confirmed this keeps Timer1's real-time
+       firing rate constant regardless of CLK_MODE. For the same
+       real-time budget, Timer/RTC/DAC progress must come out the same
+       regardless of CLK_MODE. */
+    psemu_t *ps_idle = make_arm_cpu();
+    psemu_t *ps_max = make_arm_cpu();
+    ps_idle->has_bios = 1;
+    ps_max->has_bios = 1;
+
+    psemu_bus_write32(&ps_max->bus, PSEMU_CLK_BASE, 7u);
+
+    /* Enable Timer1 identically on both, matching the real audio-IRQ
+       usage, so its cycle_accumulator is exercised by this test too. */
+    psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x10, 1000u); /* T1 period */
+    psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x14, 1000u); /* T1 count */
+    psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x18, TIMER_CTRL_ENABLE);
+    psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x10, 1000u);
+    psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x14, 1000u);
+    psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x18, TIMER_CTRL_ENABLE);
+
+    uint32_t budget = PSEMU_ASSUMED_CPU_HZ / 10u; /* ~0.1 real second */
+    psemu_run(ps_idle, budget);
+    psemu_run(ps_max, budget);
+
+    long timer_diff =
+        (long)ps_idle->timer.timers[1].cycle_accumulator - (long)ps_max->timer.timers[1].cycle_accumulator;
+    assert(timer_diff > -20 && timer_diff < 20); /* small final-step overshoot only */
+
+    long rtc_diff = (long)ps_idle->rtc.tick_accumulator - (long)ps_max->rtc.tick_accumulator;
+    assert(rtc_diff > -20 && rtc_diff < 20);
+
+    int16_t buf_idle[4096], buf_max[4096];
+    uint32_t n_idle = psemu_get_audio_samples(ps_idle, buf_idle, 4096u);
+    uint32_t n_max = psemu_get_audio_samples(ps_max, buf_max, 4096u);
+    long sample_diff = (long)n_idle - (long)n_max;
+    assert(sample_diff > -2 && sample_diff < 2);
+
+    psemu_destroy(ps_idle);
+    psemu_destroy(ps_max);
+    printf("test_clk_mode_keeps_timer_rtc_dac_on_real_time OK\n");
 }
 
 static void test_rtc_defaults_and_increment(void) {
@@ -802,6 +855,42 @@ static void test_dac_basic(void) {
     printf("test_dac_basic OK\n");
 }
 
+static void test_iop_sound_gate_mutes_dac(void) {
+    /* Confirmed via the documentation: audio must be enabled via
+       BOTH DAC_CTRL bit0 AND IOP_STOP/IOP_START bit5 ("Sound Enable") -
+       an earlier version of this emulator didn't model IOP_STOP/START
+       at all, silently discarding writes to that address range. */
+    psemu_t *ps = make_arm_cpu();
+    int16_t samples[4];
+    uint32_t n;
+
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x0, 1u); /* DAC_CTRL enable */
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x4, 0x100u << 6);
+
+    /* IOP defaults to "started" (not stopped) - DAC_CTRL alone is enough. */
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == (int16_t)(0x100 * 64));
+
+    /* IOP_STOP bit5: stops sound even though DAC_CTRL is still enabled. */
+    psemu_bus_write32(&ps->bus, PSEMU_IOP_BASE + 0x4, IOP_BIT_SOUND_STOPPED);
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == 0);
+
+    /* IOP_START bit5: resumes sound. */
+    psemu_bus_write32(&ps->bus, PSEMU_IOP_BASE + 0x8, IOP_BIT_SOUND_STOPPED);
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == (int16_t)(0x100 * 64));
+
+    psemu_destroy(ps);
+    printf("test_iop_sound_gate_mutes_dac OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -818,11 +907,13 @@ int main(void) {
     test_timer_and_irq();
     test_timer_clock_divisor();
     test_boot_ready_stub();
-    test_clk_mode_does_not_affect_run_speed();
+    test_clk_mode_scales_run_speed();
+    test_clk_mode_keeps_timer_rtc_dac_on_real_time();
     test_rtc_defaults_and_increment();
     test_flash_bank_select();
     test_flash_ctrl_busy_wait_bits();
     test_dac_basic();
+    test_iop_sound_gate_mutes_dac();
     printf("all cpu tests passed\n");
     return 0;
 }

@@ -18,10 +18,13 @@ psemu_t *psemu_create(void) {
     rtc_init(&ps->rtc);
     dac_init(&ps->dac);
     clk_init(&ps->clk);
-    psemu_bus_init(&ps->bus, &ps->lcd, &ps->intc, &ps->flash, &ps->ir, &ps->timer, &ps->rtc, &ps->dac, &ps->clk);
+    iop_init(&ps->iop);
+    psemu_bus_init(
+        &ps->bus, &ps->lcd, &ps->intc, &ps->flash, &ps->ir, &ps->timer, &ps->rtc, &ps->dac, &ps->clk, &ps->iop);
     arm7tdmi_init(&ps->cpu, &ps->bus);
     ps->buttons = 0;
     ps->has_bios = 0;
+    ps->real_time_cycle_carry = 0.0;
     return ps;
 }
 
@@ -98,36 +101,54 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     if (!ps->has_bios) {
         return 0;
     }
-    /* Deliberately NOT scaled by CLK_MODE (see clk.h/clk.c, still tracked
-       and readable for whatever code polls it, just not acted on here).
-       An earlier version of this function scaled the effective cycle
-       rate by clk_current_hz(), reasoning (via an earlier, unconfirmed source
-       CPU_FREQ table and its CPU_FREQ-derived timer-period formula) that
-       real hardware runs proportionally more cycles per real frame while
-       CLK_MODE is elevated. That fixed a real bug (HELLO rendering too
-       slowly specifically while audio played), but it applies to *every*
-       instruction executing during that window, including the app's own
-       audio-generation loop - direct measurement (tools/frame_audio_probe.c)
-       confirmed decoupling Timer alone didn't change the app's DAC_DATA
-       write rate, meaning that loop is raw-instruction/busy-wait-driven,
-       not Timer-tick-gated, so any throughput boost applied uniformly to
-       "make animation-adjacent code run enough cycles" inescapably also
-       speeds up that busy-wait loop by the same factor - confirmed
-       directly (a beep playing far too fast once CLK_MODE-based scaling
-       was in effect). Since any unconfirmed CPU_FREQ ratios and CPU_FREQ-
-       derived timer model aren't independently confirmed against real
-       hardware, and there is no way to separate "cycles serving
-       animation timing" from "cycles serving audio bit-banging" once
-       both share the same raw instruction stream, reverted to a plain
-       fixed cycle budget - correct, real-hardware-validated audio pitch
-       takes priority over the animation-during-audio pacing issue, which
-       remains open (see docs/hardware-notes.md). */
+    /* `cycles` is a time budget expressed at the reference clock rate
+       PSEMU_ASSUMED_CPU_HZ (see dac.h). Two earlier attempts at this
+       function are worth knowing about (see docs/hardware-notes.md for
+       the full story):
+         1. Scaling raw step_cycles by clk_current_hz() and feeding that
+            same scaled value to Timer, RTC, and DAC alike fixed a real
+            bug (HELLO rendering too slowly while audio played, since
+            real hardware genuinely runs more instructions per real
+            frame while CLK_MODE is elevated) but broke audio pitch/
+            tempo - RTC/DAC raced ahead of real time, and separately
+            Timer (and the app's Timer1-IRQ-driven audio-generation
+            loop, ) sped up by
+            the same factor, which a real device confirmed sounds wrong.
+         2. Reverting CLK_MODE-scaling entirely fixed the audio
+            regression but reopened the animation bug, since there was
+            (at the time) no known way to boost throughput for
+            animation-adjacent code without also boosting the Timer-
+            driven audio loop sharing the same instruction stream.
+       The actual fix: CLK_MODE genuinely should scale overall CPU
+       throughput (more real instructions execute per real frame while
+       elevated - this is what fixes animation timing), but Timer, RTC,
+       and DAC all need to stay pinned to real elapsed time rather than
+       raw (CLK_MODE-scaled) cycles - confirmed directly (tools/
+       frame_audio_probe.c, forcing CLK_MODE to different fixed values)
+       that Timer1's real-time IRQ-firing rate, and hence the app's
+       audio content rate, stays constant this way regardless of
+       CLK_MODE, while overall throughput still scales for the
+       animation fix. A fractional carry (ps->real_time_cycle_carry)
+       converts each step's real elapsed time (via the *currently
+       active* clk_current_hz()) back into the fixed PSEMU_ASSUMED_CPU_HZ
+       reference currency Timer/RTC/DAC already assume, preserving real
+       time exactly across steps despite integer truncation - the same
+       accumulator pattern dac_tick already uses internally. */
+    double budget_seconds = (double)cycles / (double)PSEMU_ASSUMED_CPU_HZ;
+    double elapsed_seconds = 0.0;
     uint32_t ran = 0;
-    while (ran < cycles) {
+    while (elapsed_seconds < budget_seconds) {
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
-        timer_tick(&ps->timer, &ps->intc, step_cycles);
-        rtc_tick(&ps->rtc, &ps->intc, step_cycles);
-        dac_tick(&ps->dac, step_cycles);
+        double dt = (double)step_cycles / (double)clk_current_hz(&ps->clk);
+        elapsed_seconds += dt;
+
+        ps->real_time_cycle_carry += dt * (double)PSEMU_ASSUMED_CPU_HZ;
+        uint32_t real_time_cycles = (uint32_t)ps->real_time_cycle_carry;
+        ps->real_time_cycle_carry -= (double)real_time_cycles;
+
+        timer_tick(&ps->timer, &ps->intc, real_time_cycles);
+        rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
+        dac_tick(&ps->dac, real_time_cycles);
         ran += step_cycles;
     }
     return ran;
@@ -172,6 +193,7 @@ psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
     ps->bus.rtc = &ps->rtc;
     ps->bus.dac = &ps->dac;
     ps->bus.clk = &ps->clk;
+    ps->bus.iop = &ps->iop;
     ps->cpu.bus = &ps->bus;
     return PSEMU_OK;
 }

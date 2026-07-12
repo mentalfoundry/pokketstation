@@ -5,9 +5,14 @@ void dac_init(dac_t *dac) {
     dac->data = 0;
     dac->current_sample = 0;
     dac->cycle_accumulator = 0;
+    dac->iop_muted = 0;
     dac->sample_write_pos = 0;
     dac->sample_read_pos = 0;
     dac->sample_count = 0;
+}
+
+void dac_set_iop_muted(dac_t *dac, int muted) {
+    dac->iop_muted = muted;
 }
 
 uint8_t dac_read8(dac_t *dac, uint32_t offset) {
@@ -41,7 +46,7 @@ void dac_tick(dac_t *dac, uint32_t cycles) {
     while (dac->cycle_accumulator >= DAC_CYCLES_PER_SAMPLE) {
         dac->cycle_accumulator -= DAC_CYCLES_PER_SAMPLE;
         if (dac->sample_count < DAC_SAMPLE_BUFFER_SIZE) {
-            int16_t sample = (dac->ctrl & 1u) ? dac->current_sample : 0;
+            int16_t sample = ((dac->ctrl & 1u) && !dac->iop_muted) ? dac->current_sample : 0;
             dac->sample_buffer[dac->sample_write_pos] = sample;
             dac->sample_write_pos = (dac->sample_write_pos + 1u) % DAC_SAMPLE_BUFFER_SIZE;
             dac->sample_count++;
