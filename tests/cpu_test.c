@@ -818,6 +818,41 @@ static void test_flash_bank_select(void) {
     printf("test_flash_bank_select OK\n");
 }
 
+static void test_flash_bank_val_remapping(void) {
+    /* Confirmed via the documentation: F_BANK_VAL is indexed by
+       PHYSICAL bank (table[p]=v, deliberately the "backwards" direction
+       from a typical page table) - resolves the long-standing open
+       question in docs/hardware-notes.md about whether FLASH1 windowing
+       is a simple linear offset or a real, potentially-reordering
+       remapping table. This test exercises a genuinely non-contiguous
+       mapping: physical blocks 2 and 5 enabled, with block 5 explicitly
+       assigned to virtual bank 0 and block 2 to virtual bank 1 - the
+       reverse of what a linear-offset model would produce. */
+    psemu_t *ps = make_arm_cpu();
+
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 2 * 8192, 0x22222222u);
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 5 * 8192, 0x55555555u);
+
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 8, (1u << 2) | (1u << 5)); /* F_BANK_FLG */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x100 + 5 * 4, 0u);        /* F_BANK_VAL[5] = virtual 0 */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x100 + 2 * 4, 1u);        /* F_BANK_VAL[2] = virtual 1 */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u);                    /* commit */
+
+    /* Virtual bank 0 (FLASH1 offset 0) -> physical block 5, not the
+       lowest-numbered enabled block (2) a linear-offset model would
+       have picked. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH1_BASE) == 0x55555555u);
+    /* Virtual bank 1 (FLASH1 offset 8192) -> physical block 2. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH1_BASE + 8192) == 0x22222222u);
+
+    /* Writes respect the same remapping. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH1_BASE + 4, 0x99999999u);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 5 * 8192 + 4) == 0x99999999u);
+
+    psemu_destroy(ps);
+    printf("test_flash_bank_val_remapping OK\n");
+}
+
 static void test_flash_ctrl_busy_wait_bits(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -943,6 +978,7 @@ int main(void) {
     test_clk_mode_keeps_rtc_dac_on_real_time();
     test_rtc_defaults_and_increment();
     test_flash_bank_select();
+    test_flash_bank_val_remapping();
     test_flash_ctrl_busy_wait_bits();
     test_dac_basic();
     test_iop_sound_gate_mutes_dac();
