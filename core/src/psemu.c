@@ -107,13 +107,13 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
        gone back and forth on whether Timer should track CLK_MODE or be
        pinned to real time, and landed here:
 
-       Timer follows raw, CLK_MODE-scaled step_cycles - confirmed via
-       the documentation ("Timers are clocked by the System
-       Clock" - i.e. genuinely tied to the CPU's variable clock, not an
-       independent oscillator) and via direct measurement: with Timer
+       Timer follows raw, CLK_MODE-scaled step_cycles - real timers are
+       clocked by the System Clock (i.e. genuinely tied to the CPU's
+       variable clock, not an independent oscillator) and via direct
+       measurement: with Timer
        pinned to a fixed reference rate instead, the HELLO animation
        (driven by the same Timer1 heartbeat that drives audio - both are
-       GUI-code uses of the same IRQ, ) ran ~4x too
+       confirmed GUI-code uses of the same IRQ) ran ~4x too
        slow during CLK_MODE=7, and the date-setting screen's blink ran
        ~2x too fast during CLK_MODE=4 - both errors matching the ratio
        between CLK_MODE=7/4's real Hz and the fixed reference rate
@@ -122,8 +122,9 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
 
        RTC and DAC remain pinned to real elapsed time regardless of
        CLK_MODE, for different reasons: RTC is a genuinely separate,
-       CPU-clock-independent oscillator (confirmed via an earlier, unconfirmed source's RTC ticking
-       at a flat real 1Hz, unrelated to CPU_FREQ), and this emulator's
+       CPU-clock-independent oscillator (confirmed via real hardware's
+       RTC ticking at a flat real 1Hz, unrelated to its
+       CPU-frequency setting), and this emulator's
        DAC resampling needs a fixed real-time OUTPUT rate to feed a
        standard audio API, regardless of how often the app actually
        writes new DACV content (which, via Timer, does still track
@@ -170,7 +171,19 @@ void psemu_write_crash_report(const psemu_t *ps, FILE *f) {
     fprintf(f, "psemu diagnostic report\n");
     fprintf(f, "total instructions executed: %llu\n", (unsigned long long)cpu->total_steps);
     fprintf(f, "buttons held: 0x%08X\n", ps->buttons);
+    fprintf(f, "clk mode: 0x%08X\n", ps->clk.mode);
     fprintf(f, "cpu faulted (unrecognized opcode): %s\n", cpu->unimplemented ? "YES" : "no");
+
+    /* FLASH1 (0x02000000+) is a live virtual window resolved against
+       F_BANK_FLG/F_BANK_VAL, not a fixed offset into FLASH2 (see
+       docs/hardware-notes.md) - without this, any FLASH1 address in the
+       trace/registers below can't be reliably translated back to a
+       physical byte offset for static analysis after the fact. */
+    fprintf(f, "flash F_BANK_FLG (bank_mask): 0x%08X\n", ps->flash.bank_mask);
+    fprintf(f, "flash F_BANK_VAL (bank_val[physical] = virtual):\n");
+    for (i = 0; i < FLASH_BANK_VAL_COUNT; i++) {
+        fprintf(f, "  [%u] = 0x%08X\n", i, ps->flash.bank_val[i]);
+    }
 
     fprintf(f, "\nregisters:\n");
     for (i = 0; i < 15; i++) {
