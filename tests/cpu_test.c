@@ -996,6 +996,43 @@ static void test_iop_sound_gate_mutes_dac(void) {
     printf("test_iop_sound_gate_mutes_dac OK\n");
 }
 
+static void test_iop_stop_start_take_effect_via_single_byte_writes(void) {
+    /* A real, confirmed bug found while investigating a "Chocobo World
+       plays no sound" report: direct BIOS/app tracing (see
+       docs/hardware-notes.md) showed real code writes IOP_STOP/IOP_START
+       via single-byte stores, not always full 32-bit ones. An earlier
+       version of iop_write8 only committed a STOP/START write's effect
+       once a full 32-bit store's top byte arrived (shift==24) -
+       single-byte writes to the low byte (shift==0, where bit5 "Sound
+       Enable" actually lives) never reached that gate and were silently
+       discarded, leaving IOP_STOP/START permanently inert whenever real
+       code uses single-byte stores instead of 32-bit ones. */
+    psemu_t *ps = make_arm_cpu();
+    int16_t samples[4];
+    uint32_t n;
+
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x0, 1u); /* DAC_CTRL enable */
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x4, 0x100u << 6);
+
+    /* Single-byte IOP_STOP write (offset 0 of the register, shift 0 -
+       exactly the case the old commit-on-shift==24 gate missed). */
+    psemu_bus_write8(&ps->bus, PSEMU_IOP_BASE + 0x4, IOP_BIT_SOUND_STOPPED);
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == 0);
+
+    /* Single-byte IOP_START write resumes sound the same way. */
+    psemu_bus_write8(&ps->bus, PSEMU_IOP_BASE + 0x8, IOP_BIT_SOUND_STOPPED);
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    n = psemu_get_audio_samples(ps, samples, 4);
+    assert(n == 1u);
+    assert(samples[0] == (int16_t)(0x100 * 64));
+
+    psemu_destroy(ps);
+    printf("test_iop_stop_start_take_effect_via_single_byte_writes OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -1022,6 +1059,7 @@ int main(void) {
     test_lcd_mode_dison_and_rotate();
     test_dac_basic();
     test_iop_sound_gate_mutes_dac();
+    test_iop_stop_start_take_effect_via_single_byte_writes();
     printf("all cpu tests passed\n");
     return 0;
 }

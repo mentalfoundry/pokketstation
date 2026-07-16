@@ -2,8 +2,6 @@
 
 void iop_init(iop_t *iop) {
     iop->data = 0;
-    iop->stop_write_scratch = 0;
-    iop->start_write_scratch = 0;
 }
 
 uint8_t iop_read8(iop_t *iop, uint32_t offset) {
@@ -20,16 +18,10 @@ void iop_write8(iop_t *iop, uint32_t offset, uint8_t value) {
     uint32_t word_index = offset / 4u;
     uint32_t shift = (offset % 4u) * 8u;
 
-    if (word_index == 1u) { /* IOP_STOP: sets matching bits once a full 32-bit store completes */
-        iop->stop_write_scratch = (iop->stop_write_scratch & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        if (shift == 24u) {
-            iop->data |= iop->stop_write_scratch;
-        }
-    } else if (word_index == 2u) { /* IOP_START: clears matching bits once a full 32-bit store completes */
-        iop->start_write_scratch = (iop->start_write_scratch & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        if (shift == 24u) {
-            iop->data &= ~iop->start_write_scratch;
-        }
+    if (word_index == 1u) { /* IOP_STOP: ORs this byte's bits into data immediately */
+        iop->data |= ((uint32_t)value << shift);
+    } else if (word_index == 2u) { /* IOP_START: ANDs this byte's bits out of data immediately */
+        iop->data &= ~((uint32_t)value << shift);
     } else if (word_index == 3u) { /* IOP_DATA: not used by the real BIOS, but harmless to store directly */
         iop->data = (iop->data & ~(0xFFu << shift)) | ((uint32_t)value << shift);
     }
