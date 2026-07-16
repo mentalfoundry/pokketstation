@@ -38,6 +38,9 @@ void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector) {
     cpu->r[15] = reset_vector;
     cpu->halted = 0;
     cpu->unimplemented = 0;
+    memset(cpu->trace, 0, sizeof(cpu->trace));
+    cpu->trace_pos = 0;
+    cpu->total_steps = 0;
 }
 
 int arm_condition_passed(arm7tdmi_t *cpu, uint32_t cond) {
@@ -214,6 +217,10 @@ uint32_t psemu_debug_current_pc = 0;
 
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     psemu_debug_current_pc = cpu->r[15];
+    cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].pc = cpu->r[15];
+    cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].cpsr = cpu->cpsr;
+    cpu->trace_pos++;
+    cpu->total_steps++;
     if (cpu->halted) {
         return 1;
     }

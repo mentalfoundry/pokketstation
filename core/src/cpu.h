@@ -27,6 +27,20 @@
 /* Bank slots: 0=fiq, 1=irq, 2=svc, 3=abt, 4=und, 5=usr/sys (shared, per spec). */
 #define ARM_BANK_COUNT 6
 
+/* Ring buffer of recently-executed (pc, cpsr) pairs, recorded on every
+   arm7tdmi_step regardless of caller - added so psemu_write_crash_report
+   (psemu.c/psemu.h) can show what led up to a fault without a frontend
+   needing to add its own tracing first, the way this session's real
+   Chocobo World crash investigation had to (see docs/hardware-notes.md).
+   256 entries is cheap (2KB/instance) and was enough context in practice
+   once the investigation had a wide-enough window to work with. */
+#define PSEMU_TRACE_SIZE 256
+
+typedef struct {
+    uint32_t pc;
+    uint32_t cpsr;
+} psemu_trace_entry_t;
+
 typedef struct {
     uint32_t r[16]; /* r0-r14 general purpose (banked view for current mode), r15 = pc */
     uint32_t cpsr;
@@ -38,6 +52,10 @@ typedef struct {
     psemu_bus_t *bus;
     int halted;
     int unimplemented; /* set when an unrecognized opcode is hit; sticky until cleared by caller */
+
+    psemu_trace_entry_t trace[PSEMU_TRACE_SIZE];
+    uint32_t trace_pos;    /* next slot to write; wraps, so this counts total steps mod PSEMU_TRACE_SIZE */
+    uint64_t total_steps;  /* monotonically increasing count of arm7tdmi_step calls, never wraps in practice */
 } arm7tdmi_t;
 
 typedef struct {

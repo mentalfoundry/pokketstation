@@ -1,10 +1,40 @@
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "psemu/psemu.h"
 
 #define SCALE 8
+
+/* Writes a timestamped diagnostic report (frontend context - reason,
+   frame number - followed by psemu_write_crash_report's full CPU/trace
+   dump) to disk and points the user at it on stderr. Called both
+   automatically on a detected CPU fault and on-demand via a hotkey
+   (F12), since not everything worth reporting during manual testing
+   trips psemu_cpu_faulted() - "the game looks wrong" or "no sound" are
+   just as real as a hard fault, and this session's actual Chocobo World
+   crash investigation (see docs/hardware-notes.md) needed exactly this
+   kind of state dump, built by hand with one-off tracing, to get
+   anywhere. */
+static void write_diagnostic_report(const psemu_t *ps, const char *reason, unsigned long frame) {
+    char path[64];
+    time_t now = time(NULL);
+    struct tm *tmv = localtime(&now);
+    FILE *f;
+
+    strftime(path, sizeof(path), "psemu_report_%Y%m%d_%H%M%S.log", tmv);
+    f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "psemu: failed to write diagnostic report to %s\n", path);
+        return;
+    }
+    fprintf(f, "reason: %s\n", reason);
+    fprintf(f, "frame: %lu\n", frame);
+    psemu_write_crash_report(ps, f);
+    fclose(f);
+    fprintf(stderr, "psemu: wrote diagnostic report to %s\n", path);
+}
 
 static uint8_t *read_file(const char *path, size_t *out_size) {
     FILE *f = fopen(path, "rb");
@@ -67,6 +97,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    fprintf(stderr, "psemu: press F12 at any time to write a diagnostic report to a psemu_report_*.log file\n");
+
     psemu_t *ps = psemu_create();
     if (psemu_load_bios(ps, bios, bios_size) != PSEMU_OK) {
         fprintf(stderr, "invalid BIOS image (expected %d bytes)\n", PSEMU_BIOS_SIZE);
@@ -111,6 +143,7 @@ int main(int argc, char **argv) {
     int16_t audio_buf[1024];
     int running = 1;
     int cpu_faulted_reported = 0;
+    unsigned long frame = 0;
 
     /* Minimum number of frames a button reads as pressed once detected,
        stretching a quick real tap to match the duration already
@@ -138,6 +171,12 @@ int main(int argc, char **argv) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = 0;
+            } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_F12) {
+                /* On-demand snapshot for manual testing - press F12 the
+                   moment something looks wrong (frozen screen, missing
+                   sound, garbled graphics), whether or not the CPU has
+                   actually faulted. */
+                write_diagnostic_report(ps, "manual (F12)", frame);
             }
         }
 
@@ -190,6 +229,7 @@ int main(int argc, char **argv) {
                 stderr, "psemu: CPU hit an unrecognized opcode and has stopped - this is a real emulator bug, "
                         "not something you did. The game is frozen on its last good frame; please report this "
                         "along with what you were doing right before it happened.\n");
+            write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame);
         }
 
         if (audio_dev != 0) {
@@ -205,6 +245,7 @@ int main(int argc, char **argv) {
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
         SDL_Delay(31); /* ~32Hz, matching the real LCD refresh */
+        frame++;
     }
 
     if (audio_dev != 0) {

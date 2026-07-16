@@ -475,6 +475,40 @@ static void test_cpu_faulted_flag(void) {
     printf("test_cpu_faulted_flag OK\n");
 }
 
+static void test_crash_report_contents(void) {
+    /* psemu_write_crash_report() - added so the desktop frontend can
+       write a real diagnostic file instead of just a one-line stderr
+       message when something goes wrong (see docs/hardware-notes.md,
+       the Chocobo World crash investigation this was built for). Checks
+       the report names the actual fault opcode/address and includes the
+       executed-PC trace, not just that it doesn't crash. */
+    psemu_t *ps = make_thumb_cpu();
+    FILE *f = tmpfile();
+    char buf[8192];
+    size_t n;
+    assert(f != NULL);
+
+    put16(ps, 0, 0x1F00u); /* SUB R0,R0,#4 - ordinary, so the trace has >1 entry */
+    arm7tdmi_step(&ps->cpu);
+    put16(ps, 2, 0xB800u); /* guaranteed-unimplemented pattern, see test_cpu_faulted_flag */
+    arm7tdmi_step(&ps->cpu);
+    assert(psemu_cpu_faulted(ps));
+
+    psemu_write_crash_report(ps, f);
+    rewind(f);
+    n = fread(buf, 1, sizeof(buf) - 1, f);
+    buf[n] = '\0';
+    fclose(f);
+
+    assert(strstr(buf, "cpu faulted (unrecognized opcode): YES") != NULL);
+    assert(strstr(buf, "unrecognized thumb opcode 0xB800, fetched from 0x00000002") != NULL);
+    assert(strstr(buf, "pc=0x00000000 (thumb)") != NULL);
+    assert(strstr(buf, "pc=0x00000002 (thumb)") != NULL);
+
+    psemu_destroy(ps);
+    printf("test_crash_report_contents OK\n");
+}
+
 static void test_intc_status_sources_also_latch_hold(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -1063,6 +1097,7 @@ int main(void) {
     test_thumb_memory_and_control();
     test_thumb_bl_bx_lr_stays_thumb();
     test_cpu_faulted_flag();
+    test_crash_report_contents();
     test_intc_status_sources_also_latch_hold();
     test_button_hold_pulses_not_sustained();
     test_timer_and_irq();

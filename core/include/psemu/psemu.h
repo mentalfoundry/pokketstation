@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,6 +83,20 @@ uint32_t psemu_get_audio_samples(psemu_t *ps, int16_t *buf, uint32_t max_samples
    longer meaningful - frontends should stop stepping and report this
    rather than continue silently corrupting state. */
 int psemu_cpu_faulted(const psemu_t *ps);
+
+/* Writes a human-readable diagnostic report to the already-open file `f`:
+   full register state, the fault opcode and where it was actually fetched
+   from (if psemu_cpu_faulted()), and the most-recently-executed PCs (see
+   PSEMU_TRACE_SIZE in cpu.h) - the same kind of information this session's
+   real Chocobo World crash investigation had to add one-off tracing to
+   find by hand (see docs/hardware-notes.md). Meant for a frontend to call
+   whenever something looks wrong - not just on a confirmed CPU fault, so
+   a manually-triggered "dump a report" hotkey is worth wiring up too, not
+   only automatic fault detection. Does not open, close, or flush `f` -
+   callers own the file (or any other FILE*, e.g. stderr) and may write
+   their own context (recent input history, frame count, a timestamp)
+   before or after this call. */
+void psemu_write_crash_report(const psemu_t *ps, FILE *f);
 
 size_t psemu_state_size(const psemu_t *ps);
 psemu_status psemu_save_state(const psemu_t *ps, void *buf, size_t size);

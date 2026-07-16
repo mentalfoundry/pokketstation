@@ -162,6 +162,52 @@ int psemu_cpu_faulted(const psemu_t *ps) {
     return ps->cpu.unimplemented;
 }
 
+void psemu_write_crash_report(const psemu_t *ps, FILE *f) {
+    const arm7tdmi_t *cpu = &ps->cpu;
+    int thumb = (cpu->cpsr & CPSR_T) != 0;
+    uint32_t i;
+
+    fprintf(f, "psemu diagnostic report\n");
+    fprintf(f, "total instructions executed: %llu\n", (unsigned long long)cpu->total_steps);
+    fprintf(f, "buttons held: 0x%08X\n", ps->buttons);
+    fprintf(f, "cpu faulted (unrecognized opcode): %s\n", cpu->unimplemented ? "YES" : "no");
+
+    fprintf(f, "\nregisters:\n");
+    for (i = 0; i < 15; i++) {
+        fprintf(f, "  r%-2u = 0x%08X\n", i, cpu->r[i]);
+    }
+    fprintf(f, "  pc  = 0x%08X\n", cpu->r[15]);
+    fprintf(f, "  cpsr = 0x%08X (mode=0x%02X, %s)\n", cpu->cpsr, cpu->cpsr & CPSR_MODE_MASK,
+        thumb ? "thumb" : "arm");
+
+    if (cpu->unimplemented) {
+        /* r[15] has already been advanced past the faulting instruction
+           (arm7tdmi_step does this before dispatch) - undo that to find
+           where it was actually fetched from, then mask to the natural
+           alignment for this mode (matching tools/inspect.c's own crash
+           reporter, which originally got this wrong - see
+           docs/hardware-notes.md). */
+        uint32_t fault_pc = thumb ? cpu->r[15] - 2u : cpu->r[15] - 4u;
+        uint32_t fetch_pc = thumb ? (fault_pc & ~1u) : (fault_pc & ~3u);
+        uint32_t raw = thumb ? psemu_bus_read16((psemu_bus_t *)&ps->bus, fetch_pc)
+                              : psemu_bus_read32((psemu_bus_t *)&ps->bus, fetch_pc);
+        fprintf(
+            f, "\nfault: unrecognized %s opcode 0x%0*X, fetched from 0x%08X (pc was 0x%08X before advancing)\n",
+            thumb ? "thumb" : "arm", thumb ? 4 : 8, raw, fetch_pc, fault_pc);
+    }
+
+    {
+        uint32_t count = cpu->total_steps < PSEMU_TRACE_SIZE ? (uint32_t)cpu->total_steps : PSEMU_TRACE_SIZE;
+        uint32_t start = (cpu->trace_pos - count + PSEMU_TRACE_SIZE) % PSEMU_TRACE_SIZE;
+        fprintf(f, "\nlast %u executed PCs (oldest first):\n", count);
+        for (i = 0; i < count; i++) {
+            uint32_t idx = (start + i) % PSEMU_TRACE_SIZE;
+            fprintf(
+                f, "  pc=0x%08X %s\n", cpu->trace[idx].pc, (cpu->trace[idx].cpsr & CPSR_T) ? "(thumb)" : "(arm)");
+        }
+    }
+}
+
 int psemu_framebuffer_dirty(psemu_t *ps) {
     int was_dirty = ps->lcd.dirty;
     ps->lcd.dirty = 0;
