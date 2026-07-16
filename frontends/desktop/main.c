@@ -17,7 +17,8 @@
    crash investigation (see docs/hardware-notes.md) needed exactly this
    kind of state dump, built by hand with one-off tracing, to get
    anywhere. */
-static void write_diagnostic_report(const psemu_t *ps, const char *reason, unsigned long frame) {
+static void write_diagnostic_report(
+    const psemu_t *ps, const char *reason, unsigned long frame, const char *bios_path, const char *app_path) {
     char path[64];
     time_t now = time(NULL);
     struct tm *tmv = localtime(&now);
@@ -30,6 +31,8 @@ static void write_diagnostic_report(const psemu_t *ps, const char *reason, unsig
         return;
     }
     fprintf(f, "reason: %s\n", reason);
+    fprintf(f, "bios: %s\n", bios_path);
+    fprintf(f, "app: %s\n", app_path);
     fprintf(f, "frame: %lu\n", frame);
     psemu_write_crash_report(ps, f);
     fclose(f);
@@ -176,7 +179,7 @@ int main(int argc, char **argv) {
                    moment something looks wrong (frozen screen, missing
                    sound, garbled graphics), whether or not the CPU has
                    actually faulted. */
-                write_diagnostic_report(ps, "manual (F12)", frame);
+                write_diagnostic_report(ps, "manual (F12)", frame, argv[1], argv[2]);
             }
         }
 
@@ -229,7 +232,7 @@ int main(int argc, char **argv) {
                 stderr, "psemu: CPU hit an unrecognized opcode and has stopped - this is a real emulator bug, "
                         "not something you did. The game is frozen on its last good frame; please report this "
                         "along with what you were doing right before it happened.\n");
-            write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame);
+            write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame, argv[1], argv[2]);
         }
 
         if (audio_dev != 0) {

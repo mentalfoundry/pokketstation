@@ -475,6 +475,36 @@ static void test_cpu_faulted_flag(void) {
     printf("test_cpu_faulted_flag OK\n");
 }
 
+static void test_faulted_cpu_stops_advancing(void) {
+    /* A real, confirmed bug found via a real desktop-app crash report:
+       arm7tdmi_step only gated on `halted` (which nothing ever sets),
+       not `unimplemented` - so a caller that doesn't check the flag
+       after every single instruction (psemu_run's whole-cycle-budget
+       loop, unlike tools/inspect.c's own per-instruction loop) kept
+       fetching and executing from whatever garbage the CPU landed on,
+       potentially thousands of instructions past the real fault site,
+       corrupting registers/PC before anyone ever noticed. Confirms both
+       that r15 stops moving and that the trace ring buffer stops
+       recording once faulted, so a crash report reflects the original
+       fault, not wherever unchecked continued execution wandered to. */
+    psemu_t *ps = make_thumb_cpu();
+    uint32_t pc_at_fault;
+
+    put16(ps, 0, 0xB800u); /* guaranteed-unimplemented, see test_cpu_faulted_flag */
+    arm7tdmi_step(&ps->cpu);
+    assert(psemu_cpu_faulted(ps));
+    pc_at_fault = ps->cpu.r[15];
+
+    arm7tdmi_step(&ps->cpu);
+    arm7tdmi_step(&ps->cpu);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[15] == pc_at_fault);
+    assert(ps->cpu.total_steps == 1u);
+
+    psemu_destroy(ps);
+    printf("test_faulted_cpu_stops_advancing OK\n");
+}
+
 static void test_crash_report_contents(void) {
     /* psemu_write_crash_report() - added so the desktop frontend can
        write a real diagnostic file instead of just a one-line stderr
@@ -1097,6 +1127,7 @@ int main(void) {
     test_thumb_memory_and_control();
     test_thumb_bl_bx_lr_stays_thumb();
     test_cpu_faulted_flag();
+    test_faulted_cpu_stops_advancing();
     test_crash_report_contents();
     test_intc_status_sources_also_latch_hold();
     test_button_hold_pulses_not_sustained();

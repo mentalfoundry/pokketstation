@@ -217,13 +217,27 @@ uint32_t psemu_debug_current_pc = 0;
 
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     psemu_debug_current_pc = cpu->r[15];
+    /* A real, confirmed bug found via a desktop-app crash report: this
+       used to only gate on `halted` (which nothing ever sets), so once
+       `unimplemented` tripped, callers that don't check it every single
+       step (psemu_run's whole cycle-budget loop, unlike
+       tools/inspect.c's own per-instruction loop) kept right on
+       fetching and executing from whatever nonsense address the CPU
+       landed on - potentially thousands of instructions past the real
+       fault site before the caller ever noticed. That left register
+       state, and the executed-PC trace below, reflecting wherever the
+       CPU wandered off to afterward rather than the original fault -
+       actively misleading for exactly the diagnostics
+       psemu_write_crash_report exists to provide. Once either flag is
+       set there is nothing well-defined left to do, so stop advancing
+       anything (trace included) from here on. */
+    if (cpu->halted || cpu->unimplemented) {
+        return 1;
+    }
     cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].pc = cpu->r[15];
     cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].cpsr = cpu->cpsr;
     cpu->trace_pos++;
     cpu->total_steps++;
-    if (cpu->halted) {
-        return 1;
-    }
     /* IRQ is level-triggered on real hardware (the interrupt controller's
        hold & enable & INT_IRQ_MASK, not a one-shot request) - poll it live
        every step rather than latching a "pending" flag, so the CPU keeps
