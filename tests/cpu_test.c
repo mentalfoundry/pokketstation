@@ -544,9 +544,8 @@ static void test_intc_status_sources_also_latch_hold(void) {
 
     /* Buttons and the RTC tick (INT_STATUS_MASK bits) must latch into
        BOTH status and hold, not status only. An earlier version of
-       intc_set_line only set `status` for these bits (ported directly
-       - confirmed wrong by disassembling
-       the real BIOS: its top-level IRQ handler tests
+       intc_set_line only set `status` for these bits - confirmed wrong by
+       disassembling the real BIOS: its top-level IRQ handler tests
        `hold & enable & INT_RTC` and its installed periodic callback
        tests `hold & INT_BTN_ACTION`, both driving real handlers that
        could never run if these bits never reached `hold`. Without this,
@@ -567,7 +566,7 @@ static void test_intc_status_sources_also_latch_hold(void) {
        tick) drops both. A tempting-looking alternative was tried and
        disproved empirically: making only STATUS follow de-assertion
        (leaving HOLD latched until an explicit acknowledge, matching
-       the documented INT_INPUT-vs-INT_LATCH naming and the real RTC handler's
+       the INT_INPUT-vs-INT_LATCH naming and the real RTC handler's
        own explicit ack) sounds plausible, but the real button-action
        callback (traced at 0x04003784) never acknowledges its bit -
        making a button release leave it latched forever caused the CPU
@@ -625,9 +624,8 @@ static void test_timer_and_irq(void) {
     /* Timer0: period=count=10, enabled; also enable its source in the INTC -
        hold alone isn't enough to assert IRQ, matching real hardware.
        Control bits 0-1 are left at 0 -> the slowest selectable divisor is
-       actually /2 (0 and 3 both mean /2, per both an earlier, unconfirmed source's timer-start function and
-       the officially documented divider table) - confirmed real behavior, not
-       a raw 1:1 cycle-to-count ratio, so the cycle counts below are
+       actually /2 (0 and 3 both mean /2) - confirmed real hardware
+       behavior, not a raw 1:1 cycle-to-count ratio, so the cycle counts below are
        doubled relative to `period` to account for it. */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 10u); /* period */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 10u); /* count */
@@ -671,8 +669,7 @@ static void test_timer_and_irq(void) {
 static void test_timer_clock_divisor(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Control bits 0-1 = 1 selects /32 (confirmed via both an earlier, unconfirmed source's
-       timer_start and the officially documented divider table) - an earlier
+    /* Control bits 0-1 = 1 selects /32 - an earlier
        version of timer_tick ignored this entirely and decremented count
        by raw cycles directly, which would fire this timer 16x too often
        relative to the /2 case. period=count=1 so a single expiry needs
@@ -709,7 +706,8 @@ static void test_boot_ready_stub(void) {
 static void test_clk_mode_scales_run_speed(void) {
     /* Real hardware genuinely runs more raw instructions per real frame
        while CLK_MODE is elevated (confirmed via tracing a real boot+beep
-       sequence: the BIOS sets mode 7 - ~4MHz per the documented CLK_MODE/SetCpuSpeed table, NOT an earlier, unconfirmed source's ~7.995MHz, see clk.c - for
+       sequence: the BIOS sets mode 7 - ~4MHz per the
+       CLK_MODE/SetCpuSpeed table, see clk.c - for
        the whole HELLO/heart/beep window, dropping to a slower mode once
        done). psemu_run's cycle budget is expressed at the
        PSEMU_ASSUMED_CPU_HZ reference rate, so raising CLK_MODE to max
@@ -741,16 +739,15 @@ static void test_timer_scales_with_clk_mode(void) {
     /* This function's history (see docs/hardware-notes.md): Timer was
        twice made to stay pinned to real time like RTC/DAC, reasoning
        that it drives the app's Timer1-IRQ audio-generation loop
-       () and shouldn't race
-       ahead of real time. That fixed a real "beep plays far too fast"
+       and shouldn't race ahead of real time. That fixed a real "beep plays far too fast"
        complaint, but direct measurement later showed it broke something
        else: with Timer decoupled, the HELLO animation (driven by the
        SAME Timer1 heartbeat - both audio and general GUI ticking are
-       official-documentation-confirmed uses of the same IRQ) ran ~4x too slow during
+       confirmed real uses of the same IRQ) ran ~4x too slow during
        CLK_MODE=7, and a date-setting screen's blink ran ~2x too fast
        during CLK_MODE=4 - both errors matching the ratio between those
        CLK_MODEs' real Hz and the fixed reference rate almost exactly.
-       real timers are clocked by the
+       Real timers are clocked by the
        System Clock, which genuinely varies with CLK_MODE. Timer now
        tracks CLK_MODE like the outer loop's own throughput - the
        earlier "beep too fast" complaint is believed to have actually
@@ -829,9 +826,9 @@ static void test_clk_mode_keeps_rtc_dac_on_real_time(void) {
 static void test_rtc_defaults_and_increment(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Real silicon power-on-reset values per the real register
-       table: date 1998-01-01, time 00:00:00 with day-of-week BCD 4 - see
-       rtc.h for why this isn't an earlier, unconfirmed source's arbitrary 1999-01-01. */
+    /* Real silicon power-on-reset values:
+       date 1998-01-01, time 00:00:00 with day-of-week BCD 4 - see
+       rtc.h for why this isn't the previously-assumed arbitrary 1999-01-01. */
     assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0xC) == 0x00980101u); /* date: day,month,year,(unused) */
     assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) == 0x04000000u); /* time: sec,min,hour,dow */
 
@@ -901,7 +898,7 @@ static void test_flash_bank_select(void) {
 }
 
 static void test_flash_bank_val_remapping(void) {
-    /* Confirmed via the documentation: F_BANK_VAL is indexed by
+    /* F_BANK_VAL is indexed by
        PHYSICAL bank (table[p]=v, deliberately the "backwards" direction
        from a typical page table) - resolves the long-standing open
        question in docs/hardware-notes.md about whether FLASH1 windowing
@@ -951,8 +948,8 @@ static void test_flash_ctrl_busy_wait_bits(void) {
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u);
     assert((psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0) & 1u) != 0u);
 
-    /* Bug 2: +0x10 (F_WAIT2,"waitstates, and FLASH-Write-
-       Control-and-Status") wasn't modeled at all (span stopped at +0xC) -
+    /* Bug 2: +0x10 (F_WAIT2, waitstates and FLASH-Write-
+       Control-and-Status) wasn't modeled at all (span stopped at +0xC) -
        a real app's own flash-write routine polls bit 2 here, expecting
        it to read back set once the write completes. A default/unmapped
        read of 0 left that loop spinning too. Since writes complete
@@ -963,9 +960,44 @@ static void test_flash_ctrl_busy_wait_bits(void) {
     printf("test_flash_ctrl_busy_wait_bits OK\n");
 }
 
+static void test_flash_key_addresses_are_not_data_storage(void) {
+    /* A real, confirmed bug found via a real crash report (see
+       docs/hardware-notes.md, "Chocobo World event-screen crash"):
+       F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are real hardware's
+       flash unlock-sequence trigger addresses, not data storage - real
+       flash chips intercept writes there as unlock commands rather than
+       actually storing them. This emulator used to just store them as
+       plain data, so any real flash-write's unlock sequence permanently
+       corrupted whatever byte happened to physically sit at those two
+       fixed addresses - in Chocobo World's case, live app code. */
+    psemu_t *ps = make_arm_cpu();
+
+    /* Real hardware writes these as a 16-bit halfword
+       ("[8002A54h]=FF55h") - matching that access width here. */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54) == 0x0000u);
+
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFAAu);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA) == 0x0000u);
+
+    /* Nearby ordinary writes must still work - the guard is narrowly
+       targeted, not accidentally blocking a wider range. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 0x2A50, 0x33333333u);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 0x2A50) == 0x33333333u);
+
+    /* Same protection applies through the FLASH1 virtual window (which
+       indexes the same underlying data array directly, bypassing
+       flash_write8) - with the default untouched bank state, FLASH1
+       offset 0x2A54 resolves to the same physical offset. */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH1_BASE + 0x2A54, 0xFF55u);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH1_BASE + 0x2A54) == 0x0000u);
+
+    psemu_destroy(ps);
+    printf("test_flash_key_addresses_are_not_data_storage OK\n");
+}
+
 static void test_lcd_mode_dison_and_rotate(void) {
-    /* LCD_MODE (0x0D000000) was previously entirely unmodeled - confirmed
-       via cross-check:bit6 is DISON
+    /* LCD_MODE (0x0D000000) was previously entirely unmodeled: bit6 is DISON
        (display on/off) and bit7 is ROT (rotate 180 degrees, set for
        docked mode). psemu_get_framebuffer() now returns VRAM as filtered
        through these bits rather than raw VRAM unconditionally. */
@@ -1043,7 +1075,7 @@ static void test_dac_basic(void) {
 }
 
 static void test_iop_sound_gate_mutes_dac(void) {
-    /* Confirmed via the documentation: audio must be enabled via
+    /* Audio must be enabled via
        BOTH DAC_CTRL bit0 AND IOP_STOP/IOP_START bit5 ("Sound Enable") -
        an earlier version of this emulator didn't model IOP_STOP/START
        at all, silently discarding writes to that address range. */
@@ -1141,6 +1173,7 @@ int main(void) {
     test_flash_bank_select();
     test_flash_bank_val_remapping();
     test_flash_ctrl_busy_wait_bits();
+    test_flash_key_addresses_are_not_data_storage();
     test_lcd_mode_dison_and_rotate();
     test_dac_basic();
     test_iop_sound_gate_mutes_dac();

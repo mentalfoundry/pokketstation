@@ -25,16 +25,49 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
     return PSEMU_OK;
 }
 
+/* F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are real hardware's flash
+   unlock-sequence trigger addresses (these addresses unlock FLASH memory for
+   writing - a real BIOS write routine writes FFAAh/FF55h/FFA0h to these
+   in sequence before actually writing sector data, the standard
+   command-latch idiom NOR flash chips use). They are NOT storage
+   locations - real flash hardware intercepts writes to these specific
+   addresses as unlock commands rather than passing them through to the
+   data array, so the byte physically "at" that address is unaffected. A
+   REAL, CONFIRMED BUG found via a real crash report (see
+   docs/hardware-notes.md, "Chocobo World event-screen crash"): this
+   emulator had no such interception, so every real flash-write
+   operation permanently corrupted a live data byte at whichever
+   physical offset happened to numerically coincide with these two fixed
+   addresses - which happens to be live app code partway through
+   Chocobo World's own compiled binary, turning an ordinary in-game save
+   into silent code corruption that only surfaces later, once execution
+   reaches the mangled bytes. */
+#define FLASH_KEY1_OFFSET 0x2A54u
+#define FLASH_KEY2_OFFSET 0x55AAu
+
+/* Both keys are written as a 16-bit halfword on real hardware
+   ([8002A54h]=FF55h), so both bytes of each halfword need
+   guarding, not just the base offset - a 32-bit store, for example,
+   still touches the two bytes past the base address. */
+static int flash_is_unlock_key_offset(uint32_t offset) {
+    return offset == FLASH_KEY1_OFFSET || offset == FLASH_KEY1_OFFSET + 1u || offset == FLASH_KEY2_OFFSET ||
+           offset == FLASH_KEY2_OFFSET + 1u;
+}
+
 uint8_t flash_read8(flash_t *flash, uint32_t addr) {
     return flash->data[addr % PSEMU_FLASH_SIZE];
 }
 
 void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
-    flash->data[addr % PSEMU_FLASH_SIZE] = value;
+    uint32_t offset = addr % PSEMU_FLASH_SIZE;
+    if (flash_is_unlock_key_offset(offset)) {
+        return;
+    }
+    flash->data[offset] = value;
 }
 
 /* Resolves which physical 8KB block backs a given FLASH1 virtual bank
-   (0-15). Confirmed via the documentation: F_BANK_VAL is indexed
+   (0-15). F_BANK_VAL is indexed
    by PHYSICAL bank (table[p]=v - deliberately the "backwards" direction
    from a typical page table), so resolving virtual->physical requires a
    reverse linear search over the 16 entries. */
@@ -48,8 +81,8 @@ static uint32_t flash_resolve_physical_bank(const flash_t *flash, uint32_t virtu
         }
     }
     /* No F_BANK_VAL entry explicitly claims this virtual slot (its reset
-       value is 0 for every physical bank, matching the officially documented
-       reset state) - fall back to this emulator's previously-validated
+       value is 0 for every physical bank, matching real hardware's reset
+       state for this register) - fall back to this emulator's previously-validated
        behavior: treat the enabled physical blocks as one contiguous run
        starting at the lowest-numbered enabled block. Confirmed via real
        disassembly that this emulator's app-selection routine (see
@@ -77,7 +110,15 @@ void flash1_write8(flash_t *flash, uint32_t addr, uint8_t value) {
     uint32_t virtual_bank = (addr / FLASH_BLOCK_SIZE) % FLASH_BANK_VAL_COUNT;
     uint32_t offset_in_bank = addr % FLASH_BLOCK_SIZE;
     uint32_t physical_bank = flash_resolve_physical_bank(flash, virtual_bank);
-    flash->data[(physical_bank * FLASH_BLOCK_SIZE + offset_in_bank) % PSEMU_FLASH_SIZE] = value;
+    uint32_t offset = (physical_bank * FLASH_BLOCK_SIZE + offset_in_bank) % PSEMU_FLASH_SIZE;
+    /* F_KEY1/F_KEY2 unlock addresses are a real hardware chip decode, not
+       data storage - see flash_write8's comment. Applies regardless of
+       which bus window (this virtual one, or FLASH2 direct) reaches the
+       same physical offset. */
+    if (flash_is_unlock_key_offset(offset)) {
+        return;
+    }
+    flash->data[offset] = value;
 }
 
 uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {

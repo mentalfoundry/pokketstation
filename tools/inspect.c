@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
                     "       Title Sector validation) - use for a full directory+data flash image\n");
         fprintf(
             stderr, "  dock: if \"dock\", asserts INT_IOP (docked-to-PSX sensing) once at instr #5000 -\n"
-                    "        This is a real wake/launch trigger, separate from buttons\n");
+                    "        this is a real wake/launch trigger, separate from buttons\n");
         fprintf(
             stderr, "  intctrace: if \"intctrace\", logs every real INTC register access with its real PC\n"
                     "        for instr #0-60000 (one full button_sim=2 navigation cycle)\n");
@@ -325,6 +325,33 @@ int main(int argc, char **argv) {
                 seed *= 0x85EBCA6Bu;
                 seed ^= seed >> 13;
                 psemu_set_buttons(ps, slot_phase < 150000 ? explore_choices[seed % 5u] : 0u);
+            }
+        } else if (button_sim == 8) {
+            /* Diagnostic: launch once via the confirmed real sequence,
+               then go fully idle (no further input at all) for the rest
+               of the run - a real user report reached the same crash as
+               button_sim=6 twice in a row, both times via ordinary
+               manual play rather than aggressive multi-button mashing,
+               so it's worth checking whether simply launching and
+               waiting reproduces it just as well (or faster). */
+            if (i < 200000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 350000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_DOWN);
+            } else if (i < 500000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 650000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
+            } else if (i < 900000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 1050000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_RIGHT);
+            } else if (i < 1300000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 1450000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
+            } else {
+                psemu_set_buttons(ps, 0);
             }
         }
 
