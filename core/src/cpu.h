@@ -32,9 +32,11 @@
    (psemu.c/psemu.h) can show what led up to a fault without a frontend
    needing to add its own tracing first, the way this session's real
    Chocobo World crash investigation had to (see docs/hardware-notes.md).
-   256 entries is cheap (2KB/instance) and was enough context in practice
-   once the investigation had a wide-enough window to work with. */
-#define PSEMU_TRACE_SIZE 256
+   Originally 256 entries - raised to 8192 (64KB/instance, still cheap)
+   after a real report showed a long straight-line drift through
+   non-code memory that consumed the entire 256-entry window on its own,
+   leaving no history of whatever bad jump actually caused it. */
+#define PSEMU_TRACE_SIZE 8192
 
 typedef struct {
     uint32_t pc;
