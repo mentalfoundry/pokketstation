@@ -881,6 +881,45 @@ static void test_flash_ctrl_busy_wait_bits(void) {
     printf("test_flash_ctrl_busy_wait_bits OK\n");
 }
 
+static void test_lcd_mode_dison_and_rotate(void) {
+    /* LCD_MODE (0x0D000000) was previously entirely unmodeled - confirmed
+       via cross-check:bit6 is DISON
+       (display on/off) and bit7 is ROT (rotate 180 degrees, set for
+       docked mode). psemu_get_framebuffer() now returns VRAM as filtered
+       through these bits rather than raw VRAM unconditionally. */
+    psemu_t *ps = make_arm_cpu();
+    const uint8_t *fb;
+
+    psemu_bus_write32(&ps->bus, PSEMU_LCD_VRAM_BASE, 0x000000FFu); /* row 0 */
+    psemu_bus_write32(&ps->bus, PSEMU_LCD_VRAM_BASE + 4, 0x0000FF00u); /* row 1 */
+
+    /* Default (no LCD_MODE write yet): DISON assumed on, matching this
+       emulator's previously-validated always-visible behavior. */
+    fb = psemu_get_framebuffer(ps);
+    assert(fb[0] == 0xFFu && fb[1] == 0x00u);
+    assert(fb[4] == 0x00u && fb[5] == 0xFFu);
+
+    /* DISON cleared: blank output regardless of VRAM contents. */
+    psemu_bus_write32(&ps->bus, PSEMU_LCD_MODE_BASE, 0u);
+    fb = psemu_get_framebuffer(ps);
+    assert(fb[0] == 0u && fb[1] == 0u && fb[4] == 0u && fb[5] == 0u);
+
+    /* ROT set (with DISON re-set): 180-degree rotation - row order
+       reversed, and each row's 32 bits reversed left-right. Row 0
+       (0x000000FF, little-endian bytes 0xFF,00,00,00) ends up as the
+       last row (offset 124-127) with bits reversed (0xFF000000, bytes
+       00,00,00,0xFF); row 1 (0x0000FF00, bytes 00,0xFF,00,00) ends up
+       second-to-last (offset 120-123), reversed to 0x00FF0000 (bytes
+       00,00,0xFF,00). */
+    psemu_bus_write32(&ps->bus, PSEMU_LCD_MODE_BASE, LCD_MODE_DISON | LCD_MODE_ROT);
+    fb = psemu_get_framebuffer(ps);
+    assert(fb[124] == 0x00u && fb[125] == 0x00u && fb[126] == 0x00u && fb[127] == 0xFFu);
+    assert(fb[120] == 0x00u && fb[121] == 0x00u && fb[122] == 0xFFu && fb[123] == 0x00u);
+
+    psemu_destroy(ps);
+    printf("test_lcd_mode_dison_and_rotate OK\n");
+}
+
 static void test_dac_basic(void) {
     psemu_t *ps = make_arm_cpu();
     int16_t samples[4];
@@ -980,6 +1019,7 @@ int main(void) {
     test_flash_bank_select();
     test_flash_bank_val_remapping();
     test_flash_ctrl_busy_wait_bits();
+    test_lcd_mode_dison_and_rotate();
     test_dac_basic();
     test_iop_sound_gate_mutes_dac();
     printf("all cpu tests passed\n");

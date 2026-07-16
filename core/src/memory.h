@@ -25,12 +25,15 @@
 /* Confirmed against real hardware: the real-time clock (see rtc.h). */
 #define PSEMU_RTC_BASE 0x0B800000u
 #define PSEMU_IR_BASE 0x0C800000u
+/* Confirmed against real hardware: LCD_MODE
+   (+0x0, DISON/ROT/draw-mode) and LCD_CAL (+0x4) - see lcd.h. */
+#define PSEMU_LCD_MODE_BASE 0x0D000000u
 #define PSEMU_LCD_VRAM_BASE 0x0D000100u
-/* Confirmed via the documentation: IOP
+/* Confirmed against real hardware: IOP
    power control (see iop.h) - IOP_CTRL(+0x0), IOP_STOP/IOP_STAT(+0x4),
    IOP_START(+0x8), IOP_DATA(+0xC). */
 #define PSEMU_IOP_BASE 0x0D800000u
-/* Confirmed via the documentation: the
+/* Confirmed against real hardware: the
    audio DAC (see dac.h). */
 #define PSEMU_DAC_BASE 0x0D800010u
 

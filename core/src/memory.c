@@ -58,6 +58,9 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_LCD_VRAM_BASE && addr < PSEMU_LCD_VRAM_BASE + LCD_VRAM_SIZE) {
         return lcd_read8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE);
     }
+    if (addr >= PSEMU_LCD_MODE_BASE && addr < PSEMU_LCD_MODE_BASE + LCD_MODE_REG_SPAN) {
+        return lcd_mode_read8(bus->lcd, addr - PSEMU_LCD_MODE_BASE);
+    }
     if (addr >= PSEMU_CLK_BASE && addr < PSEMU_CLK_BASE + CLK_REG_SPAN) {
         return clk_read8(bus->clk, addr - PSEMU_CLK_BASE);
     }
@@ -103,6 +106,10 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         lcd_write8(bus->lcd, addr - PSEMU_LCD_VRAM_BASE, value);
         return;
     }
+    if (addr >= PSEMU_LCD_MODE_BASE && addr < PSEMU_LCD_MODE_BASE + LCD_MODE_REG_SPAN) {
+        lcd_mode_write8(bus->lcd, addr - PSEMU_LCD_MODE_BASE, value);
+        return;
+    }
     if (addr >= PSEMU_CLK_BASE && addr < PSEMU_CLK_BASE + CLK_REG_SPAN) {
         if (psemu_clk_trace_enabled) {
             printf(
@@ -141,7 +148,7 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         iop_write8(bus->iop, addr - PSEMU_IOP_BASE, value);
         /* Mirror the sound-enable gate into the DAC directly - both it
            and DAC_CTRL's own enable bit must be set for audio to play
-           (see iop.h/dac.h). */
+           (confirmed against real hardware, see iop.h/dac.h). */
         dac_set_iop_muted(bus->dac, !iop_sound_enabled(bus->iop));
         return;
     }

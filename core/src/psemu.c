@@ -155,7 +155,7 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
 }
 
 const uint8_t *psemu_get_framebuffer(const psemu_t *ps) {
-    return ps->lcd.vram;
+    return ps->lcd.presented;
 }
 
 int psemu_framebuffer_dirty(psemu_t *ps) {
