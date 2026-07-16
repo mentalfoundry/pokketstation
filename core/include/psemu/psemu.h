@@ -73,6 +73,16 @@ int psemu_framebuffer_dirty(psemu_t *ps);
    result to a real audio output API. */
 uint32_t psemu_get_audio_samples(psemu_t *ps, int16_t *buf, uint32_t max_samples);
 
+/* Nonzero if the CPU has hit an opcode this emulator doesn't recognize -
+   sticky, stays set once tripped. Real hardware obviously never does
+   this; it means either a genuine gap in this emulator's ARM/Thumb
+   decoder, or (more likely the deeper this happens into real execution)
+   that something upstream computed a bad jump target and the CPU is now
+   running through non-code data. Once set, register/memory state is no
+   longer meaningful - frontends should stop stepping and report this
+   rather than continue silently corrupting state. */
+int psemu_cpu_faulted(const psemu_t *ps);
+
 size_t psemu_state_size(const psemu_t *ps);
 psemu_status psemu_save_state(const psemu_t *ps, void *buf, size_t size);
 psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size);

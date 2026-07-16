@@ -158,6 +158,10 @@ const uint8_t *psemu_get_framebuffer(const psemu_t *ps) {
     return ps->lcd.presented;
 }
 
+int psemu_cpu_faulted(const psemu_t *ps) {
+    return ps->cpu.unimplemented;
+}
+
 int psemu_framebuffer_dirty(psemu_t *ps) {
     int was_dirty = ps->lcd.dirty;
     ps->lcd.dirty = 0;

@@ -110,6 +110,7 @@ int main(int argc, char **argv) {
     uint32_t pixels[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
     int16_t audio_buf[1024];
     int running = 1;
+    int cpu_faulted_reported = 0;
 
     /* Minimum number of frames a button reads as pressed once detected,
        stretching a quick real tap to match the duration already
@@ -171,7 +172,25 @@ int main(int argc, char **argv) {
            dac.h's PSEMU_ASSUMED_CPU_HZ for the matching audio-rate
            conversion (33000 * 32) - keep both in sync if this ever
            changes. */
-        psemu_run(ps, 33000);
+        /* If the CPU has run into an opcode this emulator doesn't
+           recognize, register/memory state is no longer meaningful - a
+           real, confirmed bug found this way (see docs/hardware-notes.md,
+           "Chocobo World event-screen crash") reaches this after ~1.3
+           billion instructions of otherwise-correct real gameplay, so
+           this can't be assumed harmless just because it hasn't happened
+           yet. Stop stepping the CPU once this trips (freezing on the
+           last good frame) instead of silently continuing to feed it
+           garbage forever, which previously looked to a player like an
+           unexplained hang/crash with zero diagnostic information. */
+        if (!psemu_cpu_faulted(ps)) {
+            psemu_run(ps, 33000);
+        } else if (!cpu_faulted_reported) {
+            cpu_faulted_reported = 1;
+            fprintf(
+                stderr, "psemu: CPU hit an unrecognized opcode and has stopped - this is a real emulator bug, "
+                        "not something you did. The game is frozen on its last good frame; please report this "
+                        "along with what you were doing right before it happened.\n");
+        }
 
         if (audio_dev != 0) {
             uint32_t n = psemu_get_audio_samples(ps, audio_buf, sizeof(audio_buf) / sizeof(audio_buf[0]));

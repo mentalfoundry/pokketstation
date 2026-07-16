@@ -457,6 +457,24 @@ static void test_thumb_bl_bx_lr_stays_thumb(void) {
     printf("test_thumb_bl_bx_lr_stays_thumb OK\n");
 }
 
+static void test_cpu_faulted_flag(void) {
+    /* psemu_cpu_faulted() (added while investigating a real, reproducible
+       Chocobo World crash - see docs/hardware-notes.md - where the
+       desktop frontend had no way to tell the CPU had run into an
+       unrecognized opcode and silently kept stepping it, corrupting
+       state forever with zero diagnostic). 0xB800 is a Thumb "format
+       12/13/14" pattern (top3=101) that matches none of exec_load_address
+       /exec_add_sp_offset/exec_push_pop's checks, falling to the
+       unimplemented default. */
+    psemu_t *ps = make_thumb_cpu();
+    assert(!psemu_cpu_faulted(ps));
+    put16(ps, 0, 0xB800u);
+    arm7tdmi_step(&ps->cpu);
+    assert(psemu_cpu_faulted(ps));
+    psemu_destroy(ps);
+    printf("test_cpu_faulted_flag OK\n");
+}
+
 static void test_intc_status_sources_also_latch_hold(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -1044,6 +1062,7 @@ int main(void) {
     test_thumb_basic();
     test_thumb_memory_and_control();
     test_thumb_bl_bx_lr_stays_thumb();
+    test_cpu_faulted_flag();
     test_intc_status_sources_also_latch_hold();
     test_button_hold_pulses_not_sustained();
     test_timer_and_irq();

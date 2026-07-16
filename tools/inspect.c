@@ -283,6 +283,49 @@ int main(int argc, char **argv) {
                 buttons = PSEMU_BUTTON_FIRE;
             }
             psemu_set_buttons(ps, buttons);
+        } else if (button_sim == 6) {
+            /* Diagnostic: reproduce a report that Chocobo World
+               crashes/freezes "upon getting into an event" during real
+               interactive play. Real play involves wandering the
+               overworld map for a variable, human amount of time before
+               a random encounter triggers - button_sim=3's repeating
+               BIOS-menu-shaped Down/Fire/Right/Fire pattern was never
+               meant to simulate that, and never varies. This mode runs
+               the same confirmed real launch sequence ONCE (not looped,
+               unlike button_sim=3), then switches to a long,
+               deterministically-pseudo-randomized single-button-at-a-time
+               exploration pattern (Up/Down/Left/Right/Fire, ~150000-
+               instruction taps with gaps, matching button_sim=3's real-
+               tap-duration finding) for the rest of the run. */
+            static const uint32_t explore_choices[5] = {
+                PSEMU_BUTTON_UP, PSEMU_BUTTON_DOWN, PSEMU_BUTTON_LEFT, PSEMU_BUTTON_RIGHT, PSEMU_BUTTON_FIRE};
+            if (i < 200000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 350000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_DOWN);
+            } else if (i < 500000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 650000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
+            } else if (i < 900000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 1050000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_RIGHT);
+            } else if (i < 1300000) {
+                psemu_set_buttons(ps, 0);
+            } else if (i < 1450000) {
+                psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
+            } else if (i < 2500000) {
+                psemu_set_buttons(ps, 0);
+            } else {
+                long slot = (i - 2500000) / 300000;
+                long slot_phase = (i - 2500000) % 300000;
+                uint32_t seed = (uint32_t)slot * 2654435761u + 0x9E3779B9u;
+                seed ^= seed >> 15;
+                seed *= 0x85EBCA6Bu;
+                seed ^= seed >> 13;
+                psemu_set_buttons(ps, slot_phase < 150000 ? explore_choices[seed % 5u] : 0u);
+            }
         }
 
         if (select_block > 0) {
@@ -482,12 +525,29 @@ int main(int argc, char **argv) {
         }
 
         if (ps->cpu.unimplemented) {
+            uint32_t fetch_pc = (cpsr_before & CPSR_T) ? (pc_before & ~1u) : (pc_before & ~3u);
             printf(
                 "UNIMPLEMENTED opcode at instr #%ld, pc=0x%08X mode=%s cpsr=0x%08X\n", i, pc_before,
                 mode_name(cpsr_before), cpsr_before);
-            uint32_t raw = (cpsr_before & CPSR_T) ? psemu_bus_read16(&ps->bus, pc_before)
-                                                   : psemu_bus_read32(&ps->bus, pc_before);
-            printf("  raw opcode: 0x%08X (%s)\n", raw, (cpsr_before & CPSR_T) ? "thumb" : "arm");
+            uint32_t raw = (cpsr_before & CPSR_T) ? psemu_bus_read16(&ps->bus, fetch_pc)
+                                                   : psemu_bus_read32(&ps->bus, fetch_pc);
+            printf(
+                "  raw opcode: 0x%08X (%s), actually fetched from 0x%08X\n", raw,
+                (cpsr_before & CPSR_T) ? "thumb" : "arm", fetch_pc);
+            printf("  last %d PCs before the fault:\n", TRACE_SIZE < 32 ? TRACE_SIZE : 32);
+            {
+                long show = trace_pos < 32 ? trace_pos : 32;
+                long start = (trace_pos - show + TRACE_SIZE) % TRACE_SIZE;
+                for (long k = 0; k < show; k++) {
+                    long idx = (start + k) % TRACE_SIZE;
+                    int t_bit = (trace_cpsr[idx] & CPSR_T) != 0;
+                    uint32_t apc = t_bit ? (trace_pc[idx] & ~1u) : (trace_pc[idx] & ~3u);
+                    uint32_t opc = t_bit ? psemu_bus_read16(&ps->bus, apc) : psemu_bus_read32(&ps->bus, apc);
+                    printf(
+                        "    [%ld] pc=0x%08X %s opcode=0x%08X\n", i - show + k + 1, trace_pc[idx],
+                        t_bit ? "(thumb)" : "(arm)", opc);
+                }
+            }
             break;
         }
 
