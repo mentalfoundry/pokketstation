@@ -3,11 +3,12 @@
 
 #include <stdint.h>
 
-/* Sony PocketStation DAC (audio out), confirmed via the documented documentation-sourced documentation - see docs/hardware-notes.md. Two 32-bit
+/* Sony PocketStation DAC (audio out), confirmed against real
+   hardware - see docs/hardware-notes.md. Two 32-bit
    registers at 0x0D800010: ctrl(+0x0, bit0 = audio enable), data(+0x4,
    bits 6-15 = DACV, a signed 10-bit two's-complement output level,
-   +max=0x1FF, center=0, -max=0x200; bits 0-5 should be zero per the
-   documentation). Audio must ALSO be enabled via IOP_STOP/IOP_START
+   +max=0x1FF, center=0, -max=0x200; bits 0-5 should be zero).
+   Audio must ALSO be enabled via IOP_STOP/IOP_START
    bit5 (see iop.h) - both gates must be open for sound to play.
 
    Real hardware has no square-wave/noise generator or sound DMA channel
@@ -21,7 +22,7 @@
 #define DAC_REG_SPAN 0x10u
 
 /* Real hardware runs at a variable clock via CLK_MODE (see clk.h) - up
-   to ~4MHz per the documented table. PSEMU_ASSUMED_CPU_HZ is the
+   to ~4MHz. PSEMU_ASSUMED_CPU_HZ is the
    fixed reference rate psemu_run's cycle budget is expressed at
    (matching frontends/desktop/main.c's real-time pacing: 33000 cycles
    per 32Hz frame) - an earlier version of this file assumed ~4MHz
@@ -35,25 +36,19 @@
    sync with main.c's psemu_run() cycle count if that ever changes -
    otherwise audio pitch/tempo and on-screen timing will drift apart
    from each other again. */
-/* STOPGAP FUDGE FACTOR, not a confirmed-correct calibration - see
-   docs/hardware-notes.md. The original, longer-validated value here was
-   1056000u (33000u * 32u, matching frontends/desktop/main.c's real-time
-   pacing). With Timer now tracking CLK_MODE directly (see psemu_run's
-   comment in psemu.c), reported audio pitch was "slightly too high"
-   while note spacing sounded correct - since Timer's real-time rate is
-   proportional to clk_hz(mode)/PSEMU_ASSUMED_CPU_HZ, raising this
-   reference rate lowers Timer's (and hence audio pitch's) real-time
-   rate slightly, without a large enough change to perceptibly affect
-   coarser-grained things like note-to-note spacing or overall animation
-   speed. Binary-searched by ear from the base value: +8% (1140480u)
-   overshot (too low), then two successive midpoints (1098240u, this
-   value) landed on "close enough for now." No hardware frequency
-   reference to calibrate against, and this may well be masking a real,
+/* Reverted back to this original, longer-validated value (33000u * 32u,
+   matching frontends/desktop/main.c's real-time pacing) after a session
+   spent binary-searching an ear-tuned fudge factor (1077120u, briefly
+   committed) to fix audio pitch reported "slightly too high" once Timer
+   started tracking CLK_MODE directly (see psemu_run's comment in
+   psemu.c). That tuning was explicitly flagged as a stopgap with no
+   hardware frequency reference behind it, likely masking a real,
    fixable bug elsewhere (e.g. an ARM cycle-timing inaccuracy in
-   arm_exec.c/thumb_exec.c) rather than reflecting truth - if a future
-   fix changes overall timing accuracy, revisit whether this fudge is
-   still needed, and reconsider reverting to 1056000u first. */
-#define PSEMU_ASSUMED_CPU_HZ 1077120u /* base 1056000u, tuned by ear - see comment */
+   arm_exec.c/thumb_exec.c) rather than reflecting truth - reverted here
+   on request rather than carrying an unconfirmed fudge forward. If the
+   "slightly too high" pitch report resurfaces, look for the underlying
+   cycle-timing bug before re-tuning this value by ear again. */
+#define PSEMU_ASSUMED_CPU_HZ 1056000u
 #define PSEMU_DAC_SAMPLE_RATE_HZ 8000u
 #define DAC_CYCLES_PER_SAMPLE (PSEMU_ASSUMED_CPU_HZ / PSEMU_DAC_SAMPLE_RATE_HZ) /* = 132 */
 
