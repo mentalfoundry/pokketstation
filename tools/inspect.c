@@ -534,9 +534,9 @@ int main(int argc, char **argv) {
             printf(
                 "  raw opcode: 0x%08X (%s), actually fetched from 0x%08X\n", raw,
                 (cpsr_before & CPSR_T) ? "thumb" : "arm", fetch_pc);
-            printf("  last %d PCs before the fault:\n", TRACE_SIZE < 32 ? TRACE_SIZE : 32);
+            printf("  last %d PCs before the fault:\n", TRACE_SIZE < 400 ? TRACE_SIZE : 400);
             {
-                long show = trace_pos < 32 ? trace_pos : 32;
+                long show = trace_pos < 400 ? trace_pos : 400;
                 long start = (trace_pos - show + TRACE_SIZE) % TRACE_SIZE;
                 for (long k = 0; k < show; k++) {
                     long idx = (start + k) % TRACE_SIZE;
