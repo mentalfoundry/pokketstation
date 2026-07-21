@@ -725,7 +725,7 @@ static void test_clk_mode_scales_run_speed(void) {
     uint32_t ran_idle = psemu_run(ps_idle, 100000u);
     uint32_t ran_max = psemu_run(ps_max, 100000u);
 
-    /* Mode 7 (~4MHz) is ~128x mode 0's ~32.768kHz - assert a conservative
+    /* Mode 7 (~4MHz) is ~122x mode 0's ~32.768kHz - assert a conservative
        lower bound (10x) to avoid coupling this test to the exact table
        values while still catching a completely unscaled psemu_run. */
     assert(ran_max > ran_idle * 10u);

@@ -2,18 +2,28 @@
 
 #define CLK_STEADY 0x10u
 
-/* PMFrequency/CLK_MODE and SWI 04h SetCpuSpeed's argument table: FREQ 0 = 32.768kHz, doubling
-   each step, FREQ 7 = ~4MHz, FREQ 8 and above all alias the max ~8MHz -
-   a clean power-of-two PLL progression. An earlier version of this table
-   used CPU-frequency values that were ~2x too high at every index
-   (e.g. "mode 7" read ~7.995MHz, not the confirmed ~4MHz) - those higher numbers were
-   never independently confirmed and shouldn't be relied on (see the
-   note at the top of docs/hardware-notes.md). Tried setting mode 7 to
-   8MHz instead, to compare against real hardware - the
-   user reported it back out, so the confirmed ~4MHz value stands. */
+/* PMFrequency/CLK_MODE and SWI 04h SetCpuSpeed's argument table. Indices
+   1-8 use the exact documented Hz values (see docs/hardware-notes.md's
+   CLK_MODE section for the full cross-check and verification) rather
+   than a clean power-of-two guess - note the table isn't a pure
+   doubling ladder (index 5->6 only steps ~1.97x, not 2x), so
+   approximating it as one is measurably wrong at several indices.
+   Indices 9-15 alias index 8's rate, also per the documented table.
+
+   Index 0 is left at its prior, real-hardware-confirmed-by-ear value
+   (32768, treated as the idle default) rather than a documentation-
+   derived number, because the documentation describes index 0 as
+   "hangs hardware" (an invalid/reserved PLL setting) rather than giving
+   it a frequency - there's nothing numeric to swap in. Confirmed
+   harmless in practice (see docs/hardware-notes.md): a 20M-instruction
+   real-BIOS trace never once writes CLK_MODE=0, only ever 7/4/3. An
+   even earlier version of this table used values ~2x too high at every
+   index (e.g. "mode 7" read ~7.995MHz) - independently disproved by
+   real-hardware A/B testing (see docs/hardware-notes.md), unrelated to
+   the documentation cross-check done here. */
 static const uint32_t CPU_FREQ[16] = {
-    32768u,   65536u,   131072u,  262144u,  524288u,  1048576u, 2097152u, 4194304u,
-    8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u, 8388608u,
+    32768u,   63488u,   126976u,  253952u,  507904u,  1015808u, 1998848u, 3997696u,
+    7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u,
 };
 
 void clk_init(clk_t *clk) {

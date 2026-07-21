@@ -22,7 +22,7 @@
 #define DAC_REG_SPAN 0x10u
 
 /* Real hardware runs at a variable clock via CLK_MODE (see clk.h) - up
-   to ~4MHz. PSEMU_ASSUMED_CPU_HZ is the
+   to ~8MHz (mode 8+). PSEMU_ASSUMED_CPU_HZ is the
    fixed reference rate psemu_run's cycle budget is expressed at
    (matching frontends/desktop/main.c's real-time pacing: 33000 cycles
    per 32Hz frame) - an earlier version of this file assumed ~4MHz
