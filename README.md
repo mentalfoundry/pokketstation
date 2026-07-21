@@ -4,7 +4,32 @@ An open-source Sony PocketStation emulator core, written in portable C, meant to
 
 ## Status
 
-Early scaffold. The memory map, PSX Title Sector app loading, LCD, buttons, and flash are wired up end to end; the ARM7TDMI CPU interpreter itself is a stub (fetches and advances PC but doesn't decode instructions yet) — see `core/src/cpu.c` and [docs/hardware-notes.md](docs/hardware-notes.md) for what's next.
+A real PocketStation app (Chocobo World) boots from a real BIOS dump, runs, plays audio, draws its own graphics, and saves without corruption — confirmed across hundreds of millions of instructions of testing with zero unimplemented-opcode hits. The ARM7TDMI interpreter decodes and executes both ARM and Thumb instructions; the memory map, interrupt controller, timers, RTC, flash (including virtual bank-select remapping and real flash-unlock-key protection), DAC/audio, and LCD (including `LCD_MODE`/rotation) are all wired up and individually verified against real hardware behavior. See [docs/hardware-notes.md](docs/hardware-notes.md) for the full investigation log — what's confirmed, what's still open, and every real bug found and fixed along the way.
+
+**Known gaps:** IR communication timing is unverified, cycle timing is approximate rather than cycle-accurate (see `PSEMU_ASSUMED_CPU_HZ` in `docs/hardware-notes.md`), and a handful of edge cases (low-battery detection, `F_BANK_VAL` entries mapping multiple physical blocks to the same virtual slot, the BIOS's pre-remap boot phase) are deliberately simplified — see the "Confirmed real gaps" list at the end of `docs/hardware-notes.md` for specifics.
+
+## Usage
+
+Prebuilt binaries come in two flavors: a standalone desktop app, and a [libretro](https://www.libretro.com/) core for use with [RetroArch](https://www.retroarch.com/). **Neither bundles a PocketStation BIOS** — it's copyrighted Sony firmware, so either way you need to supply your own dump extracted from real hardware. See [Building](#building) below if you're compiling from source instead of using a prebuilt release.
+
+### Desktop app
+
+```
+pokketstation_desktop.exe <bios.bin> <app-or-card-file>
+```
+- The second file's **extension doesn't matter** — it's loaded as a full memory-card image (navigate its real BIOS menu with the keyboard, same as real hardware) if its size exactly matches the real flash size, or as a single raw PSX Title Sector app dump otherwise.
+- **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button.
+- Press **F12** at any time to write a diagnostic report to a log file — see [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
+
+### Libretro core (RetroArch)
+
+1. Copy `pokketstation_libretro.dll` (`.so` on Linux, `.dylib` on macOS) into RetroArch's **cores** directory.
+2. Copy your BIOS dump, **renamed exactly to `pocketstation.bin`**, into RetroArch's **System** directory (Settings → Directory → System/BIOS Directory).
+3. In RetroArch: **Load Core** → select **PokketStation** → **Load Content** → select your app file.
+
+Unlike the desktop app, the libretro core only loads a single raw PSX Title Sector app dump — it does **not** support loading a full memory-card image, so a `.mcr` card dump won't work here even though it works with the desktop app. RetroArch's content browser defaults to showing `.pss` files for this core, though (same as the desktop app) the extension itself isn't actually checked at load time — it's just what the file picker filters to by default.
+
+Controls use RetroArch's standard RetroPad mapping: D-pad for Up/Down/Left/Right, the **A** button for Fire/Action (remappable in RetroArch's own input settings, same as any other core).
 
 ## Layout
 
