@@ -18,6 +18,7 @@ Prebuilt binaries come in two flavors: a standalone desktop app, and a [libretro
 pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 ```
 - The second file's **extension doesn't matter** — it's loaded as a full memory-card image (navigate its real BIOS menu with the keyboard, same as real hardware) if its size exactly matches the real flash size, or as a single raw PSX Title Sector app dump otherwise.
+- **Double-clicking the .exe directly** (no command line) looks for `bios.bin` and `memcard.mcr` in the same folder as the executable and loads those automatically — rename your BIOS dump and memory-card image to those exact names and drop them next to `pokketstation_desktop.exe` for that to work.
 - **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button.
 - Press **F12** at any time to write a diagnostic report to a log file — see [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
 
