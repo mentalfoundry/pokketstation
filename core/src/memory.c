@@ -70,7 +70,7 @@ uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_INTC_BASE && addr < PSEMU_INTC_BASE + INTC_REG_SPAN) {
         return intc_read8(bus->intc, addr - PSEMU_INTC_BASE);
     }
-    if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + 8u) {
+    if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + IR_REG_SPAN) {
         return (uint8_t)ir_read(bus->ir, addr - PSEMU_IR_BASE);
     }
     if (addr >= PSEMU_TIMER_BASE && addr < PSEMU_TIMER_BASE + TIMER_REG_SPAN) {
@@ -127,7 +127,7 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
         intc_write8(bus->intc, addr - PSEMU_INTC_BASE, value);
         return;
     }
-    if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + 8u) {
+    if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + IR_REG_SPAN) {
         ir_write(bus->ir, addr - PSEMU_IR_BASE, value);
         return;
     }
