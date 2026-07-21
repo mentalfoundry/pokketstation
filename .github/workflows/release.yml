@@ -27,6 +27,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history + tags, not the default shallow single-commit
+          # checkout - the changelog step below needs `git log`/`git
+          # describe` to see previous tags and the commits since then.
+          fetch-depth: 0
 
       # Self-contained vcpkg bootstrap, same reasoning as the artifact-only
       # workflow: the runner image's preinstalled vcpkg lives at a path that
@@ -83,6 +88,27 @@ jobs:
           Compress-Archive -Path dist\desktop\* -DestinationPath "pokketstation-desktop-windows-${{ inputs.version }}.zip"
           Compress-Archive -Path dist\libretro\* -DestinationPath "pokketstation-libretro-windows-${{ inputs.version }}.zip"
 
+      - name: Build changelog from commits
+        shell: pwsh
+        run: |
+          # gh's --generate-notes builds "What's Changed" from merged Pull
+          # Requests, not raw commits - this repo has no PR history (every
+          # commit landed directly on main), so it comes back empty despite
+          # real commit history existing. Build the changelog from `git log`
+          # instead: everything since the previous tag, or the full history
+          # on the very first release.
+          $prevTag = (git describe --tags --abbrev=0 2>$null)
+          if ($LASTEXITCODE -eq 0 -and $prevTag) {
+            $range = "$prevTag..HEAD"
+            $header = "## Changes since $prevTag"
+          } else {
+            $range = "HEAD"
+            $header = "## Changes"
+          }
+          $commits = git log $range --pretty=format:"- %s (%h)"
+          $notes = "$header`n`n$($commits -join "`n")"
+          Set-Content -Path release-notes.md -Value $notes
+
       - name: Create GitHub Release
         shell: pwsh
         env:
@@ -100,5 +126,5 @@ jobs:
             "pokketstation-desktop-windows-${{ inputs.version }}.zip" `
             "pokketstation-libretro-windows-${{ inputs.version }}.zip" `
             --title "${{ inputs.version }}" `
-            --generate-notes `
+            --notes-file release-notes.md `
             @extraArgs
