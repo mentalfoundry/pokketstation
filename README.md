@@ -87,6 +87,23 @@ Example of a known-working invocation, using a real BIOS dump and a memory-card 
 
 **No PocketStation BIOS is bundled** — it's copyrighted Sony firmware, so you need to supply your own dump extracted from real hardware, along with an app file or memory-card image to run. The libretro core takes its BIOS the same way, but as `pocketstation.bin` placed in RetroArch's system directory instead of a CLI argument.
 
+### Diagnostic reports (for bug reports)
+
+The desktop app can write a detailed diagnostic report to a log file, in two situations:
+
+- **Automatically**, the first time the CPU hits an unrecognized/unimplemented opcode. This is always a real emulator bug, not something you did wrong. The emulator doesn't crash — it stops stepping the CPU and freezes on the last good frame — and prints a message to the console pointing you at the report.
+- **On demand, at any time**, by pressing **F12**. Use this for anything that doesn't trip a hard fault but still looks wrong — glitched graphics, missing sound, the app seeming stuck, etc.
+
+Each report is written to the current directory as `psemu_report_<timestamp>.log` (e.g. `psemu_report_20260721_143012.log`) and contains:
+- Why it was written (fault vs. manual F12) and which frame number
+- The BIOS and app/card file paths you ran with
+- Total instructions executed, held button state, `CLK_MODE`, and flash bank-select state (`F_BANK_FLG`/`F_BANK_VAL`)
+- All CPU registers, `PC`, and `CPSR` (including ARM vs. Thumb mode)
+- If a fault occurred: the exact unrecognized opcode and where it was fetched from
+- The last up to 8192 executed program counters (oldest first), each tagged ARM or Thumb
+
+**When filing a bug report, attach the relevant `psemu_report_*.log` file** along with a description of what you were doing right before it happened — that trace is usually the difference between a bug being fixable and not. These log files are gitignored and never committed to the repo, so don't worry about them showing up in `git status`; just attach them directly to your issue.
+
 ## License
 
 GPLv3, see [LICENSE](LICENSE). [docs/hardware-notes.md](docs/hardware-notes.md) has a licensing note on what prior art is safe to reference.
