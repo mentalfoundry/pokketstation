@@ -1,11 +1,41 @@
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #include "psemu/psemu.h"
 
 #define SCALE 8
+
+/* Directory the running executable lives in, derived from argv[0] rather
+   than an OS-specific "current module path" API - argv[0] is already the
+   full path when Explorer double-click-launches an exe, which is the one
+   case this is actually needed for (CLI invocations pass explicit paths
+   and never hit this). */
+static void get_exe_dir(const char *argv0, char *out, size_t out_size) {
+    const char *last_sep = NULL;
+    const char *p;
+    for (p = argv0; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            last_sep = p;
+        }
+    }
+    size_t len = last_sep ? (size_t)(last_sep - argv0) : 0;
+    if (len >= out_size) {
+        len = out_size - 1;
+    }
+    memcpy(out, argv0, len);
+    out[len] = '\0';
+}
+
+static void join_path(char *out, size_t out_size, const char *dir, const char *name) {
+    if (dir[0] == '\0') {
+        snprintf(out, out_size, "%s", name);
+    } else {
+        snprintf(out, out_size, "%s/%s", dir, name);
+    }
+}
 
 /* Writes a timestamped diagnostic report (frontend context - reason,
    frame number - followed by psemu_write_crash_report's full CPU/trace
@@ -81,7 +111,28 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 3) {
+    char default_bios_path[1024];
+    char default_app_path[1024];
+    const char *bios_path;
+    const char *app_path;
+    int using_defaults = 0;
+
+    if (argc >= 3) {
+        bios_path = argv[1];
+        app_path = argv[2];
+    } else if (argc == 1) {
+        /* No arguments at all means Explorer double-click-launched the
+           .exe rather than a terminal invocation - fall back to looking
+           for a BIOS dump and memory-card image sitting next to it,
+           since there's no command line to pass paths on. */
+        char exe_dir[900];
+        get_exe_dir(argv[0], exe_dir, sizeof(exe_dir));
+        join_path(default_bios_path, sizeof(default_bios_path), exe_dir, "bios.bin");
+        join_path(default_app_path, sizeof(default_app_path), exe_dir, "memcard.mcr");
+        bios_path = default_bios_path;
+        app_path = default_app_path;
+        using_defaults = 1;
+    } else {
         fprintf(stderr, "usage: %s <bios.bin> <app.pss | memory-card.mcr>\n", argv[0]);
         fprintf(
             stderr,
@@ -93,10 +144,29 @@ int main(int argc, char **argv) {
     }
 
     size_t bios_size = 0, app_size = 0;
-    uint8_t *bios = read_file(argv[1], &bios_size);
-    uint8_t *app = read_file(argv[2], &app_size);
+    uint8_t *bios = read_file(bios_path, &bios_size);
+    uint8_t *app = read_file(app_path, &app_size);
     if (!bios || !app) {
-        fprintf(stderr, "failed to read input files\n");
+        if (using_defaults) {
+            fprintf(
+                stderr,
+                "psemu: couldn't find a BIOS dump and/or memory-card image next to the .exe:\n"
+                "  %s%s\n"
+                "  %s%s\n"
+                "Place a BIOS dump named \"bios.bin\" and a memory-card image named \"memcard.mcr\"\n"
+                "next to pokketstation_desktop.exe, or run it from a terminal with explicit paths:\n"
+                "  %s <bios.bin> <app-or-card-file>\n",
+                default_bios_path, bios ? " (ok)" : " (missing)", default_app_path, app ? " (ok)" : " (missing)",
+                argv[0]);
+            fprintf(stderr, "press Enter to exit...\n");
+            free(bios);
+            free(app);
+            getchar();
+        } else {
+            fprintf(stderr, "failed to read input files\n");
+            free(bios);
+            free(app);
+        }
         return 1;
     }
 
@@ -179,7 +249,7 @@ int main(int argc, char **argv) {
                    moment something looks wrong (frozen screen, missing
                    sound, garbled graphics), whether or not the CPU has
                    actually faulted. */
-                write_diagnostic_report(ps, "manual (F12)", frame, argv[1], argv[2]);
+                write_diagnostic_report(ps, "manual (F12)", frame, bios_path, app_path);
             }
         }
 
@@ -232,7 +302,7 @@ int main(int argc, char **argv) {
                 stderr, "psemu: CPU hit an unrecognized opcode and has stopped - this is a real emulator bug, "
                         "not something you did. The game is frozen on its last good frame; please report this "
                         "along with what you were doing right before it happened.\n");
-            write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame, argv[1], argv[2]);
+            write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame, bios_path, app_path);
         }
 
         if (audio_dev != 0) {
