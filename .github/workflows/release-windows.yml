@@ -1,0 +1,86 @@
+name: Build Release (Windows)
+
+# Manual only - this does not run on every push/PR. Trigger it from the
+# Actions tab ("Run workflow") when you want a downloadable Windows build
+# of the desktop app and libretro core.
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: "CMake build configuration"
+        required: false
+        default: "Release"
+        type: choice
+        options:
+          - Release
+          - Debug
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Bootstrap our own vcpkg inside the workspace rather than relying on
+      # the runner image's preinstalled copy - its exact path varies between
+      # runner image versions, and it's not guaranteed to have SDL2 available.
+      # Cached below so repeat runs don't rebuild SDL2 from scratch every time.
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: vcpkg
+          key: vcpkg-x64-windows-sdl2-${{ runner.os }}-v1
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "vcpkg\vcpkg.exe")) {
+            if (-not (Test-Path "vcpkg")) {
+              git clone https://github.com/microsoft/vcpkg.git
+            }
+            .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+          }
+          .\vcpkg\vcpkg.exe install sdl2:x64-windows
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -B build -S . -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}\vcpkg\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config ${{ inputs.build_type }}
+
+      - name: Test
+        shell: pwsh
+        run: ctest --test-dir build -C ${{ inputs.build_type }} --output-on-failure
+
+      - name: Stage desktop app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\desktop | Out-Null
+          Copy-Item "build\frontends\desktop\${{ inputs.build_type }}\pokketstation_desktop.exe" dist\desktop\
+          Copy-Item "vcpkg\installed\x64-windows\bin\SDL2.dll" dist\desktop\
+          Copy-Item README.md, LICENSE dist\desktop\
+
+      - name: Stage libretro core
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\libretro | Out-Null
+          Copy-Item "build\frontends\libretro\${{ inputs.build_type }}\pokketstation_libretro.dll" dist\libretro\
+          Copy-Item README.md, LICENSE dist\libretro\
+
+      - name: Upload desktop app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokketstation-desktop-windows-${{ inputs.build_type }}
+          path: dist\desktop\
+
+      - name: Upload libretro core artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pokketstation-libretro-windows-${{ inputs.build_type }}
+          path: dist\libretro\
