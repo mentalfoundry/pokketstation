@@ -5,6 +5,35 @@
 #define TITLE_SECTOR_HEADER_SIZE 0x80u
 #define TITLE_SECTOR_MAGIC_OFFSET 0x52u
 
+/* A real PS1 memory card directory: 16 128-byte frames in block 0 (frame 0
+   is the card header, frames 1-15 describe blocks 1-15). Frame layout: byte
+   0 in-use marker (0x51 first/solo, 0x52 middle, 0x53 last, 0xA0 free),
+   bytes 4-7 total file size (little-endian, first frame of a file only),
+   bytes 8-9 next-block link (little-endian, 0-based among the 15 data
+   blocks - add 1 for the physical block number, 0xFFFF = end of chain),
+   byte 0x7F XOR checksum of the preceding 127 bytes. */
+#define DIRECTORY_FRAME_SIZE 128u
+#define DIRECTORY_MAX_APP_BLOCKS 15u /* block 0 is reserved for the directory itself */
+
+/* A real, confirmed requirement, isolated by bisecting against a real card
+   dump one byte at a time: the BIOS's menu-browsing code (separate from,
+   and run before, the app-selection/dispatch routine documented above -
+   it's what lets a user navigate to and select an entry at all) requires
+   byte 6 of the filename field (frame offset 0x10) to be ASCII 'P'. Two
+   real directory entries confirm the pattern - a normal PS1 save ID's
+   mandatory region-code hyphen (e.g. "SLUS-00892") is replaced with 'P'
+   when that save bundles a PocketStation app ("BASLUSP00892...",
+   "BISLPMP86247..." - the latter's product-code prefix `SLPM` already
+   contains an unrelated, naturally-occurring 'P', which is what made this
+   take two rounds of bisection to isolate from the real marker one byte
+   later). Confirmed empirically: a real, working card still dispatches
+   correctly with every other filename byte garbage or zeroed, as long as
+   this one byte is 'P' - and stops dispatching if it's touched, even with
+   an otherwise plausible-looking name in place. There's no real product
+   code to put here for an arbitrary loaded app, so the rest of the field
+   is left blank; only this one flag byte is load-bearing. */
+#define DIRECTORY_POCKETSTATION_FLAG_OFFSET 0x10u
+
 void flash_init(flash_t *flash) {
     memset(flash->data, 0, sizeof(flash->data));
     flash->bank_mask = 0;
@@ -12,16 +41,66 @@ void flash_init(flash_t *flash) {
     memset(flash->bank_val, 0, sizeof(flash->bank_val));
 }
 
+static uint8_t directory_frame_xor(const uint8_t *frame) {
+    uint8_t xor_value = 0;
+    uint32_t i;
+    for (i = 0; i < 0x7Fu; i++) {
+        xor_value ^= frame[i];
+    }
+    return xor_value;
+}
+
 psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
-    if (size < TITLE_SECTOR_HEADER_SIZE || size > sizeof(flash->data)) {
+    if (size < TITLE_SECTOR_HEADER_SIZE || size > DIRECTORY_MAX_APP_BLOCKS * FLASH_BLOCK_SIZE) {
         return PSEMU_ERR_BAD_SIZE;
     }
     if (memcmp(&data[TITLE_SECTOR_MAGIC_OFFSET], "MCX0", 4) != 0 &&
         memcmp(&data[TITLE_SECTOR_MAGIC_OFFSET], "MCX1", 4) != 0) {
         return PSEMU_ERR_BAD_FORMAT;
     }
+
     memset(flash->data, 0, sizeof(flash->data));
-    memcpy(flash->data, data, size);
+
+    /* Real hardware's app-selection routine (docs/hardware-notes.md,
+       "App-selection and dispatch") requires FLASH2 to carry a real memory-
+       card directory, not just the app's own bytes at offset 0 - it reads
+       the selected slot's directory frame, walks its block-chain link, and
+       only then locates the entry point at the resulting physical block.
+       Synthesize a minimal one-entry card so the loaded app is actually
+       reachable that way: a card header, one directory frame per app block
+       chained starting at slot 1 (matching "Right from the clock screen
+       moves to the first app in the list"), and the app's own data placed
+       starting at physical block 1, right after the directory. */
+    flash->data[0x00] = 'M';
+    flash->data[0x01] = 'C';
+    flash->data[0x7F] = directory_frame_xor(flash->data);
+
+    uint32_t block_count = (uint32_t)((size + FLASH_BLOCK_SIZE - 1) / FLASH_BLOCK_SIZE);
+    uint32_t block;
+    for (block = 1; block <= block_count; block++) {
+        uint8_t *frame = &flash->data[block * DIRECTORY_FRAME_SIZE];
+        frame[0x00] = (block == 1) ? 0x51u : (block == block_count) ? 0x53u : 0x52u;
+        if (block == 1) {
+            frame[0x04] = (uint8_t)(size & 0xFFu);
+            frame[0x05] = (uint8_t)((size >> 8) & 0xFFu);
+            frame[0x06] = (uint8_t)((size >> 16) & 0xFFu);
+            frame[0x07] = (uint8_t)((size >> 24) & 0xFFu);
+            frame[DIRECTORY_POCKETSTATION_FLAG_OFFSET] = (uint8_t)'P';
+        }
+        uint32_t link = (block < block_count) ? block : 0xFFFFu;
+        frame[0x08] = (uint8_t)(link & 0xFFu);
+        frame[0x09] = (uint8_t)((link >> 8) & 0xFFu);
+        frame[0x7F] = directory_frame_xor(frame);
+    }
+    for (block = block_count + 1; block < 16u; block++) {
+        uint8_t *frame = &flash->data[block * DIRECTORY_FRAME_SIZE];
+        frame[0x00] = 0xA0u;
+        frame[0x08] = 0xFFu;
+        frame[0x09] = 0xFFu;
+        frame[0x7F] = directory_frame_xor(frame);
+    }
+
+    memcpy(&flash->data[FLASH_BLOCK_SIZE], data, size);
     return PSEMU_OK;
 }
 

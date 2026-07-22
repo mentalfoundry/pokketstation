@@ -133,12 +133,13 @@ int main(int argc, char **argv) {
         app_path = default_app_path;
         using_defaults = 1;
     } else {
-        fprintf(stderr, "usage: %s <bios.bin> <app.pss | memory-card.mcr>\n", argv[0]);
+        fprintf(stderr, "usage: %s <bios.bin> <app.pss | app.mcs | memory-card.mcr>\n", argv[0]);
         fprintf(
             stderr,
             "  a %d-byte file is loaded as a raw memory card image (with its own directory) -\n"
             "  navigate and launch apps from the real BIOS menu with the keyboard, same as real\n"
-            "  hardware. Anything else is loaded as a single Title Sector app (MCX0/MCX1).\n",
+            "  hardware. Anything else is loaded as a single Title Sector app (MCX0/MCX1), tried\n"
+            "  either bare (.pss) or wrapped in a single-save directory frame (.mcs).\n",
             PSEMU_FLASH_SIZE);
         return 1;
     }
@@ -182,7 +183,7 @@ int main(int argc, char **argv) {
             fprintf(stderr, "failed to load memory card image\n");
             return 1;
         }
-    } else if (psemu_load_app(ps, app, app_size) != PSEMU_OK) {
+    } else if (psemu_load_app(ps, app, app_size) != PSEMU_OK && psemu_load_mcs(ps, app, app_size) != PSEMU_OK) {
         fprintf(stderr, "invalid app image\n");
         return 1;
     }

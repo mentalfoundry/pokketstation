@@ -9,13 +9,14 @@ static uint32_t g_framebuffer[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
 
 static retro_environment_t environ_cb;
 static retro_video_refresh_t video_cb;
+static retro_audio_sample_batch_t audio_batch_cb;
 static retro_input_poll_t input_poll_cb;
 static retro_input_state_t input_state_cb;
 
 void retro_set_environment(retro_environment_t cb) { environ_cb = cb; }
 void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
 void retro_set_audio_sample(retro_audio_sample_t cb) { (void)cb; }
-void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { (void)cb; }
+void retro_set_audio_sample_batch(retro_audio_sample_batch_t cb) { audio_batch_cb = cb; }
 void retro_set_input_poll(retro_input_poll_t cb) { input_poll_cb = cb; }
 void retro_set_input_state(retro_input_state_t cb) { input_state_cb = cb; }
 void retro_set_controller_port_device(unsigned port, unsigned device) { (void)port; (void)device; }
@@ -37,7 +38,7 @@ void retro_get_system_info(struct retro_system_info *info) {
     memset(info, 0, sizeof(*info));
     info->library_name = "PokketStation";
     info->library_version = "0.1";
-    info->valid_extensions = "pss";
+    info->valid_extensions = "pss|mcs";
     info->need_fullpath = false;
     info->block_extract = false;
 }
@@ -49,7 +50,7 @@ void retro_get_system_av_info(struct retro_system_av_info *info) {
     info->geometry.max_height = PSEMU_LCD_HEIGHT;
     info->geometry.aspect_ratio = 1.0f;
     info->timing.fps = 32.0;
-    info->timing.sample_rate = 0.0;
+    info->timing.sample_rate = (double)PSEMU_AUDIO_SAMPLE_RATE_HZ;
 }
 
 void retro_reset(void) {
@@ -82,11 +83,28 @@ static void convert_framebuffer(void) {
     }
 }
 
+static void submit_audio(void) {
+    if (!audio_batch_cb) {
+        return;
+    }
+    int16_t mono[512];
+    int16_t stereo[512 * 2];
+    uint32_t n;
+    while ((n = psemu_get_audio_samples(g_ps, mono, sizeof(mono) / sizeof(mono[0]))) > 0) {
+        for (uint32_t i = 0; i < n; i++) {
+            stereo[i * 2 + 0] = mono[i];
+            stereo[i * 2 + 1] = mono[i];
+        }
+        audio_batch_cb(stereo, n);
+    }
+}
+
 void retro_run(void) {
     update_input();
     psemu_run(g_ps, 33000); /* not yet cycle-accurate, see docs/hardware-notes.md */
     convert_framebuffer();
     video_cb(g_framebuffer, PSEMU_LCD_WIDTH, PSEMU_LCD_HEIGHT, PSEMU_LCD_WIDTH * sizeof(uint32_t));
+    submit_audio();
 }
 
 /* Real PocketStation hardware needs its 16KB BIOS ROM dumped from a unit
@@ -123,7 +141,11 @@ bool retro_load_game(const struct retro_game_info *game) {
     if (!load_bios()) {
         return false;
     }
-    if (psemu_load_app(g_ps, (const uint8_t *)game->data, game->size) != PSEMU_OK) {
+    /* Try a bare Title Sector (.pss) first, then a single-save .mcs
+       (directory frame + data blocks) - content-sniffed rather than gated
+       on the file's extension, same as the rest of this frontend. */
+    if (psemu_load_app(g_ps, (const uint8_t *)game->data, game->size) != PSEMU_OK &&
+        psemu_load_mcs(g_ps, (const uint8_t *)game->data, game->size) != PSEMU_OK) {
         return false;
     }
     psemu_reset(g_ps);

@@ -49,6 +49,29 @@ psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size) {
     return flash_load_app(&ps->flash, data, size);
 }
 
+/* A PS1 directory frame: byte 0 is the in-use marker, bytes 4-7 are the
+   file's total data size (little-endian, a multiple of FLASH_BLOCK_SIZE),
+   the rest is link/filename bookkeeping this emulator doesn't need. */
+#define MCS_HEADER_SIZE 0x80u
+#define MCS_DATASIZE_OFFSET 0x04u
+
+psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size) {
+    if (size <= MCS_HEADER_SIZE) {
+        return PSEMU_ERR_BAD_SIZE;
+    }
+    size_t payload_size = size - MCS_HEADER_SIZE;
+    if (payload_size % FLASH_BLOCK_SIZE != 0) {
+        return PSEMU_ERR_BAD_SIZE;
+    }
+    uint32_t datasize = (uint32_t)data[MCS_DATASIZE_OFFSET] | ((uint32_t)data[MCS_DATASIZE_OFFSET + 1] << 8) |
+                         ((uint32_t)data[MCS_DATASIZE_OFFSET + 2] << 16) |
+                         ((uint32_t)data[MCS_DATASIZE_OFFSET + 3] << 24);
+    if (datasize != payload_size) {
+        return PSEMU_ERR_BAD_FORMAT;
+    }
+    return flash_load_app(&ps->flash, data + MCS_HEADER_SIZE, payload_size);
+}
+
 psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t size) {
     if (size > sizeof(ps->flash.data)) {
         return PSEMU_ERR_BAD_SIZE;
