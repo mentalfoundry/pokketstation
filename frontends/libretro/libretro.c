@@ -38,7 +38,7 @@ void retro_get_system_info(struct retro_system_info *info) {
     memset(info, 0, sizeof(*info));
     info->library_name = "PokketStation";
     info->library_version = "0.1";
-    info->valid_extensions = "pss|mcs";
+    info->valid_extensions = "mcr|mcs|pss";
     info->need_fullpath = false;
     info->block_extract = false;
 }
@@ -141,11 +141,9 @@ bool retro_load_game(const struct retro_game_info *game) {
     if (!load_bios()) {
         return false;
     }
-    /* Try a bare Title Sector (.pss) first, then a single-save .mcs
-       (directory frame + data blocks) - content-sniffed rather than gated
-       on the file's extension, same as the rest of this frontend. */
-    if (psemu_load_app(g_ps, (const uint8_t *)game->data, game->size) != PSEMU_OK &&
-        psemu_load_mcs(g_ps, (const uint8_t *)game->data, game->size) != PSEMU_OK) {
+    /* Content-sniffed rather than gated on the file's extension - see
+       psemu_load_content's own doc comment for the exact priority order. */
+    if (psemu_load_content(g_ps, (const uint8_t *)game->data, game->size) != PSEMU_OK) {
         return false;
     }
     psemu_reset(g_ps);

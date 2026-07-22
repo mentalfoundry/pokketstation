@@ -1013,6 +1013,141 @@ static void test_flash_load_app_synthesizes_directory(void) {
     printf("test_flash_load_app_synthesizes_directory OK\n");
 }
 
+static void test_flash_load_app_rejects_oversized_app(void) {
+    /* flash_load_app now reserves physical block 0 for the synthesized
+       directory (see test_flash_load_app_synthesizes_directory above), so
+       the largest an app can be is 15 blocks, not the full 16-block flash -
+       one less than it used to accept before that fix. Locks in the exact
+       boundary so a future change can't silently widen or narrow it without
+       a test noticing. */
+    psemu_t *ps = make_arm_cpu();
+
+    static uint8_t max_size_app[15 * 8192];
+    memset(max_size_app, 0, sizeof(max_size_app));
+    memcpy(&max_size_app[0x52], "MCX0", 4);
+    assert(psemu_load_app(ps, max_size_app, sizeof(max_size_app)) == PSEMU_OK);
+
+    static uint8_t oversized_app[15 * 8192 + 1];
+    memset(oversized_app, 0, sizeof(oversized_app));
+    memcpy(&oversized_app[0x52], "MCX0", 4);
+    assert(psemu_load_app(ps, oversized_app, sizeof(oversized_app)) == PSEMU_ERR_BAD_SIZE);
+
+    psemu_destroy(ps);
+    printf("test_flash_load_app_rejects_oversized_app OK\n");
+}
+
+static void test_psemu_load_mcs_validates_and_unwraps(void) {
+    /* psemu_load_mcs had no direct test coverage at all - only ever
+       exercised manually while adding .mcs support. Locks in: a
+       well-formed single-save .mcs (real PS1 directory frame + data
+       blocks) unwraps into the same synthesized-directory layout
+       psemu_load_app produces, and the three ways a malformed .mcs is
+       rejected (too short to contain a directory frame at all, a payload
+       that isn't a whole number of blocks, and a directory frame whose
+       stored file size doesn't match the actual payload). */
+    psemu_t *ps = make_arm_cpu();
+
+    uint8_t mcs[0x80 + 8192];
+    memset(mcs, 0, sizeof(mcs));
+    mcs[0] = 0x51; /* directory frame: in-use/first marker */
+    uint32_t payload_size = 8192;
+    mcs[0x04] = (uint8_t)(payload_size & 0xFFu);
+    mcs[0x05] = (uint8_t)((payload_size >> 8) & 0xFFu);
+    mcs[0x06] = (uint8_t)((payload_size >> 16) & 0xFFu);
+    mcs[0x07] = (uint8_t)((payload_size >> 24) & 0xFFu);
+    memcpy(&mcs[0x80 + 0x52], "MCX0", 4); /* Title Sector magic, inside the payload */
+    assert(psemu_load_mcs(ps, mcs, sizeof(mcs)) == PSEMU_OK);
+    /* Unwrapped the same way psemu_load_app would have: synthesized
+       directory at slot 1, app data starting at physical block 1. */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128) == 0x51u);
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + FLASH_BLOCK_SIZE + 0x52) == 'M');
+
+    /* Too short to even contain a full directory frame. */
+    uint8_t too_short[0x80];
+    memset(too_short, 0, sizeof(too_short));
+    assert(psemu_load_mcs(ps, too_short, sizeof(too_short)) == PSEMU_ERR_BAD_SIZE);
+
+    /* Payload present but not a whole number of 8192-byte blocks. */
+    uint8_t misaligned[0x80 + 100];
+    memset(misaligned, 0, sizeof(misaligned));
+    assert(psemu_load_mcs(ps, misaligned, sizeof(misaligned)) == PSEMU_ERR_BAD_SIZE);
+
+    /* Directory frame's stored size doesn't match the actual payload. */
+    uint8_t bad_size_field[0x80 + 8192];
+    memcpy(bad_size_field, mcs, sizeof(bad_size_field));
+    bad_size_field[0x04] = (uint8_t)((payload_size - 1) & 0xFFu);
+    assert(psemu_load_mcs(ps, bad_size_field, sizeof(bad_size_field)) == PSEMU_ERR_BAD_FORMAT);
+
+    psemu_destroy(ps);
+    printf("test_psemu_load_mcs_validates_and_unwraps OK\n");
+}
+
+static void test_psemu_load_content_dispatches_by_size(void) {
+    /* psemu_load_content centralizes the .mcr/.mcs/.pss priority dispatch
+       that used to be hand-duplicated in both frontends (and drifted out
+       of sync between them once already, when the priority order changed).
+       Locks in all four outcomes: full card, .mcs, bare .pss, and total
+       garbage. */
+
+    /* Full memory-card image: passed straight to psemu_load_flash_image,
+       not reinterpreted as a Title Sector - a synthesized directory would
+       force 'M','C' at offset 0, so a byte pattern that survives unchanged
+       there proves the raw path was taken. */
+    {
+        psemu_t *ps = make_arm_cpu();
+        static uint8_t card[PSEMU_FLASH_SIZE];
+        memset(card, 0, sizeof(card));
+        card[0] = 0xABu;
+        assert(psemu_load_content(ps, card, sizeof(card)) == PSEMU_OK);
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 0) == 0xABu);
+        psemu_destroy(ps);
+    }
+
+    /* .mcs-shaped input (directory frame + block-aligned payload): unwrapped
+       and synthesized into a directory the same way psemu_load_mcs alone
+       does. */
+    {
+        psemu_t *ps = make_arm_cpu();
+        uint8_t mcs[0x80 + 8192];
+        memset(mcs, 0, sizeof(mcs));
+        mcs[0] = 0x51;
+        uint32_t payload_size = 8192;
+        mcs[0x04] = (uint8_t)(payload_size & 0xFFu);
+        mcs[0x05] = (uint8_t)((payload_size >> 8) & 0xFFu);
+        memcpy(&mcs[0x80 + 0x52], "MCX0", 4);
+        assert(psemu_load_content(ps, mcs, sizeof(mcs)) == PSEMU_OK);
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128) == 0x51u);
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + FLASH_BLOCK_SIZE + 0x52) == 'M');
+        psemu_destroy(ps);
+    }
+
+    /* Bare Title Sector, not shaped like a valid .mcs at all (8192 - 0x80
+       isn't a multiple of FLASH_BLOCK_SIZE, so psemu_load_mcs rejects it
+       on size alone before falling through to psemu_load_app). Still gets
+       the same synthesized-directory treatment .pss always does. */
+    {
+        psemu_t *ps = make_arm_cpu();
+        uint8_t pss[8192];
+        memset(pss, 0, sizeof(pss));
+        memcpy(&pss[0x52], "MCX0", 4);
+        assert(psemu_load_content(ps, pss, sizeof(pss)) == PSEMU_OK);
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128) == 0x51u);
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + FLASH_BLOCK_SIZE + 0x52) == 'M');
+        psemu_destroy(ps);
+    }
+
+    /* Neither shape - too small to be anything. */
+    {
+        psemu_t *ps = make_arm_cpu();
+        uint8_t garbage[50];
+        memset(garbage, 0, sizeof(garbage));
+        assert(psemu_load_content(ps, garbage, sizeof(garbage)) != PSEMU_OK);
+        psemu_destroy(ps);
+    }
+
+    printf("test_psemu_load_content_dispatches_by_size OK\n");
+}
+
 static void test_flash_key_addresses_are_not_data_storage(void) {
     /* A real, confirmed bug found via a real crash report (see
        docs/hardware-notes.md, "Chocobo World event-screen crash"):
@@ -1227,6 +1362,9 @@ int main(void) {
     test_flash_bank_val_remapping();
     test_flash_ctrl_busy_wait_bits();
     test_flash_load_app_synthesizes_directory();
+    test_flash_load_app_rejects_oversized_app();
+    test_psemu_load_mcs_validates_and_unwraps();
+    test_psemu_load_content_dispatches_by_size();
     test_flash_key_addresses_are_not_data_storage();
     test_lcd_mode_dison_and_rotate();
     test_dac_basic();

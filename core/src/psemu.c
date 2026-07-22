@@ -81,6 +81,16 @@ psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t siz
     return PSEMU_OK;
 }
 
+psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size) {
+    if (size == PSEMU_FLASH_SIZE) {
+        return psemu_load_flash_image(ps, data, size);
+    }
+    if (psemu_load_mcs(ps, data, size) == PSEMU_OK) {
+        return PSEMU_OK;
+    }
+    return psemu_load_app(ps, data, size);
+}
+
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons) {
     /* Real hardware asserts a button's interrupt line on every press/release
        edge (see docs/hardware-notes.md), not as a polled level - translate
