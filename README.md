@@ -17,7 +17,7 @@ Prebuilt binaries come in two flavors: a standalone desktop app, and a [libretro
 ```
 pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 ```
-- The second file's **extension doesn't matter** — it's loaded as a full memory-card image (navigate its real BIOS menu with the keyboard, same as real hardware) if its size exactly matches the real flash size; otherwise it's tried as a single raw PSX Title Sector app dump (`.pss`) and, failing that, as a single-save file with a real PS1 directory frame in front of it (`.mcs` — the format DuckStation, MemcardRex, and most other PS1 save managers export a single save as).
+- The second file's **extension doesn't matter** — it's loaded as a full memory-card image (navigate its real BIOS menu with the keyboard, same as real hardware) if its size exactly matches the real flash size; otherwise it's tried as a single-save file with a real PS1 directory frame in front of it (`.mcs` — the format DuckStation, MemcardRex, and most other PS1 save managers export a single save as, and by far the more common of the two in practice) and, failing that, as a bare raw PSX Title Sector app dump (`.pss`).
 - **Double-clicking the .exe directly** (no command line) looks for `bios.bin` and `memcard.mcr` in the same folder as the executable and loads those automatically — rename your BIOS dump and memory-card image to those exact names and drop them next to `pokketstation_desktop.exe` for that to work.
 - **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button.
 - Press **F12** at any time to write a diagnostic report to a log file — see [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
@@ -28,7 +28,7 @@ pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 2. Copy your BIOS dump, **renamed exactly to `pocketstation.bin`**, into RetroArch's **System** directory (Settings → Directory → System/BIOS Directory).
 3. In RetroArch: **Load Core** → select **PokketStation** → **Load Content** → select your app file.
 
-Unlike the desktop app, the libretro core only loads a single app — either a raw PSX Title Sector dump (`.pss`) or that same dump wrapped in one PS1 directory frame (`.mcs`, the single-save export format used by DuckStation, MemcardRex, and most other PS1 save managers) — it does **not** support loading a full memory-card image, so a `.mcr` or `.gme` whole-card dump won't work here even though a raw `.mcr` works with the desktop app. RetroArch's content browser defaults to showing `.pss`/`.mcs` files for this core, though (same as the desktop app) the extension itself isn't actually checked at load time — both formats are tried by content regardless of what the file is named.
+The libretro core loads the same three things the desktop app does, picked the same way — by content, not by the file's extension: a full memory-card image (`.mcr`) if the file's size exactly matches the real flash size, otherwise a single-save `.mcs` file, and failing that a bare raw PSX Title Sector dump (`.pss`). A `.gme` whole-card dump still won't work directly, since it wraps the same 128KB of card data in DexDrive's own container header — strip that header down to the raw 128KB first. RetroArch's content browser defaults to showing `.mcr`/`.mcs`/`.pss` files for this core, though the extension itself isn't actually checked at load time.
 
 Controls use RetroArch's standard RetroPad mapping: D-pad for Up/Down/Left/Right, the **A** button for Fire/Action (remappable in RetroArch's own input settings, same as any other core).
 

@@ -66,6 +66,19 @@ psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size);
    shorter than PSEMU_FLASH_SIZE; the rest of flash is left zeroed. */
 psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t size);
 
+/* Figures out what `data` is by its size/content, not by a file extension,
+   and loads it the right way - the single entry point both frontends
+   should use rather than hand-rolling this dispatch themselves (it used to
+   be duplicated between them, and drifted out of sync once already):
+     - Exactly PSEMU_FLASH_SIZE bytes: a full memory-card image, via
+       psemu_load_flash_image.
+     - Otherwise, tried as a single-save .mcs (psemu_load_mcs) before a bare
+       Title Sector .pss (psemu_load_app) - single-save exports are by far
+       the more common format in the wild, a bare Title Sector dump much
+       less so. Returns the last-attempted loader's status if neither
+       matches. */
+psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size);
+
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons);
 
 /* Runs for approximately `cycles` CPU cycles; returns cycles actually executed. */

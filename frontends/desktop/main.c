@@ -178,13 +178,8 @@ int main(int argc, char **argv) {
         fprintf(stderr, "invalid BIOS image (expected %d bytes)\n", PSEMU_BIOS_SIZE);
         return 1;
     }
-    if (app_size == PSEMU_FLASH_SIZE) {
-        if (psemu_load_flash_image(ps, app, app_size) != PSEMU_OK) {
-            fprintf(stderr, "failed to load memory card image\n");
-            return 1;
-        }
-    } else if (psemu_load_app(ps, app, app_size) != PSEMU_OK && psemu_load_mcs(ps, app, app_size) != PSEMU_OK) {
-        fprintf(stderr, "invalid app image\n");
+    if (psemu_load_content(ps, app, app_size) != PSEMU_OK) {
+        fprintf(stderr, "invalid app or memory-card image\n");
         return 1;
     }
     psemu_reset(ps);
