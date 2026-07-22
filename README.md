@@ -17,7 +17,7 @@ Prebuilt binaries come in two flavors: a standalone desktop app, and a [libretro
 ```
 pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 ```
-- The second file's **extension doesn't matter** — it's loaded as a full memory-card image (navigate its real BIOS menu with the keyboard, same as real hardware) if its size exactly matches the real flash size, or as a single raw PSX Title Sector app dump otherwise.
+- The second file's **extension doesn't matter** — it's loaded as a full memory-card image (navigate its real BIOS menu with the keyboard, same as real hardware) if its size exactly matches the real flash size; otherwise it's tried as a single raw PSX Title Sector app dump (`.pss`) and, failing that, as a single-save file with a real PS1 directory frame in front of it (`.mcs` — the format DuckStation, MemcardRex, and most other PS1 save managers export a single save as).
 - **Double-clicking the .exe directly** (no command line) looks for `bios.bin` and `memcard.mcr` in the same folder as the executable and loads those automatically — rename your BIOS dump and memory-card image to those exact names and drop them next to `pokketstation_desktop.exe` for that to work.
 - **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button.
 - Press **F12** at any time to write a diagnostic report to a log file — see [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
@@ -28,9 +28,13 @@ pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 2. Copy your BIOS dump, **renamed exactly to `pocketstation.bin`**, into RetroArch's **System** directory (Settings → Directory → System/BIOS Directory).
 3. In RetroArch: **Load Core** → select **PokketStation** → **Load Content** → select your app file.
 
-Unlike the desktop app, the libretro core only loads a single raw PSX Title Sector app dump — it does **not** support loading a full memory-card image, so a `.mcr` card dump won't work here even though it works with the desktop app. RetroArch's content browser defaults to showing `.pss` files for this core, though (same as the desktop app) the extension itself isn't actually checked at load time — it's just what the file picker filters to by default.
+Unlike the desktop app, the libretro core only loads a single app — either a raw PSX Title Sector dump (`.pss`) or that same dump wrapped in one PS1 directory frame (`.mcs`, the single-save export format used by DuckStation, MemcardRex, and most other PS1 save managers) — it does **not** support loading a full memory-card image, so a `.mcr` or `.gme` whole-card dump won't work here even though a raw `.mcr` works with the desktop app. RetroArch's content browser defaults to showing `.pss`/`.mcs` files for this core, though (same as the desktop app) the extension itself isn't actually checked at load time — both formats are tried by content regardless of what the file is named.
 
 Controls use RetroArch's standard RetroPad mapping: D-pad for Up/Down/Left/Right, the **A** button for Fire/Action (remappable in RetroArch's own input settings, same as any other core).
+
+### Reaching a single loaded app
+
+A single-app load (`.pss`/`.mcs`, either frontend) boots through the real BIOS the same way a full memory card does — there's no shortcut past it. The real, hardware-confirmed sequence (see `docs/hardware-notes.md`): after the HELLO/heart/beep power-on animation, press **Down** once then **Action** to get past the date/time screen, then **Right** once to move from the clock screen to the app (**Action** launches it from there). Real taps are brief (~40ms) but a deliberate, clean press-and-release reads more reliably than mashing.
 
 ## Layout
 
@@ -100,15 +104,15 @@ Other things worth knowing:
 
 ### Running the desktop app
 
-The built executable lands at `build\frontends\desktop\Debug\pokketstation_desktop.exe` (path depends on your `--config`). It takes two required arguments:
+The built executable lands at `build\Debug\pokketstation_desktop.exe` (path depends on your `--config`). It takes two required arguments:
 ```
-.\build\frontends\desktop\Debug\pokketstation_desktop.exe <bios.bin> <app-or-card-file>
+.\build\Debug\pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 ```
-The second argument's file **extension doesn't matter** — the app picks its mode by file size: a file exactly matching the real flash size is loaded as a full memory-card image (`.mcr`, navigate its real BIOS menu with the keyboard, same as real hardware); anything else is loaded as a single raw PSX Title Sector app dump. Confirmed working with `.mcr` card images; single standalone app dumps should work the same way per the code path, but haven't been separately verified.
+The second argument's file **extension doesn't matter** — the app picks its mode by file size: a file exactly matching the real flash size is loaded as a full memory-card image (`.mcr`, navigate its real BIOS menu with the keyboard, same as real hardware); otherwise it's tried as a single raw PSX Title Sector app dump (`.pss`) and, failing that, as a single-save file with a real PS1 directory frame in front of it (`.mcs`). Both `.mcr` card images and single-app loads are confirmed working end-to-end against a real BIOS and real extracted app dumps — see [docs/hardware-notes.md](docs/hardware-notes.md).
 
 Example of a known-working invocation, using a real BIOS dump and a memory-card image (substitute your own paths — neither file is bundled):
 ```
-.\build\frontends\desktop\Debug\pokketstation_desktop.exe .\bios.bin .\samplememcard.mcr
+.\build\Debug\pokketstation_desktop.exe .\bios.bin .\samplememcard.mcr
 ```
 
 **No PocketStation BIOS is bundled** — it's copyrighted Sony firmware, so you need to supply your own dump extracted from real hardware, along with an app file or memory-card image to run. The libretro core takes its BIOS the same way, but as `pocketstation.bin` placed in RetroArch's system directory instead of a CLI argument.

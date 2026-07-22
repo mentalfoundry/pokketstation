@@ -40,8 +40,22 @@ void psemu_reset(psemu_t *ps);
 /* `data` must be exactly PSEMU_BIOS_SIZE bytes. */
 psemu_status psemu_load_bios(psemu_t *ps, const uint8_t *data, size_t size);
 
-/* Loads a PSX Title Sector app image into flash. See docs/hardware-notes.md. */
+/* Loads a PSX Title Sector app image into a synthesized one-entry memory-
+   card directory at slot 1, so the real BIOS's menu can navigate to and
+   dispatch it exactly as it would from a full card - press Down then
+   Action to get past the date/time screen, then Right then Action to
+   launch (see docs/hardware-notes.md, "App-selection and dispatch"). `size`
+   is capped at 15 blocks' worth (see PSEMU_FLASH_SIZE), one less than a
+   full card, since block 0 is reserved for the synthesized directory. */
 psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size);
+
+/* Unwraps a single-save .mcs file (a real PS1 memory-card directory frame,
+   0x80 bytes, followed by that save's raw data blocks - the same convention
+   DuckStation, MemcardRex, and most other PS1 save tools use for single-save
+   export) and loads the underlying PSX Title Sector the same way
+   psemu_load_app does. `data` must start with the directory frame, not the
+   raw Title Sector body - use psemu_load_app directly for the latter. */
+psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size);
 
 /* Loads a raw FLASH2 image (e.g. a whole memory card dump) directly into
    flash, bypassing psemu_load_app's single-Title-Sector validation. Use

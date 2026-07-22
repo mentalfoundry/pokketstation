@@ -960,6 +960,59 @@ static void test_flash_ctrl_busy_wait_bits(void) {
     printf("test_flash_ctrl_busy_wait_bits OK\n");
 }
 
+static void test_flash_load_app_synthesizes_directory(void) {
+    /* A real, confirmed bug (see docs/hardware-notes.md, "App-selection and
+       dispatch"): the real BIOS's app-selection routine requires FLASH2 to
+       carry a real memory-card directory, not just the app's own bytes at
+       offset 0 - flash_load_app used to write the raw Title Sector straight
+       to offset 0, so a loaded single app could never actually be reached
+       through the real menu. This test locks down the fix: a synthesized
+       one-entry directory at slot 1, with the specific byte (frame offset
+       0x10 = 'P') the real BIOS's menu-browsing code was empirically found
+       to require - see the comment on DIRECTORY_POCKETSTATION_FLAG_OFFSET
+       in flash.c for how that byte was isolated against a real card dump. */
+    psemu_t *ps = make_arm_cpu();
+
+    uint8_t app[2 * 8192];
+    memset(app, 0, sizeof(app));
+    memcpy(&app[0x52], "MCX0", 4);
+    app[0] = 0xAAu;              /* marks the start of block 1's data */
+    app[8192] = 0xBBu;           /* marks the start of block 2's data */
+    assert(psemu_load_app(ps, app, sizeof(app)) == PSEMU_OK);
+
+    /* Card header frame. */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 0x00) == 'M');
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 0x01) == 'C');
+
+    /* Slot 1 (first directory frame, at FLASH2 + 1*128): in-use/first
+       marker, real file size, the PocketStation flag byte, and a link to
+       slot 2 (0-based data-block index 1, since this is a 2-block chain). */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128) == 0x51u);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 128 + 0x04) == sizeof(app));
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128 + 0x10) == 'P');
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 128 + 0x08) == 1u);
+
+    /* Slot 2 (last frame of the chain): end-of-chain marker and sentinel
+       link, no filesize (only the first frame of a file carries it). */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 256) == 0x53u);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 256 + 0x04) == 0u);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 256 + 0x08) == 0xFFFFu);
+
+    /* Slot 3 onward: free, matching a blank real card (see BlankMCD-style
+       real card layout). */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 384) == 0xA0u);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 384 + 0x08) == 0xFFFFu);
+
+    /* The app's own data starts at physical block 1 (right after the
+       directory block), not at offset 0. */
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + FLASH_BLOCK_SIZE) == 0xAAu);
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + FLASH_BLOCK_SIZE + 8192) == 0xBBu);
+    assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + FLASH_BLOCK_SIZE + 0x52) == 'M');
+
+    psemu_destroy(ps);
+    printf("test_flash_load_app_synthesizes_directory OK\n");
+}
+
 static void test_flash_key_addresses_are_not_data_storage(void) {
     /* A real, confirmed bug found via a real crash report (see
        docs/hardware-notes.md, "Chocobo World event-screen crash"):
@@ -1173,6 +1226,7 @@ int main(void) {
     test_flash_bank_select();
     test_flash_bank_val_remapping();
     test_flash_ctrl_busy_wait_bits();
+    test_flash_load_app_synthesizes_directory();
     test_flash_key_addresses_are_not_data_storage();
     test_lcd_mode_dison_and_rotate();
     test_dac_basic();

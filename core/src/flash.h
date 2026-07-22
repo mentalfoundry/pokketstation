@@ -39,7 +39,12 @@ typedef struct flash {
 
 void flash_init(flash_t *flash);
 
-/* Validates and loads a PSX Title Sector app image (see docs/hardware-notes.md). */
+/* Validates a PSX Title Sector app image and loads it into a synthesized
+   one-entry memory-card directory at slot 1, so the real BIOS's
+   app-selection/dispatch routine can actually reach it (see
+   docs/hardware-notes.md, "App-selection and dispatch"). `size` is capped
+   at 15 blocks (DIRECTORY_MAX_APP_BLOCKS), not the full 16, since block 0
+   is reserved for the synthesized directory. */
 psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size);
 
 /* FLASH2: physical flash, unwindowed. */
