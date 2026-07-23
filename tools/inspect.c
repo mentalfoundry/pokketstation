@@ -146,6 +146,13 @@ int main(int argc, char **argv) {
     int button_sim = argc >= 5 ? atoi(argv[4]) : 0;
     uint32_t last_mode = ps->cpu.cpsr & CPSR_MODE_MASK;
     uint32_t last_pc = ps->cpu.r[15];
+    /* TEMPORARY diagnostic: when the app issues SWI 0Ah/0Fh (FlashReadSerial/
+       FlashWriteSerial), remember it so r0 can be printed on the matching
+       SVC->USR return - the real ARM syscall return-value convention -
+       to directly check whether the real BIOS round-trips the full 32-bit
+       F_SN or truncates it somewhere (see docs/hardware-notes.md, "Hardware
+       ID (F_SN)"). */
+    int watch_serial_swi = 0;
     long same_pc_count = 0;
     long fb_changes = 0;
     long fb_prints = 0;
@@ -353,6 +360,181 @@ int main(int argc, char **argv) {
             } else {
                 psemu_set_buttons(ps, 0);
             }
+        } else if (button_sim == 9) {
+            /* Diagnostic: reuse button_sim=3's exact REPEATING launch
+               pattern verbatim through i<6500000 - a single-shot launch
+               (button_sim=8/9's original tail, i.e. press once then go
+               idle) empirically failed to reach dispatch at all for this
+               app (FLASH1 executed 0 instructions), whereas the repeating
+               pattern reliably does (confirmed dispatch at #5,662,765 in
+               earlier traces) - real BIOS input timing apparently needs
+               more than one clean attempt. Once safely past confirmed
+               dispatch, switch to a one-shot RIGHT x7 (real-tap timing)
+               to walk the ID-editing homebrew's on-screen digit cursor from position 0
+               to 7 (its RAM cursor at ip+0x6c cycles 0-7 per disassembly -
+               see docs/hardware-notes.md), then ACTION once - disassembly
+               shows ACTION only does anything at all when that cursor
+               reads exactly 7. */
+            long right_start = 6500000;
+            long tap = 300000;
+            if (i < right_start) {
+                long phase = i % 2500000;
+                uint32_t buttons = 0;
+                if (phase >= 200000 && phase < 350000) {
+                    buttons = PSEMU_BUTTON_DOWN;
+                } else if (phase >= 500000 && phase < 650000) {
+                    buttons = PSEMU_BUTTON_FIRE;
+                } else if (phase >= 900000 && phase < 1050000) {
+                    buttons = PSEMU_BUTTON_RIGHT;
+                } else if (phase >= 1300000 && phase < 1450000) {
+                    buttons = PSEMU_BUTTON_FIRE;
+                }
+                psemu_set_buttons(ps, buttons);
+            } else {
+                /* Driven off the ACTUAL observed cursor value rather than
+                   fixed timing (an earlier fixed-tap-count version sent
+                   one extra RIGHT edge and overshot past 7 back to 0) -
+                   keep tapping RIGHT, with a real-tap cadence, until the
+                   cursor genuinely reads 7, then switch to tapping
+                   ACTION repeatedly so it's not missed by a timing gap. */
+                static long phase_start = -1;
+                static int edited = 0;
+                uint8_t cursor = ps->bus.ram[0x26Cu];
+                if (phase_start < 0 || i - phase_start >= tap) {
+                    phase_start = i;
+                }
+                long phase = i - phase_start;
+                int press = phase < 150000;
+                if (cursor == 7 && !edited) {
+                    /* Actually change the digit (UP) before committing -
+                       otherwise Action just writes back the exact value
+                       already in F_SN, which is indistinguishable from no
+                       write happening at all when only watching for a
+                       value CHANGE. */
+                    psemu_set_buttons(ps, press ? PSEMU_BUTTON_UP : 0);
+                    if (!press && phase >= 150000) {
+                        edited = 1;
+                        phase_start = -1;
+                    }
+                } else {
+                    psemu_set_buttons(ps, press ? (cursor == 7 ? PSEMU_BUTTON_FIRE : PSEMU_BUTTON_RIGHT) : 0);
+                }
+            }
+        }
+
+        /* TEMPORARY diagnostic: watch RAM 0x26C (the digit-edit cursor,
+           per disassembly) and F_SN (via the public getter) for any
+           change, to directly confirm whether the ID-editing homebrew's
+           edit/commit logic actually fires under a given button sequence. */
+        {
+            static uint8_t last_cursor = 0xFFu;
+            static uint32_t last_serial = 0xFFFFFFFFu;
+            static uint32_t last_ram_d8 = 0xFFFFFFFFu;
+            static uint32_t last_ip60 = 0xFFFFFFFFu;
+            static uint32_t last_ip3c = 0xFFFFFFFFu;
+            uint8_t cursor = ps->bus.ram[0x26Cu];
+            uint32_t serial = psemu_get_hardware_id(ps);
+            uint32_t ram_d8 = (uint32_t)ps->bus.ram[0xD8] | ((uint32_t)ps->bus.ram[0xD9] << 8) |
+                               ((uint32_t)ps->bus.ram[0xDA] << 16) | ((uint32_t)ps->bus.ram[0xDB] << 24);
+            /* App-local RAM (ip=0x200 base): +0x60 and +0x3c are the two
+               guard fields the Action-commit routine checks (bxeq lr on
+               either). */
+            uint32_t ip60 = (uint32_t)ps->bus.ram[0x260] | ((uint32_t)ps->bus.ram[0x261] << 8) |
+                             ((uint32_t)ps->bus.ram[0x262] << 16) | ((uint32_t)ps->bus.ram[0x263] << 24);
+            uint32_t ip3c = (uint32_t)ps->bus.ram[0x23C] | ((uint32_t)ps->bus.ram[0x23D] << 8) |
+                             ((uint32_t)ps->bus.ram[0x23E] << 16) | ((uint32_t)ps->bus.ram[0x23F] << 24);
+            if (cursor != last_cursor) {
+                printf("instr #%ld: digit cursor (RAM 0x26C) changed %u -> %u\n", i, last_cursor, cursor);
+                last_cursor = cursor;
+            }
+            if (serial != last_serial) {
+                printf("instr #%ld: F_SN changed 0x%08X -> 0x%08X\n", i, last_serial, serial);
+                last_serial = serial;
+            }
+            if (ram_d8 != last_ram_d8) {
+                printf(
+                    "instr #%ld: RAM[0xD8] (kernel word the homebrew reads via SWI 0x13) changed 0x%08X -> "
+                    "0x%08X, pc=0x%08X\n",
+                    i, last_ram_d8, ram_d8, pc_before);
+                last_ram_d8 = ram_d8;
+            }
+            if (ip60 != last_ip60) {
+                printf(
+                    "instr #%ld: RAM[0x260] (ip+0x60, action-guard 1) changed 0x%08X -> 0x%08X, pc=0x%08X\n", i,
+                    last_ip60, ip60, pc_before);
+                last_ip60 = ip60;
+            }
+            if (ip3c != last_ip3c) {
+                printf(
+                    "instr #%ld: RAM[0x23C] (ip+0x3c, action-guard 2) changed 0x%08X -> 0x%08X, pc=0x%08X\n", i,
+                    last_ip3c, ip3c, pc_before);
+                last_ip3c = ip3c;
+            }
+        }
+
+        /* TEMPORARY diagnostic: does the ID-editing homebrew's post-write
+           feedback function (0x20005f8) actually configure Timer2 (FIQ-driven,
+           per docs/hardware-notes.md) and does DAC output ever follow? */
+        {
+            static uint32_t last_t2_period = 0xFFFFFFFFu, last_t2_ctrl = 0xFFFFFFFFu;
+            static uint32_t last_dac_ctrl = 0xFFFFFFFFu, last_dac_data = 0xFFFFFFFFu;
+            uint32_t t2_period = psemu_bus_read32(&ps->bus, PSEMU_TIMER_BASE + 0x20);
+            uint32_t t2_ctrl = psemu_bus_read32(&ps->bus, PSEMU_TIMER_BASE + 0x28);
+            uint32_t dac_ctrl = psemu_bus_read32(&ps->bus, PSEMU_DAC_BASE + 0x0);
+            uint32_t dac_data = psemu_bus_read32(&ps->bus, PSEMU_DAC_BASE + 0x4);
+            if (t2_period != last_t2_period) {
+                printf(
+                    "instr #%ld: TIMER2 period changed 0x%08X -> 0x%08X, pc=0x%08X\n", i, last_t2_period, t2_period,
+                    pc_before);
+                last_t2_period = t2_period;
+            }
+            if (t2_ctrl != last_t2_ctrl) {
+                printf(
+                    "instr #%ld: TIMER2 control changed 0x%08X -> 0x%08X, pc=0x%08X\n", i, last_t2_ctrl, t2_ctrl,
+                    pc_before);
+                last_t2_ctrl = t2_ctrl;
+            }
+            if (dac_ctrl != last_dac_ctrl) {
+                printf(
+                    "instr #%ld: DAC_CTRL changed 0x%08X -> 0x%08X, pc=0x%08X\n", i, last_dac_ctrl, dac_ctrl,
+                    pc_before);
+                last_dac_ctrl = dac_ctrl;
+            }
+            if (dac_data != last_dac_data) {
+                printf(
+                    "instr #%ld: DAC_DATA changed 0x%08X -> 0x%08X, pc=0x%08X\n", i, last_dac_data, dac_data,
+                    pc_before);
+                last_dac_data = dac_data;
+            }
+        }
+
+        /* TEMPORARY diagnostic: once Timer2 gets enabled by the ID-editing
+           homebrew's feedback routine, does INTC ever actually latch INT_TIMER2
+           (0x2000) into hold/status, and is FIQ masked (CPSR F-bit) or
+           gated out at the INTC enable/mask registers? */
+        {
+            static int timer2_was_enabled = 0;
+            static long last_print = -1000000;
+            int timer2_now_enabled = (psemu_bus_read32(&ps->bus, PSEMU_TIMER_BASE + 0x28) & 4u) != 0;
+            if (timer2_now_enabled && !timer2_was_enabled) {
+                printf(
+                    "instr #%ld: Timer2 just enabled - cpsr=0x%08X (F=%d) intc hold=0x%08X status=0x%08X "
+                    "enable=0x%08X mask=0x%08X\n",
+                    i, ps->cpu.cpsr, (ps->cpu.cpsr & (1u << 6)) != 0, psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 0),
+                    psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 4), psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 8),
+                    psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 0xC));
+            }
+            if (timer2_now_enabled && i - last_print >= 50000) {
+                uint32_t hold = psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 0);
+                if (hold & INT_TIMER2) {
+                    printf(
+                        "instr #%ld: INT_TIMER2 IS SET in hold (0x%08X) - fired in INTC but CPU hasn't taken it "
+                        "yet, cpsr=0x%08X\n",
+                        i, hold, ps->cpu.cpsr);
+                }
+                last_print = i;
+            }
+            timer2_was_enabled = timer2_now_enabled;
         }
 
         if (select_block > 0) {
@@ -583,7 +765,32 @@ int main(int argc, char **argv) {
             printf(
                 "instr #%ld: mode %s -> %s at pc=0x%08X (came from pc=0x%08X)\n", i, mode_name(cpsr_before),
                 mode_name(ps->cpu.cpsr), ps->cpu.r[15], pc_before);
+            if (watch_serial_swi && (cpsr_before & CPSR_MODE_MASK) == ARM_MODE_SVC && new_mode == ARM_MODE_USR) {
+                printf("  >>> FlashReadSerial/WriteSerial return: r0=0x%08X\n", ps->cpu.r[0]);
+                watch_serial_swi = 0;
+            }
             last_mode = new_mode;
+        }
+
+        /* TEMPORARY diagnostic: did execution ever actually reach the
+           button-dispatch block (0x2000284+) or the RAM-resident
+           flash-write routine the homebrew copies to 0x400 and calls via
+           `bx r1`? Confirms/denies whether the write attempt is even
+           being triggered, independent of whether it then succeeds. */
+        {
+            static int seen_dispatch = 0, seen_action_handler = 0, seen_ram_routine = 0;
+            if (!seen_dispatch && pc_before == 0x02000284u) {
+                printf("instr #%ld: reached button-dispatch block (0x2000284)\n", i);
+                seen_dispatch = 1;
+            }
+            if (!seen_action_handler && pc_before == 0x020002E8u) {
+                printf("instr #%ld: reached Action handler (0x20002E8), cursor=%u\n", i, ps->bus.ram[0x26Cu]);
+                seen_action_handler = 1;
+            }
+            if (!seen_ram_routine && pc_before >= 0x00000400u && pc_before < 0x00000490u) {
+                printf("instr #%ld: reached RAM-resident flash-write routine, pc=0x%08X\n", i, pc_before);
+                seen_ram_routine = 1;
+            }
         }
 
         /* An SWI vector entry (pc==8) reached from inside FLASH1 is the app
@@ -598,8 +805,11 @@ int main(int argc, char **argv) {
             uint32_t table_base = psemu_bus_read32(&ps->bus, 0xE0u);
             uint32_t handler = psemu_bus_read32(&ps->bus, table_base + syscall_num * 4u);
             printf(
-                "  app SWI from 0x%08X: syscall #0x%02X, table_base=0x%08X, handler=0x%08X\n", swi_addr,
-                syscall_num, table_base, handler);
+                "  app SWI from 0x%08X: syscall #0x%02X, table_base=0x%08X, handler=0x%08X, r0(arg)=0x%08X\n",
+                swi_addr, syscall_num, table_base, handler, ps->cpu.r[0]);
+            if (syscall_num == 0x0Au || syscall_num == 0x0Fu) {
+                watch_serial_swi = 1;
+            }
         }
 
         if (pc_before == 8 && !dumped_vectors) {

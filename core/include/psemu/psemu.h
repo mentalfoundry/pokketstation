@@ -81,6 +81,42 @@ psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size);
 
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons);
 
+/* The PocketStation's hardware serial number (F_SN, read by real apps via
+   SWI 0Ah/FlashReadSerial). Final Fantasy VIII's Chocobo World reads this
+   when a save/Chocobo is created, masks off the high byte, and uses the
+   last 3 decimal digits of what remains as an "ID" stat that alone
+   determines rank (max HP/weapon value, item-drop odds) - confirmed by
+   disassembling a real copy of the game, see docs/hardware-notes.md.
+   Defaults to the equivalent of "410000D3" (see
+   psemu_parse_hardware_id) - low 24 bits 211, the community-documented
+   best rank, so a fresh Chocobo World save gets top rank out of the box;
+   a frontend may call psemu_set_hardware_id before loading content to
+   restore a previously-persisted value instead (e.g. after it was edited
+   in-session via a homebrew ID-editing tool). */
+#define PSEMU_DEFAULT_HARDWARE_ID (((uint32_t)'A' << 24) | 211u)
+uint32_t psemu_get_hardware_id(const psemu_t *ps);
+void psemu_set_hardware_id(psemu_t *ps, uint32_t id);
+
+/* Human-readable form: exactly 8 plain hex digits (0-9, A-F/a-f), matching
+   exactly what a real homebrew "ID rewriter" tool itself shows and edits
+   on a real PocketStation's screen - the raw F_SN register, one hex
+   nibble per on-screen digit. Confirmed via real-hardware testing that
+   there is no "first digit must be a letter" restriction of any kind - a
+   real unit happily accepts and persists a value like "EEEEEEEE". This is
+   the only form accepted - what you see in a persisted hardware-ID string
+   is exactly the raw value, nothing hidden or translated. (Real units
+   also print a "sticker" form under their front cover - one ASCII letter
+   followed by 8 decimal digits, e.g. "A02374684" - but that's a separate,
+   less-general encoding that can't represent every value the hardware
+   actually allows; converting it is a frontend-level concern, not
+   something this function does.) Returns nonzero and writes *out_id on
+   success, else returns 0 and leaves *out_id unchanged. */
+#define PSEMU_HARDWARE_ID_STRING_SIZE 9 /* 8 hex digits + '\0' */
+int psemu_parse_hardware_id(const char *str, uint32_t *out_id);
+/* Inverse of psemu_parse_hardware_id (canonical 8-hex-digit form only) -
+   `buf` must be at least PSEMU_HARDWARE_ID_STRING_SIZE bytes. */
+void psemu_format_hardware_id(uint32_t id, char *buf, size_t buf_size);
+
 /* Runs for approximately `cycles` CPU cycles; returns cycles actually executed. */
 uint32_t psemu_run(psemu_t *ps, uint32_t cycles);
 

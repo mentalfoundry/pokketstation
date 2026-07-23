@@ -238,6 +238,29 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].cpsr = cpu->cpsr;
     cpu->trace_pos++;
     cpu->total_steps++;
+    /* A REAL, CONFIRMED BUG this session (see docs/hardware-notes.md,
+       "Interrupt controller"): FIQ was never actually delivered
+       by this emulator, for any app, ever - intc_fiq_asserted (intc.c)
+       has always existed and was already verified correct against real
+       hardware's bit-mapping (INT_FIQ_MASK, Timer2/COM), but nothing
+       here ever called it. Real ARM7TDMI checks FIQ before IRQ (FIQ has
+       strictly higher priority in the exception scheme), and it too is
+       level-triggered (the interrupt controller's hold & enable &
+       INT_FIQ_MASK, not a one-shot request) - poll it live every step,
+       mirroring the IRQ check below exactly. */
+    if (!(cpu->cpsr & CPSR_F) && intc_fiq_asserted(cpu->bus->intc)) {
+        /* Return address follows the same "SUBS PC, LR, #4" handler-exit
+           convention IRQ uses: LR_fiq = address of the next instruction + 4. */
+        arm_enter_exception(cpu, ARM_MODE_FIQ, ARM_FIQ_VECTOR, cpu->r[15] + 4u);
+        /* Real ARM7TDMI additionally sets F (not just I) on FIQ entry -
+           unlike IRQ/SWI/aborts, which only ever disable IRQ - to prevent
+           a second FIQ from recursively interrupting the handler before
+           it's had a chance to save state. arm_enter_exception is shared
+           by every exception type and only sets I, so this one extra bit
+           is set here instead of generically. */
+        cpu->cpsr |= CPSR_F;
+        return 1;
+    }
     /* IRQ is level-triggered on real hardware (the interrupt controller's
        hold & enable & INT_IRQ_MASK, not a one-shot request) - poll it live
        every step rather than latching a "pending" flag, so the CPU keeps

@@ -15,12 +15,12 @@
    derived number, because the documentation describes index 0 as
    "hangs hardware" (an invalid/reserved PLL setting) rather than giving
    it a frequency - there's nothing numeric to swap in. Confirmed
-   harmless in practice (see docs/hardware-notes.md): a 20M-instruction
-   real-BIOS trace never once writes CLK_MODE=0, only ever 7/4/3. An
-   even earlier version of this table used values ~2x too high at every
-   index (e.g. "mode 7" read ~7.995MHz) - independently disproved by
-   real-hardware A/B testing (see docs/hardware-notes.md), unrelated to
-   the documentation cross-check done here. */
+   harmless in practice: a 20M-instruction real-BIOS trace never once
+   writes CLK_MODE=0, only ever 7/4/3 (see docs/hardware-notes.md,
+   "CLK_MODE"). An even earlier version of this table used values ~2x
+   too high at every index (e.g. "mode 7" read ~7.995MHz) - independently
+   disproved by real-hardware A/B testing, unrelated to the documentation
+   cross-check done here. */
 static const uint32_t CPU_FREQ[16] = {
     32768u,   63488u,   126976u,  253952u,  507904u,  1015808u, 1998848u, 3997696u,
     7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u,

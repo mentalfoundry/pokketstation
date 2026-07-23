@@ -4,9 +4,13 @@ An open-source Sony PocketStation emulator core, written in portable C, meant to
 
 ## Status
 
-A real PocketStation app (Chocobo World) boots from a real BIOS dump, runs, plays audio, draws its own graphics, and saves without corruption — confirmed across hundreds of millions of instructions of testing with zero unimplemented-opcode hits. The ARM7TDMI interpreter decodes and executes both ARM and Thumb instructions; the memory map, interrupt controller, timers, RTC, flash (including virtual bank-select remapping and real flash-unlock-key protection), DAC/audio, LCD (including `LCD_MODE`/rotation), and the CPU's variable-clock `CLK_MODE` (now using the exact documented per-mode frequency table rather than an approximation) are all wired up and individually verified against real hardware behavior. See [docs/hardware-notes.md](docs/hardware-notes.md) for the full investigation log — what's confirmed, what's still open, and every real bug found and fixed along the way.
+A real PocketStation app (Chocobo World) boots from a real BIOS dump, runs, plays audio, draws its own graphics, and saves without corruption — confirmed across hundreds of millions of instructions of testing with zero unimplemented-opcode hits. Public testing across a range of real apps beyond Chocobo World suggests broad compatibility, though those haven't been individually traced/verified the way Chocobo World has been.
+
+The ARM7TDMI interpreter decodes and executes both ARM and Thumb instructions; the memory map, interrupt controller, timers, RTC, flash (including virtual bank-select remapping and real flash-unlock-key protection), DAC/audio, LCD (including `LCD_MODE`/rotation), and the CPU's variable-clock `CLK_MODE` (now using the exact documented per-mode frequency table rather than an approximation) are all wired up and individually verified against real hardware behavior. See [docs/hardware-notes.md](docs/hardware-notes.md) for the full investigation log — what's confirmed, what's still open, and every real bug found and fixed along the way. 
 
 **Known gaps:** IR communication timing is unverified, per-instruction cycle timing is still approximate rather than cycle-accurate (see `PSEMU_ASSUMED_CPU_HZ` in `docs/hardware-notes.md`), and a handful of edge cases (low-battery detection, `F_BANK_VAL` entries mapping multiple physical blocks to the same virtual slot, the BIOS's pre-remap boot phase) are deliberately simplified — see the "Confirmed real gaps" list at the end of `docs/hardware-notes.md` for specifics.
+
+If you hit a crash or an unrecognized-opcode freeze, please [open an issue](https://github.com/mentalfoundry/pokketstation/issues) — include a [diagnostic report](#diagnostic-reports-for-bug-reports) if you can, it makes tracking down the real bug far easier.
 
 ## Usage
 
@@ -21,6 +25,7 @@ pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 - **Double-clicking the .exe directly** (no command line) looks for `bios.bin` and `memcard.mcr` in the same folder as the executable and loads those automatically — rename your BIOS dump and memory-card image to those exact names and drop them next to `pokketstation_desktop.exe` for that to work.
 - **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button.
 - Press **F12** at any time to write a diagnostic report to a log file — see [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
+- The PocketStation's hardware ID (`F_SN`, which sets Final Fantasy VIII Chocobo World's rank) defaults to the best rank and persists across relaunches in `hardware_id.cfg` next to the executable — see [docs/hardware-notes.md](docs/hardware-notes.md) for the format and how to edit it.
 
 ### Libretro core (RetroArch)
 
@@ -31,6 +36,8 @@ pokketstation_desktop.exe <bios.bin> <app-or-card-file>
 The libretro core loads the same three things the desktop app does, picked the same way — by content, not by the file's extension: a full memory-card image (`.mcr`) if the file's size exactly matches the real flash size, otherwise a single-save `.mcs` file, and failing that a bare raw PSX Title Sector dump (`.pss`). A `.gme` whole-card dump still won't work directly, since it wraps the same 128KB of card data in DexDrive's own container header — strip that header down to the raw 128KB first. RetroArch's content browser defaults to showing `.mcr`/`.mcs`/`.pss` files for this core, though the extension itself isn't actually checked at load time.
 
 Controls use RetroArch's standard RetroPad mapping: D-pad for Up/Down/Left/Right, the **A** button for Fire/Action (remappable in RetroArch's own input settings, same as any other core).
+
+The PocketStation's hardware ID (`F_SN`, which sets Final Fantasy VIII Chocobo World's rank) defaults to the best rank, same as the desktop app, but isn't persisted between sessions — there's no config-file mechanism for this core the way the desktop app has. You can still edit this value during a session however.
 
 ### Reaching a single loaded app
 
@@ -132,7 +139,7 @@ Each report is written to the current directory as `psemu_report_<timestamp>.log
 - If a fault occurred: the exact unrecognized opcode and where it was fetched from
 - The last up to 8192 executed program counters (oldest first), each tagged ARM or Thumb
 
-**When filing a bug report, attach the relevant `psemu_report_*.log` file** along with a description of what you were doing right before it happened — that trace is usually the difference between a bug being fixable and not. These log files are gitignored and never committed to the repo, so don't worry about them showing up in `git status`; just attach them directly to your issue.
+**When filing a bug report, attach the relevant `psemu_report_*.log` file** along with a description of what you were doing right before it happened — that trace is usually the difference between a bug being fixable and not.
 
 ## License
 
