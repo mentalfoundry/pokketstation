@@ -4,11 +4,12 @@
 
 #include "cpu.h"
 
-/* TEMPORARY diagnostic flag - see cpu.h's psemu_debug_current_pc. Off by
-   default so it costs nothing in normal use; tools/inspect.c flips it on
-   to log every real INTC access with its real PC, since static
+/* Diagnostic flag - see cpu.h's psemu_debug_current_pc. Off by default so
+   it costs nothing in normal use; tools/inspect.c's `intctrace` flag turns
+   it on to log every real INTC access with its real PC, since static
    disassembly can't reliably tell ARM from Thumb code without tracking
-   runtime mode. Remove once the button-input investigation is resolved. */
+   runtime mode. Kept as permanent diagnostic infrastructure, not tied to
+   any single investigation. */
 int psemu_intc_trace_enabled = 0;
 
 static const char *offset_name(uint32_t word_index) {

@@ -1,5 +1,6 @@
 #include "psemu_internal.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -91,6 +92,70 @@ psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size) {
     return psemu_load_app(ps, data, size);
 }
 
+uint32_t psemu_get_hardware_id(const psemu_t *ps) {
+    return flash_get_serial(&ps->flash);
+}
+
+void psemu_set_hardware_id(psemu_t *ps, uint32_t id) {
+    flash_set_serial(&ps->flash, id);
+}
+
+static int hex_digit_value(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    return -1;
+}
+
+int psemu_parse_hardware_id(const char *str, uint32_t *out_id) {
+    /* The only accepted form: exactly 8 plain hex digits (0-9, A-F/a-f) -
+       real hardware has no "first digit must be a letter" restriction at
+       all (confirmed via real-hardware testing: a real ID-editing
+       homebrew happily writes and persists a value like "EEEEEEEE"). This
+       is also exactly what that homebrew itself displays and edits: 8 raw
+       hex nibbles, nothing more structured than that - deliberately not also accepting
+       the letter+8-decimal-digit "sticker" form real units print under
+       their front cover, so this file is what-you-see-is-what-you-get
+       rather than hiding a second, less-general encoding inside it; a
+       frontend wanting to accept sticker-format input directly is free to
+       convert it before calling this, but that's a frontend-level
+       convenience, not something baked into the canonical format itself. */
+    uint32_t value;
+    int i;
+
+    if (!str) {
+        return 0;
+    }
+    value = 0;
+    for (i = 0; i < 8; i++) {
+        int d = hex_digit_value(str[i]);
+        if (d < 0) {
+            return 0;
+        }
+        value = (value << 4) | (uint32_t)d;
+    }
+    if (str[8] != '\0') {
+        return 0;
+    }
+    *out_id = value;
+    return 1;
+}
+
+void psemu_format_hardware_id(uint32_t id, char *buf, size_t buf_size) {
+    /* Canonical form (see psemu_parse_hardware_id): 8 plain hex digits,
+       matching a real ID-editing homebrew's own on-screen representation
+       exactly and able to round-trip every value the real hardware actually allows -
+       unlike the letter+8-decimal "sticker" form, which cannot represent
+       a high byte outside A-Z/a-z at all. */
+    snprintf(buf, buf_size, "%08X", (unsigned)id);
+}
+
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons) {
     /* Real hardware asserts a button's interrupt line on every press/release
        edge (see docs/hardware-notes.md), not as a polled level - translate
@@ -135,10 +200,8 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
         return 0;
     }
     /* `cycles` is a time budget expressed at the reference clock rate
-       PSEMU_ASSUMED_CPU_HZ (see dac.h). This function's history is worth
-       knowing (see docs/hardware-notes.md for the full story) - it has
-       gone back and forth on whether Timer should track CLK_MODE or be
-       pinned to real time, and landed here:
+       PSEMU_ASSUMED_CPU_HZ (see dac.h). See docs/hardware-notes.md,
+       "CLK_MODE", for the summary; here's the reasoning in full:
 
        Timer follows raw, CLK_MODE-scaled step_cycles - real timers are
        clocked by the System Clock (i.e. genuinely tied to the CPU's

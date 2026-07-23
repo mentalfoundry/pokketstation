@@ -303,18 +303,46 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
     if (load) {
         uint32_t value;
         switch (sh) {
-        case 1:
-            value = psemu_bus_read16(cpu->bus, address & ~1u);
-            break; /* LDRH */
+        case 1: { /* LDRH */
+            /* A real, confirmed ARM7TDMI hardware quirk (documented for the
+               same core in GBA homebrew circles, and directly confirmed
+               here against a real app - see docs/hardware-notes.md,
+               "CPU"): a misaligned halfword read
+               (address bit0 set) isn't just silently rounded down to the
+               halfword below - real silicon rotates the loaded halfword
+               right by 8 bits (swaps its two bytes) before it reaches the
+               register. This emulator used to just read the aligned
+               halfword with no rotation, which is indistinguishable from
+               the odd-address read for callers who mask off the high
+               byte - exactly the pattern a real PocketStation homebrew's
+               font-glyph routine relies on (LDRH with post-increment #1,
+               masked to the low byte, to walk a byte-packed table one
+               byte at a time) - so every other byte came out wrong. */
+            uint16_t h = psemu_bus_read16(cpu->bus, address & ~1u);
+            if (address & 1u) {
+                h = (uint16_t)((h >> 8) | (h << 8));
+            }
+            value = h;
+            break;
+        }
         case 2: {
             int8_t b = (int8_t)psemu_bus_read8(cpu->bus, address);
             value = (uint32_t)(int32_t)b;
             break; /* LDRSB */
         }
-        case 3: {
-            int16_t h = (int16_t)psemu_bus_read16(cpu->bus, address & ~1u);
-            value = (uint32_t)(int32_t)h;
-            break; /* LDRSH */
+        case 3: { /* LDRSH */
+            if (address & 1u) {
+                /* Real ARM7TDMI silicon doesn't rotate-and-sign-extend a
+                   misaligned LDRSH the way LDRH rotates - it behaves as a
+                   sign-extended BYTE read (LDRSB) from the odd address
+                   instead. Same documented quirk family as LDRH above. */
+                int8_t b = (int8_t)psemu_bus_read8(cpu->bus, address);
+                value = (uint32_t)(int32_t)b;
+            } else {
+                int16_t h = (int16_t)psemu_bus_read16(cpu->bus, address);
+                value = (uint32_t)(int32_t)h;
+            }
+            break;
         }
         default:
             value = 0;

@@ -14,11 +14,10 @@
 #include "rtc.h"
 #include "timer.h"
 
-/* TEMPORARY diagnostic flag - see intc.c's psemu_intc_trace_enabled for the
-   same pattern. tools/inspect.c flips this on to log every real CLK_MODE
-   and DAC_CTRL write with its real PC - used to confirm the real BIOS
-   raises CLK_MODE during audio playback (see clk.h/docs/hardware-notes.md).
-   Remove once the audio/animation-speed investigation is resolved. */
+/* Diagnostic flag - see intc.c's psemu_intc_trace_enabled for the same
+   pattern. tools/inspect.c's `clktrace` flag turns this on to log every
+   real CLK_MODE and DAC_CTRL write with its real PC (see docs/hardware-
+   notes.md, "CLK_MODE"). Kept as permanent diagnostic infrastructure. */
 int psemu_clk_trace_enabled = 0;
 
 void psemu_bus_init(

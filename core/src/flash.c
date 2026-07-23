@@ -39,6 +39,22 @@ void flash_init(flash_t *flash) {
     flash->bank_mask = 0;
     flash->last_command = 0;
     memset(flash->bank_val, 0, sizeof(flash->bank_val));
+    flash->f_sn_lo = (uint16_t)(FLASH_DEFAULT_SERIAL & 0xFFFFu);
+    flash->f_sn_hi = (uint16_t)((FLASH_DEFAULT_SERIAL >> 16) & 0xFFFFu);
+    /* nocash's documented reset default (001Ah) - unrelated to the ID
+       feature, just a sane starting value for a register FlashWriteSerial
+       rewrites verbatim rather than ever computing. */
+    flash->f_cal = 0x001Au;
+    flash->unlock_step = 0;
+}
+
+uint32_t flash_get_serial(const flash_t *flash) {
+    return ((uint32_t)flash->f_sn_hi << 16) | flash->f_sn_lo;
+}
+
+void flash_set_serial(flash_t *flash, uint32_t serial) {
+    flash->f_sn_lo = (uint16_t)(serial & 0xFFFFu);
+    flash->f_sn_hi = (uint16_t)((serial >> 16) & 0xFFFFu);
 }
 
 static uint8_t directory_frame_xor(const uint8_t *frame) {
@@ -113,7 +129,7 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
    addresses as unlock commands rather than passing them through to the
    data array, so the byte physically "at" that address is unaffected. A
    REAL, CONFIRMED BUG found via a real crash report (see
-   docs/hardware-notes.md, "Chocobo World event-screen crash"): this
+   docs/hardware-notes.md, "Flash memory"): this
    emulator had no such interception, so every real flash-write
    operation permanently corrupted a live data byte at whichever
    physical offset happened to numerically coincide with these two fixed
@@ -133,15 +149,94 @@ static int flash_is_unlock_key_offset(uint32_t offset) {
            offset == FLASH_KEY2_OFFSET + 1u;
 }
 
+/* Real hardware's WRITE-side address for F_SN/F_CAL - distinct from where
+   the value is READ from (F_EXTRA, FLASH_CTRL+0x300, see F_SN_LO_OFFSET/
+   F_SN_HI_OFFSET/F_CAL_OFFSET above). Confirmed two ways: psx-spx
+   documents "[8000000h]=new F_SN_LO value [8000002h]=new F_SN_HI value",
+   and disassembling a real ID-editing homebrew's flash-write routine
+   shows it performs the real F_KEY1/F_KEY2 unlock sequence and then
+   writes the new serial to physical offset 0/2, F_CAL to offset 8 -
+   confirmed working on real retail hardware, per real-hardware testing
+   this session. See docs/hardware-notes.md, "Hardware ID (F_SN)",
+   for the full investigation. */
+#define FLASH_HEADER_WRITE_SN_LO_OFFSET 0x0000u
+#define FLASH_HEADER_WRITE_SN_HI_OFFSET 0x0002u
+#define FLASH_HEADER_WRITE_CAL_OFFSET 0x0008u
+
+static int flash_is_header_write_offset(uint32_t offset) {
+    return offset == FLASH_HEADER_WRITE_SN_LO_OFFSET || offset == FLASH_HEADER_WRITE_SN_LO_OFFSET + 1u ||
+           offset == FLASH_HEADER_WRITE_SN_HI_OFFSET || offset == FLASH_HEADER_WRITE_SN_HI_OFFSET + 1u ||
+           offset == FLASH_HEADER_WRITE_CAL_OFFSET || offset == FLASH_HEADER_WRITE_CAL_OFFSET + 1u;
+}
+
 uint8_t flash_read8(flash_t *flash, uint32_t addr) {
     return flash->data[addr % PSEMU_FLASH_SIZE];
 }
 
+/* Physical offset 0/2/8 doubles as ordinary card-data storage (block 0's
+   directory header, in the normal case) AND as the real write-side
+   target for F_SN/F_CAL - which one a write means depends on whether it
+   was just armed by the real 3-step unlock sequence (see
+   flash_is_unlock_key_offset's comment and FLASH_HEADER_WRITE_SN_LO_OFFSET
+   above), not on the address alone. `unlock_step` (see flash.h) tracks
+   progress through that sequence purely by WHICH key address is hit next
+   (matching how this emulator has always treated these as commands, not
+   data - real values aren't validated), armed once all 3 steps land in
+   order. Deliberately gated this way rather than an unconditional address
+   alias: Chocobo World's own real save-write mechanism is independently
+   confirmed (see the F_KEY1/F_KEY2 corruption bug above) to use this same
+   unlock-then-write-FLASH2 mechanism for its own save data, so an
+   unconditional alias would risk misrouting a legitimate data write that
+   happens to land on offset 0/2/8. Stays armed across multiple writes
+   (a real header update is 3 separate halfword writes - F_SN_LO, F_SN_HI,
+   F_CAL - after a single unlock), and disarms on the first write that
+   ISN'T one of those three offsets, signaling the write session moved on
+   to unrelated data. */
 void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
     uint32_t offset = addr % PSEMU_FLASH_SIZE;
+
     if (flash_is_unlock_key_offset(offset)) {
+        /* A real key write is one 16-bit halfword (psemu_bus_write16,
+           always low byte then high byte - see its own definition and
+           exec_halfword_transfer's STRH path, the only real way these
+           get written) - psemu_bus_write8 sees that as two separate
+           calls. Only the low byte (the base offset, not +1) advances
+           `unlock_step`; the high byte is just the second half of the
+           same real write and must be a no-op here, not a fresh
+           (mismatched, step-resetting) event of its own. */
+        int is_high_byte = offset == FLASH_KEY1_OFFSET + 1u || offset == FLASH_KEY2_OFFSET + 1u;
+        int is_key2 = offset == FLASH_KEY2_OFFSET;
+        int is_key1 = offset == FLASH_KEY1_OFFSET;
+        if (is_high_byte) {
+            return;
+        }
+        if (flash->unlock_step == 0 && is_key2) {
+            flash->unlock_step = 1;
+        } else if (flash->unlock_step == 1 && is_key1) {
+            flash->unlock_step = 2;
+        } else if (flash->unlock_step == 2 && is_key2) {
+            flash->unlock_step = 3; /* armed */
+        } else {
+            flash->unlock_step = 0;
+        }
         return;
     }
+
+    if (flash->unlock_step == 3 && flash_is_header_write_offset(offset)) {
+        if (offset == FLASH_HEADER_WRITE_SN_LO_OFFSET || offset == FLASH_HEADER_WRITE_SN_LO_OFFSET + 1u) {
+            uint32_t shift = (offset - FLASH_HEADER_WRITE_SN_LO_OFFSET) * 8u;
+            flash->f_sn_lo = (uint16_t)((flash->f_sn_lo & ~(0xFFu << shift)) | ((uint32_t)value << shift));
+        } else if (offset == FLASH_HEADER_WRITE_SN_HI_OFFSET || offset == FLASH_HEADER_WRITE_SN_HI_OFFSET + 1u) {
+            uint32_t shift = (offset - FLASH_HEADER_WRITE_SN_HI_OFFSET) * 8u;
+            flash->f_sn_hi = (uint16_t)((flash->f_sn_hi & ~(0xFFu << shift)) | ((uint32_t)value << shift));
+        } else {
+            uint32_t shift = (offset - FLASH_HEADER_WRITE_CAL_OFFSET) * 8u;
+            flash->f_cal = (uint16_t)((flash->f_cal & ~(0xFFu << shift)) | ((uint32_t)value << shift));
+        }
+        return;
+    }
+
+    flash->unlock_step = 0;
     flash->data[offset] = value;
 }
 
@@ -209,6 +304,32 @@ uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {
         return (uint8_t)(flash->bank_val[bank_index] >> ((offset % 4u) * 8u));
     }
 
+    /* F_EXTRA (see flash.h): F_SN_LO/F_SN_HI/F_CAL are real, backed
+       registers within it; every other byte in the 256-byte region is
+       genuinely unknown/unused and reads back 0, same as nocash's own
+       documented defaults for the bytes it didn't identify. */
+    if (offset == FLASH_SN_LO_OFFSET || offset == FLASH_SN_LO_OFFSET + 1u) {
+        return (uint8_t)(flash->f_sn_lo >> ((offset - FLASH_SN_LO_OFFSET) * 8u));
+    }
+    if (offset == FLASH_SN_HI_OFFSET || offset == FLASH_SN_HI_OFFSET + 1u) {
+        return (uint8_t)(flash->f_sn_hi >> ((offset - FLASH_SN_HI_OFFSET) * 8u));
+    }
+    if (offset == FLASH_CAL_OFFSET || offset == FLASH_CAL_OFFSET + 1u) {
+        return (uint8_t)(flash->f_cal >> ((offset - FLASH_CAL_OFFSET) * 8u));
+    }
+    if (offset >= FLASH_EXTRA_OFFSET && offset < FLASH_EXTRA_OFFSET + FLASH_EXTRA_SPAN) {
+        return 0u;
+    }
+    /* Gap between F_BANK_VAL's end (+0x140) and F_EXTRA's start (+0x300):
+       genuinely unmapped/unknown, same as before this span was extended -
+       must NOT fall into the word_index switch below (which existed only
+       to cover +0x0/+0x4/+0x8/+0x10 and would otherwise wrongly mirror
+       last_command across this whole gap now that FLASH_CTRL_SPAN reaches
+       past it). */
+    if (offset >= 0x140u) {
+        return 0u;
+    }
+
     word_index = offset / 4u;
     if (word_index == 2u) {
         reg = flash->bank_mask;
@@ -248,6 +369,33 @@ void flash_ctrl_write8(flash_t *flash, uint32_t offset, uint8_t value) {
         flash->bank_val[bank_index] =
             (flash->bank_val[bank_index] & ~(0xFFu << bank_shift)) | ((uint32_t)value << bank_shift);
         return;
+    }
+
+    /* F_EXTRA: see flash_ctrl_read8. FlashWriteSerial (SWI 0Fh) is what a
+       real app uses to change F_SN on real hardware - direct writes here
+       model the same effect at the register level, which is what actually
+       matters for an ID-editing homebrew that pokes these bytes itself
+       rather than going through the SWI. */
+    if (offset == FLASH_SN_LO_OFFSET || offset == FLASH_SN_LO_OFFSET + 1u) {
+        uint32_t extra_shift = (offset - FLASH_SN_LO_OFFSET) * 8u;
+        flash->f_sn_lo = (uint16_t)((flash->f_sn_lo & ~(0xFFu << extra_shift)) | ((uint32_t)value << extra_shift));
+        return;
+    }
+    if (offset == FLASH_SN_HI_OFFSET || offset == FLASH_SN_HI_OFFSET + 1u) {
+        uint32_t extra_shift = (offset - FLASH_SN_HI_OFFSET) * 8u;
+        flash->f_sn_hi = (uint16_t)((flash->f_sn_hi & ~(0xFFu << extra_shift)) | ((uint32_t)value << extra_shift));
+        return;
+    }
+    if (offset == FLASH_CAL_OFFSET || offset == FLASH_CAL_OFFSET + 1u) {
+        uint32_t extra_shift = (offset - FLASH_CAL_OFFSET) * 8u;
+        flash->f_cal = (uint16_t)((flash->f_cal & ~(0xFFu << extra_shift)) | ((uint32_t)value << extra_shift));
+        return;
+    }
+    if (offset >= FLASH_EXTRA_OFFSET && offset < FLASH_EXTRA_OFFSET + FLASH_EXTRA_SPAN) {
+        return; /* unknown/reserved F_EXTRA byte - ignored */
+    }
+    if (offset >= 0x140u) {
+        return; /* gap between F_BANK_VAL and F_EXTRA - genuinely unmapped */
     }
 
     reg_index = offset / 4u;

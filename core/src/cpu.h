@@ -23,6 +23,7 @@
 #define ARM_MODE_SYS 0x1Fu
 
 #define ARM_IRQ_VECTOR 0x18u
+#define ARM_FIQ_VECTOR 0x1Cu
 
 /* Bank slots: 0=fiq, 1=irq, 2=svc, 3=abt, 4=und, 5=usr/sys (shared, per spec). */
 #define ARM_BANK_COUNT 6
@@ -71,12 +72,15 @@ void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector);
 /* Executes one instruction, returns cycles consumed (approximate: 1 per instruction for now). */
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu);
 
-/* TEMPORARY diagnostic hook (see intc.c's psemu_intc_trace_enabled): the PC
-   of the instruction currently executing, updated at the top of every
-   arm7tdmi_step. Lets intc_read8/write8 log real accesses with their real
-   PC and CPU mode, since a real BIOS mixes ARM/Thumb code in a way that
-   defeats static disassembly without mode-tracking. Remove once the
-   button-input investigation in docs/hardware-notes.md is resolved. */
+/* Diagnostic hook (see intc.c's psemu_intc_trace_enabled and similar
+   opt-in trace flags elsewhere): the PC of the instruction currently
+   executing, updated at the top of every arm7tdmi_step. Lets register
+   read/write traces (intc.c, memory.c's CLK_MODE/DAC_CTRL logging,
+   tools/inspect.c) log real accesses with their real PC and CPU mode,
+   since a real BIOS mixes ARM/Thumb code in a way that defeats static
+   disassembly without mode-tracking. Originally added for one specific
+   investigation (see docs/hardware-notes.md); kept as permanent,
+   general-purpose diagnostic infrastructure since. */
 extern uint32_t psemu_debug_current_pc;
 
 /* Shared helpers used by arm_exec.c / thumb_exec.c, implemented in cpu.c. */

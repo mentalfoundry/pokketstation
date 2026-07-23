@@ -69,6 +69,69 @@ static void write_diagnostic_report(
     fprintf(stderr, "psemu: wrote diagnostic report to %s\n", path);
 }
 
+/* Hardware ID (F_SN, see psemu.h) persistence: the core's own default
+   (0x410000D3, "410000D3" in hex form) already gives every fresh Chocobo
+   World save the best rank, but a homebrew ID-editing tool can change it
+   in-session - without saving that back somewhere, every relaunch would
+   silently lose the edit and revert to the default. There's no other persistent store for this (it lives in a
+   flash "header" region outside the ordinary 128KB card image, so it
+   isn't part of any .mcr/.mcs file), so the desktop frontend keeps its
+   own small config file next to the executable. Stored as exactly 8
+   plain hex digits - the same form a real "ID rewriter" homebrew itself
+   displays and edits (see psemu_parse_hardware_id's comment in psemu.h -
+   confirmed via real hardware there's no "first digit must be a letter"
+   restriction, e.g. a real unit accepts and persists "EEEEEEEE") - and
+   nothing else: what's in the file is exactly the raw value, with no
+   alternate/translated format silently also accepted. A real unit's
+   printed "sticker" ID (one letter + 8 decimal digits, e.g. "A02374684")
+   is a different, less-general encoding of the same underlying value;
+   converting one to the other, if ever wanted, belongs as a small
+   standalone desktop-app feature, not hidden inside this file's format. */
+#define HARDWARE_ID_CONFIG_NAME "hardware_id.cfg"
+
+static void load_hardware_id_config(psemu_t *ps, const char *path) {
+    FILE *f = fopen(path, "r");
+    char line[64] = {0};
+    uint32_t id;
+    if (!f) {
+        return;
+    }
+    /* psemu_parse_hardware_id expects exactly 8 hex digits and nothing
+       else - strip fgets' trailing newline (and a preceding \r, in case
+       the file was saved with Windows line endings) before parsing.
+       Leaves `line` as an empty string (rejected by
+       psemu_parse_hardware_id below) if fgets fails, e.g. an empty
+       file. */
+    if (fgets(line, sizeof(line), f)) {
+        size_t len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
+            line[--len] = '\0';
+        }
+    }
+    if (psemu_parse_hardware_id(line, &id)) {
+        psemu_set_hardware_id(ps, id);
+    } else {
+        fprintf(
+            stderr,
+            "psemu: couldn't parse hardware ID from %s (expected exactly 8 hex digits, e.g. \"EEEEEEEE\") - "
+            "ignoring, using the default\n",
+            path);
+    }
+    fclose(f);
+}
+
+static void save_hardware_id_config(const psemu_t *ps, const char *path) {
+    char buf[PSEMU_HARDWARE_ID_STRING_SIZE];
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "psemu: failed to persist hardware ID to %s\n", path);
+        return;
+    }
+    psemu_format_hardware_id(psemu_get_hardware_id(ps), buf, sizeof(buf));
+    fprintf(f, "%s\n", buf);
+    fclose(f);
+}
+
 static uint8_t *read_file(const char *path, size_t *out_size) {
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -113,9 +176,18 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels) {
 int main(int argc, char **argv) {
     char default_bios_path[1024];
     char default_app_path[1024];
+    char exe_dir[900];
+    char hwid_config_path[1024];
     const char *bios_path;
     const char *app_path;
     int using_defaults = 0;
+
+    /* Computed regardless of how bios/app paths were given below - the
+       hardware-ID config file (see load_hardware_id_config) always lives
+       next to the executable, not next to whatever content path the user
+       passed on the command line. */
+    get_exe_dir(argv[0], exe_dir, sizeof(exe_dir));
+    join_path(hwid_config_path, sizeof(hwid_config_path), exe_dir, HARDWARE_ID_CONFIG_NAME);
 
     if (argc >= 3) {
         bios_path = argv[1];
@@ -125,8 +197,6 @@ int main(int argc, char **argv) {
            .exe rather than a terminal invocation - fall back to looking
            for a BIOS dump and memory-card image sitting next to it,
            since there's no command line to pass paths on. */
-        char exe_dir[900];
-        get_exe_dir(argv[0], exe_dir, sizeof(exe_dir));
         join_path(default_bios_path, sizeof(default_bios_path), exe_dir, "bios.bin");
         join_path(default_app_path, sizeof(default_app_path), exe_dir, "memcard.mcr");
         bios_path = default_bios_path;
@@ -174,6 +244,7 @@ int main(int argc, char **argv) {
     fprintf(stderr, "psemu: press F12 at any time to write a diagnostic report to a psemu_report_*.log file\n");
 
     psemu_t *ps = psemu_create();
+    load_hardware_id_config(ps, hwid_config_path);
     if (psemu_load_bios(ps, bios, bios_size) != PSEMU_OK) {
         fprintf(stderr, "invalid BIOS image (expected %d bytes)\n", PSEMU_BIOS_SIZE);
         return 1;
@@ -271,20 +342,23 @@ int main(int argc, char **argv) {
            one uncalibrated constant to another: real-hardware testing
            showed that "fix" made on-screen blinking visibly too fast.
            Real hardware genuinely runs at a variable clock (up to
-           ~7.995MHz, see the CPU_FREQ table referenced in
-           docs/hardware-notes.md), and this emulator doesn't model
-           per-instruction cycle counts or CLK_MODE at all, so any single
-           fixed rate is an approximation - 33000/frame is kept here
-           specifically because it's the value empirically confirmed to
-           look right, not because it's independently derived. See
-           dac.h's PSEMU_ASSUMED_CPU_HZ for the matching audio-rate
-           conversion (33000 * 32) - keep both in sync if this ever
-           changes. */
+           ~7.995MHz, see the CPU_FREQ table in core/src/clk.c, and
+           docs/hardware-notes.md, "CLK_MODE") - psemu_run does scale its
+           overall throughput by the app's currently-programmed CLK_MODE,
+           but not true per-instruction cycle costs (still approximate,
+           see "Known open questions" in docs/hardware-notes.md), so any
+           single fixed per-frame budget is itself still an approximation
+           on top of that - 33000/frame is kept here specifically because
+           it's the value empirically confirmed to look right, not because
+           it's independently derived. See dac.h's PSEMU_ASSUMED_CPU_HZ
+           for the matching audio-rate conversion (33000 * 32) - keep both
+           in sync if this ever changes. */
         /* If the CPU has run into an opcode this emulator doesn't
            recognize, register/memory state is no longer meaningful - a
            real, confirmed bug found this way (see docs/hardware-notes.md,
-           "Chocobo World event-screen crash") reaches this after ~1.3
-           billion instructions of otherwise-correct real gameplay, so
+           "Known open questions" - "Chocobo World event-screen crash")
+           reaches this after ~1.3 billion instructions of otherwise-correct
+           real gameplay, so
            this can't be assumed harmless just because it hasn't happened
            yet. Stop stepping the CPU once this trips (freezing on the
            last good frame) instead of silently continuing to feed it
@@ -324,6 +398,10 @@ int main(int argc, char **argv) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
+
+    /* Persists any in-session hardware-ID edit (e.g. via a homebrew ID
+       editor) for next launch - see load_hardware_id_config's comment. */
+    save_hardware_id_config(ps, hwid_config_path);
 
     psemu_destroy(ps);
     free(bios);

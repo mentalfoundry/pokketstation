@@ -185,6 +185,68 @@ static void test_arm_memory(void) {
     printf("test_arm_memory OK\n");
 }
 
+static void test_arm_ldrh_misaligned_quirks(void) {
+    /* A real, confirmed ARM7TDMI hardware quirk (see exec_halfword_transfer
+       in arm_exec.c and docs/hardware-notes.md, "CPU"):
+       a misaligned halfword load doesn't just silently round down to the
+       aligned halfword below it - real silicon rotates the loaded LDRH
+       value right by 8 bits (swapping its two bytes), while a misaligned
+       LDRSH instead behaves as a sign-extended BYTE load (LDRSB) from that
+       same odd address. Found via a real PocketStation ID-editing
+       homebrew's font-glyph routine, which reads a byte-packed table
+       via `LDRH Rd,[Rn],#1` (post-increment by 1, not 2) masked to the low
+       byte - a real, working idiom on real hardware that depends entirely
+       on this rotation to recover each individual byte; without it, every
+       other byte read came back wrong, corrupting every glyph drawn. */
+    psemu_t *ps = make_arm_cpu();
+
+    psemu_bus_write8(&ps->bus, 0x100, 0x11u);
+    psemu_bus_write8(&ps->bus, 0x101, 0x22u);
+    psemu_bus_write8(&ps->bus, 0x102, 0x33u);
+    psemu_bus_write8(&ps->bus, 0x103, 0x80u);
+    ps->cpu.r[0] = 0x100;
+
+    /* LDRH R1, [R0] - aligned (address 0x100): plain halfword read, no
+       rotation - regression safety that the ordinary case is unaffected. */
+    uint32_t ldrh_even = (0xEu << 28) | (1u << 24) | (1u << 23) | (1u << 22) | (1u << 20) | (0u << 16) | (1u << 12) |
+                          (0u << 8) | (1u << 7) | (1u << 5) | (1u << 4) | 0u;
+    put32(ps, 0, ldrh_even);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[1] == 0x2211u);
+
+    /* LDRH R2, [R0, #1] - misaligned (address 0x101): rotates the
+       aligned-down halfword (0x2211) right by 8 -> 0x1122, putting the
+       byte actually at the odd address (0x22) in the low 8 bits, matching
+       what the real font routine's byte-wise reader expects. */
+    uint32_t ldrh_odd = (0xEu << 28) | (1u << 24) | (1u << 23) | (1u << 22) | (1u << 20) | (0u << 16) | (2u << 12) |
+                         (0u << 8) | (1u << 7) | (1u << 5) | (1u << 4) | 1u;
+    put32(ps, 4, ldrh_odd);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[2] == 0x1122u);
+    assert((ps->cpu.r[2] & 0xFFu) == 0x22u);
+
+    /* LDRSH R3, [R0] - aligned (address 0x100): ordinary signed halfword
+       read, unaffected (0x2211's sign bit is clear). */
+    uint32_t ldrsh_even = (0xEu << 28) | (1u << 24) | (1u << 23) | (1u << 22) | (1u << 20) | (0u << 16) |
+                           (3u << 12) | (0u << 8) | (1u << 7) | (1u << 6) | (1u << 5) | (1u << 4) | 0u;
+    put32(ps, 8, ldrsh_even);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[3] == 0x00002211u);
+
+    /* LDRSH R4, [R0, #3] - misaligned (address 0x103): behaves as a
+       sign-extended BYTE load from 0x103 (0x80, sign bit set), NOT a
+       rotated halfword read - real hardware's documented divergence from
+       LDRH's rotation behavior above. */
+    uint32_t ldrsh_odd = (0xEu << 28) | (1u << 24) | (1u << 23) | (1u << 22) | (1u << 20) | (0u << 16) |
+                          (4u << 12) | (0u << 8) | (1u << 7) | (1u << 6) | (1u << 5) | (1u << 4) | 3u;
+    put32(ps, 12, ldrsh_odd);
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[4] == 0xFFFFFF80u);
+
+    psemu_destroy(ps);
+    printf("test_arm_ldrh_misaligned_quirks OK\n");
+}
+
 static void test_arm_control_flow(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -666,6 +728,96 @@ static void test_timer_and_irq(void) {
     printf("test_timer_and_irq OK\n");
 }
 
+static void test_fiq_delivery_and_priority(void) {
+    /* A real, confirmed bug this session (see docs/hardware-notes.md,
+       "Interrupt controller"): FIQ was never actually delivered
+       by this emulator, for any app, ever - intc_fiq_asserted (intc.c)
+       already existed and was already verified correct against real
+       hardware's bit-mapping, but arm7tdmi_step only ever checked
+       intc_irq_asserted. Found by tracing why a real homebrew's
+       Timer2-driven (FIQ, not IRQ) confirmation beep produced silence:
+       Timer2's period/enable registers were being written and INT_TIMER2
+       genuinely latched into the interrupt controller's hold register,
+       but the CPU's mode never left USR - the interrupt sat asserted
+       forever, unconsumed. */
+    psemu_t *ps = make_arm_cpu();
+
+    /* Timer2 (not Timer0/1 - real hardware's FIQ source, per
+       docs/hardware-notes.md's confirmed INT_FIQ_MASK bit mapping),
+       same setup pattern as test_timer_and_irq's Timer0/IRQ case. */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x20, 10u); /* period */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x24, 10u); /* count */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x28, TIMER_CTRL_ENABLE);
+    ps->intc.enable |= INT_TIMER2;
+    timer_tick(&ps->timer, &ps->intc, 10u);
+    assert(!intc_fiq_asserted(&ps->intc));
+    timer_tick(&ps->timer, &ps->intc, 10u);
+    assert(intc_fiq_asserted(&ps->intc));
+
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    ps->cpu.cpsr &= ~(CPSR_F | CPSR_I); /* reset leaves both masked; unmask like real startup code would */
+    ps->cpu.r[13] = 0x9000;
+    uint32_t old_cpsr = ps->cpu.cpsr;
+    ps->cpu.r[15] = 0x30;
+
+    arm7tdmi_step(&ps->cpu); /* delivers the FIQ instead of fetching at 0x30 */
+
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_FIQ);
+    assert(ps->cpu.r[15] == ARM_FIQ_VECTOR);
+    assert(ps->cpu.r[14] == 0x34u); /* 0x30 + 4, per the SUBS PC,LR,#4 exit convention */
+    assert(ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)] == old_cpsr);
+    /* Real ARM7TDMI sets BOTH F and I on FIQ entry (unlike IRQ, which only
+       sets I) - prevents a second FIQ from recursively interrupting the
+       handler before it saves state. */
+    assert(ps->cpu.cpsr & CPSR_F);
+    assert(ps->cpu.cpsr & CPSR_I);
+
+    /* Level-triggered, same as IRQ: with F still masked, the still-
+       asserted line must not re-deliver. */
+    uint32_t pc_before = ps->cpu.r[15];
+    put32(ps, pc_before, 0xE1A00000u); /* MOV R0,R0 (no-op) */
+    arm7tdmi_step(&ps->cpu);
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_FIQ); /* unchanged, no re-entry happened */
+    assert(ps->cpu.r[15] == pc_before + 4u);
+
+    psemu_destroy(ps);
+    printf("test_fiq_delivery_and_priority OK\n");
+}
+
+static void test_fiq_takes_priority_over_irq(void) {
+    /* Real ARM7TDMI checks FIQ before IRQ - FIQ has strictly higher
+       priority in the exception scheme. With both genuinely pending and
+       unmasked simultaneously, the CPU must enter FIQ, not IRQ. */
+    psemu_t *ps = make_arm_cpu();
+
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x20, 1u); /* Timer2/FIQ: period */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x24, 1u); /* count */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x28, TIMER_CTRL_ENABLE);
+    ps->intc.enable |= INT_TIMER2;
+
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 1u); /* Timer0/IRQ: period */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 1u); /* count */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x8, TIMER_CTRL_ENABLE);
+    ps->intc.enable |= INT_TIMER0;
+
+    timer_tick(&ps->timer, &ps->intc, 4u);
+    assert(intc_fiq_asserted(&ps->intc));
+    assert(intc_irq_asserted(&ps->intc));
+
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    ps->cpu.cpsr &= ~(CPSR_F | CPSR_I);
+    ps->cpu.r[13] = 0x9000;
+    ps->cpu.r[15] = 0x30;
+
+    arm7tdmi_step(&ps->cpu);
+
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_FIQ);
+    assert(ps->cpu.r[15] == ARM_FIQ_VECTOR);
+
+    psemu_destroy(ps);
+    printf("test_fiq_takes_priority_over_irq OK\n");
+}
+
 static void test_timer_clock_divisor(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -736,7 +888,8 @@ static void test_clk_mode_scales_run_speed(void) {
 }
 
 static void test_timer_scales_with_clk_mode(void) {
-    /* This function's history (see docs/hardware-notes.md): Timer was
+    /* This function's history (see docs/hardware-notes.md, "CLK_MODE"
+       for the current, settled behavior): Timer was
        twice made to stay pinned to real time like RTC/DAC, reasoning
        that it drives the app's Timer1-IRQ audio-generation loop
        and shouldn't race ahead of real time. That fixed a real "beep plays far too fast"
@@ -900,10 +1053,9 @@ static void test_flash_bank_select(void) {
 static void test_flash_bank_val_remapping(void) {
     /* F_BANK_VAL is indexed by
        PHYSICAL bank (table[p]=v, deliberately the "backwards" direction
-       from a typical page table) - resolves the long-standing open
-       question in docs/hardware-notes.md about whether FLASH1 windowing
-       is a simple linear offset or a real, potentially-reordering
-       remapping table. This test exercises a genuinely non-contiguous
+       from a typical page table, see docs/hardware-notes.md, "Flash
+       memory") - FLASH1 windowing is a real, potentially-reordering
+       remapping table, not just a simple linear offset. This test exercises a genuinely non-contiguous
        mapping: physical blocks 2 and 5 enabled, with block 5 explicitly
        assigned to virtual bank 0 and block 2 to virtual bank 1 - the
        reverse of what a linear-offset model would produce. */
@@ -958,6 +1110,111 @@ static void test_flash_ctrl_busy_wait_bits(void) {
 
     psemu_destroy(ps);
     printf("test_flash_ctrl_busy_wait_bits OK\n");
+}
+
+static void test_flash_serial_number_default_and_override(void) {
+    /* F_SN (see docs/hardware-notes.md, "Hardware ID (F_SN)") defaults to
+       0x410000D3 ("410000D3" in hex form) - low 24 bits 211, Chocobo World (FF8) masks off the
+       high byte, reads the rest via SWI 0Ah, and uses its last 3 decimal
+       digits as an "ID" stat that alone determines rank; 211 is the
+       community-documented best rank. The high byte ('A') is the ASCII
+       letter real hardware prints as part of its serial sticker - see
+       psemu_parse_hardware_id/psemu_format_hardware_id. */
+    psemu_t *ps = make_arm_cpu();
+    assert(psemu_get_hardware_id(ps) == (((uint32_t)'A' << 24) | 211u));
+
+    psemu_set_hardware_id(ps, 0x12345678u);
+    assert(psemu_get_hardware_id(ps) == 0x12345678u);
+
+    psemu_destroy(ps);
+    printf("test_flash_serial_number_default_and_override OK\n");
+}
+
+static void test_hardware_id_string_conversion(void) {
+    /* The only accepted form: exactly 8 plain hex digits, matching
+       exactly what a real "ID rewriter" homebrew displays/edits on real
+       hardware - confirmed via real-hardware testing that there's no
+       "first digit must be a letter" restriction at all: a real unit
+       happily accepts and persists "EEEEEEEE". Deliberately NOT also
+       accepting the letter+8-decimal-digit "sticker" form real units
+       print under their front cover (e.g. "A02374684") - what's in a
+       persisted hardware-ID string is exactly the raw value, nothing
+       hidden or silently translated; a sticker-to-raw-value converter, if
+       ever wanted, belongs as a separate desktop-app feature. See
+       docs/hardware-notes.md, "Hardware ID (F_SN)". */
+    uint32_t id;
+    char buf[PSEMU_HARDWARE_ID_STRING_SIZE];
+
+    assert(psemu_parse_hardware_id("EEEEEEEE", &id) != 0);
+    assert(id == 0xEEEEEEEEu);
+    psemu_format_hardware_id(id, buf, sizeof(buf));
+    assert(strcmp(buf, "EEEEEEEE") == 0);
+
+    /* Case-insensitive on input; output is always uppercase. */
+    assert(psemu_parse_hardware_id("410000d3", &id) != 0);
+    assert(id == 0x410000D3u);
+    psemu_format_hardware_id(id, buf, sizeof(buf));
+    assert(strcmp(buf, "410000D3") == 0);
+
+    /* Round-trips the core default too. */
+    psemu_format_hardware_id((((uint32_t)'A' << 24) | 211u), buf, sizeof(buf));
+    assert(strcmp(buf, "410000D3") == 0);
+    assert(psemu_parse_hardware_id("410000D3", &id) != 0);
+    assert(id == (((uint32_t)'A' << 24) | 211u));
+
+    /* Malformed input is rejected outright, not silently truncated/guessed
+       or reinterpreted as some other format. */
+    assert(psemu_parse_hardware_id("410000D", &id) == 0);    /* too short */
+    assert(psemu_parse_hardware_id("410000D30", &id) == 0);  /* too long */
+    assert(psemu_parse_hardware_id("410000DG", &id) == 0);   /* not a valid hex digit */
+    assert(psemu_parse_hardware_id("A02374684", &id) == 0);  /* sticker form - no longer accepted here */
+    assert(psemu_parse_hardware_id(NULL, &id) == 0);
+
+    printf("test_hardware_id_string_conversion OK\n");
+}
+
+static void test_flash_serial_number_register_access(void) {
+    /* F_SN_LO/F_SN_HI live at FLASH_CTRL+0x300/+0x302 (F_EXTRA, see
+       flash.h) - real hardware requires these read via two separate 16-bit
+       halfword loads, not a single 32-bit one, but the underlying bytes
+       are addressable the same way regardless; this exercises the bus at
+       the halfword granularity real code actually uses. An ID-editing
+       homebrew pokes these registers directly rather than going through
+       the SWI, so the bus-level path needs to work independent of
+       psemu_set_hardware_id. */
+    psemu_t *ps = make_arm_cpu();
+
+    /* Default is "A00000211" (see FLASH_DEFAULT_SERIAL) - F_SN_LO carries
+       the low 16 bits (211, unaffected by the high byte), F_SN_HI carries
+       the high 16 bits, which includes the 'A' letter byte (0x41) in its
+       own top half. */
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x300) == 211u);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x302) == 0x4100u);
+
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x300, 0xBEEFu);
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x302, 0xCAFEu);
+    assert(psemu_get_hardware_id(ps) == 0xCAFEBEEFu);
+
+    /* F_CAL (+0x308) is a real, separate register in the same F_EXTRA
+       region - defaults to nocash's documented reset value and is
+       independently read/writable. */
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308) == 0x001Au);
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308, 0x0099u);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308) == 0x0099u);
+
+    /* The gap between F_BANK_VAL's end (+0x140) and F_EXTRA's start
+       (+0x300) is genuinely unmapped - must stay 0, not mirror
+       last_command now that FLASH_CTRL_SPAN reaches all the way to
+       F_EXTRA. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u); /* nonzero last_command */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x200) == 0u);
+
+    /* Same for unknown bytes inside F_EXTRA itself, e.g. the reserved
+       halfword between F_SN_HI and F_CAL. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x304) == 0u);
+
+    psemu_destroy(ps);
+    printf("test_flash_serial_number_register_access OK\n");
 }
 
 static void test_flash_load_app_synthesizes_directory(void) {
@@ -1150,7 +1407,7 @@ static void test_psemu_load_content_dispatches_by_size(void) {
 
 static void test_flash_key_addresses_are_not_data_storage(void) {
     /* A real, confirmed bug found via a real crash report (see
-       docs/hardware-notes.md, "Chocobo World event-screen crash"):
+       docs/hardware-notes.md, "Flash memory"):
        F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are real hardware's
        flash unlock-sequence trigger addresses, not data storage - real
        flash chips intercept writes there as unlock commands rather than
@@ -1182,6 +1439,91 @@ static void test_flash_key_addresses_are_not_data_storage(void) {
 
     psemu_destroy(ps);
     printf("test_flash_key_addresses_are_not_data_storage OK\n");
+}
+
+/* Real, confirmed sequence (disassembled from a real ID-editing homebrew
+   and matching psx-spx: "[8000000h]=new F_SN_LO value [8000002h]=new
+   F_SN_HI value") - confirmed working on a real retail-BIOS unit this
+   session. See docs/hardware-notes.md, "Hardware ID (F_SN)". */
+static void flash_perform_unlock_sequence(psemu_t *ps) {
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFAAu); /* F_KEY2 */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u); /* F_KEY1 */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFA0u); /* F_KEY2 again */
+}
+
+static void test_flash_header_write_via_unlock_sequence(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    flash_perform_unlock_sequence(ps);
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000, 0xBEEFu); /* new F_SN_LO */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0002, 0xCAFEu); /* new F_SN_HI */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0008, 0x002Au); /* new F_CAL */
+
+    assert(psemu_get_hardware_id(ps) == 0xCAFEBEEFu);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308) == 0x002Au);
+
+    psemu_destroy(ps);
+    printf("test_flash_header_write_via_unlock_sequence OK\n");
+}
+
+static void test_flash_header_write_requires_unlock_first(void) {
+    /* The core safety property motivating the gated (not unconditional)
+       design: physical offset 0/2/8 is ALSO ordinary card-data storage
+       (block 0's directory header, in the normal case, and - confirmed
+       via the F_KEY1/F_KEY2 corruption bug above - real save-write
+       mechanisms like Chocobo World's own genuinely land writes
+       elsewhere in this same physical range). Without the real unlock
+       sequence immediately before, a write to these offsets must behave
+       as plain data, not silently redirect to F_SN/F_CAL. */
+    psemu_t *ps = make_arm_cpu();
+    uint32_t default_id = psemu_get_hardware_id(ps);
+
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000, 0xBEEFu);
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0002, 0xCAFEu);
+
+    assert(psemu_get_hardware_id(ps) == default_id); /* unchanged */
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000) == 0xBEEFu); /* stored as plain data instead */
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 0x0002) == 0xCAFEu);
+
+    psemu_destroy(ps);
+    printf("test_flash_header_write_requires_unlock_first OK\n");
+}
+
+static void test_flash_header_write_disarms_after_unrelated_write(void) {
+    /* Armed state covers exactly one real write session (a real header
+       update is 3 separate halfword writes after a single unlock) and
+       must not leak into unrelated later writes just because they
+       happen to also land on offset 0/2/8. */
+    psemu_t *ps = make_arm_cpu();
+    uint32_t default_id = psemu_get_hardware_id(ps);
+
+    flash_perform_unlock_sequence(ps);
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0004, 0x1234u); /* unrelated offset - disarms */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000, 0xBEEFu); /* no unlock since disarm */
+
+    assert(psemu_get_hardware_id(ps) == default_id); /* unchanged - not redirected */
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000) == 0xBEEFu); /* plain data instead */
+
+    psemu_destroy(ps);
+    printf("test_flash_header_write_disarms_after_unrelated_write OK\n");
+}
+
+static void test_flash_header_write_requires_correct_key_order(void) {
+    /* Wrong order (F_KEY1 before F_KEY2) never arms - matches how a real
+       NOR flash unlock sequence requires its exact byte order. */
+    psemu_t *ps = make_arm_cpu();
+    uint32_t default_id = psemu_get_hardware_id(ps);
+
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u); /* F_KEY1 first - wrong */
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFAAu);
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u);
+    psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000, 0xBEEFu);
+
+    assert(psemu_get_hardware_id(ps) == default_id);
+    assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000) == 0xBEEFu);
+
+    psemu_destroy(ps);
+    printf("test_flash_header_write_requires_correct_key_order OK\n");
 }
 
 static void test_lcd_mode_dison_and_rotate(void) {
@@ -1339,6 +1681,7 @@ int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
     test_arm_memory();
+    test_arm_ldrh_misaligned_quirks();
     test_arm_control_flow();
     test_arm_exceptions_and_psr();
     test_arm_exception_return();
@@ -1352,6 +1695,8 @@ int main(void) {
     test_intc_status_sources_also_latch_hold();
     test_button_hold_pulses_not_sustained();
     test_timer_and_irq();
+    test_fiq_delivery_and_priority();
+    test_fiq_takes_priority_over_irq();
     test_timer_clock_divisor();
     test_boot_ready_stub();
     test_clk_mode_scales_run_speed();
@@ -1361,11 +1706,18 @@ int main(void) {
     test_flash_bank_select();
     test_flash_bank_val_remapping();
     test_flash_ctrl_busy_wait_bits();
+    test_flash_serial_number_default_and_override();
+    test_hardware_id_string_conversion();
+    test_flash_serial_number_register_access();
     test_flash_load_app_synthesizes_directory();
     test_flash_load_app_rejects_oversized_app();
     test_psemu_load_mcs_validates_and_unwraps();
     test_psemu_load_content_dispatches_by_size();
     test_flash_key_addresses_are_not_data_storage();
+    test_flash_header_write_via_unlock_sequence();
+    test_flash_header_write_requires_unlock_first();
+    test_flash_header_write_disarms_after_unrelated_write();
+    test_flash_header_write_requires_correct_key_order();
     test_lcd_mode_dison_and_rotate();
     test_dac_basic();
     test_iop_sound_gate_mutes_dac();
