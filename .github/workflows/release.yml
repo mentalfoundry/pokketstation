@@ -71,7 +71,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist\desktop | Out-Null
-          Copy-Item "build\Release\pokketstation_desktop.exe" dist\desktop\
+          Copy-Item "build\Release\pokketstation.exe" dist\desktop\
           Copy-Item "vcpkg\installed\x64-windows\bin\SDL2.dll" dist\desktop\
           Copy-Item README.md, LICENSE dist\desktop\
 

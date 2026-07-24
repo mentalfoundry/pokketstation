@@ -1,5 +1,7 @@
 # Vita frontend
 
+This is very much WIP and broken. Vita will be revisited once the core and desktop versions are feature complete - hopefully soon.
+
 Requires [vitasdk](https://vitasdk.org/) and [vita2d](https://github.com/xerpi/vita2d) installed via `vdpm`.
 
 ```
