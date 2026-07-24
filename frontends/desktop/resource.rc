@@ -1,0 +1,155 @@
+#include <windows.h>
+#include "resource.h"
+
+/* Listed first so it becomes the .exe's default icon (Explorer, taskbar,
+   Alt-Tab) - main.c also explicitly loads it and sends WM_SETICON so the
+   window's title bar shows it too, since SDL's own window class doesn't
+   pick up exe resource icons on its own. */
+IDI_MAINICON ICON "app.ico"
+
+IDR_MAINMENU MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Load BIOS...",       ID_FILE_OPEN_BIOS
+        MENUITEM "Open &App/Card...",   ID_FILE_OPEN_APP
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit",               ID_FILE_EXIT
+    END
+    POPUP "&Tools"
+    BEGIN
+        MENUITEM "Edit &Hardware ID...", ID_TOOLS_EDIT_HWID
+        MENUITEM "&Remap Controls...", ID_TOOLS_REMAP_CONTROLS
+    END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&Native Size (1x)", ID_VIEW_NATIVE_SIZE
+        MENUITEM "&Double Size (2x)", ID_VIEW_DOUBLE_SIZE
+        MENUITEM SEPARATOR
+        POPUP "&Colors"
+        BEGIN
+            MENUITEM "&Classic (LCD-style)", ID_COLORS_CLASSIC
+            MENUITEM "&Light (black on white)", ID_COLORS_STANDARD
+            MENUITEM "&Dark (white on black)", ID_COLORS_REVERSED
+            MENUITEM SEPARATOR
+            MENUITEM "C&ustom Colors...", ID_COLORS_CUSTOM
+        END
+        MENUITEM SEPARATOR
+        POPUP "Sprite &Shadows"
+        BEGIN
+            MENUITEM "&Enable", ID_VIEW_SHADOWS_ENABLE
+            MENUITEM "&Disable", ID_VIEW_SHADOWS_DISABLE
+            MENUITEM SEPARATOR
+            MENUITEM "Shadow &Color...", ID_VIEW_SHADOW_COLOR
+        END
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About pokketstation...", ID_HELP_ABOUT
+    END
+END
+
+IDD_HWID DIALOGEX 0, 0, 190, 70
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Edit Hardware ID"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "8 hex digits (0-9, A-F):", -1, 7, 7, 150, 10
+    EDITTEXT        IDC_HWID_EDIT, 7, 20, 100, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+    DEFPUSHBUTTON   "OK",     IDOK,     30, 46, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 105, 46, 50, 14
+END
+
+IDD_CUSTOM_COLORS DIALOGEX 0, 0, 164, 100
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Custom Colors"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "Active pixel color (RRGGBB hex):", -1, 7, 9, 150, 10
+    EDITTEXT        IDC_PIXEL_HEX, 7, 21, 70, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+    PUSHBUTTON      "Choose...", IDC_PIXEL_CHOOSE, 82, 20, 60, 14
+
+    LTEXT           "Background color (RRGGBB hex):", -1, 7, 42, 150, 10
+    EDITTEXT        IDC_BG_HEX, 7, 54, 70, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+    PUSHBUTTON      "Choose...", IDC_BG_CHOOSE, 82, 53, 60, 14
+
+    /* Right-aligned to x=157, matching the labels'/Choose buttons' own
+       right edge above, instead of centered under the old wider dialog -
+       that's what let the dialog be narrowed down in the first place. */
+    DEFPUSHBUTTON   "OK",     IDOK,     51, 78, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 107, 78, 50, 14
+END
+
+IDD_SHADOW_COLOR DIALOGEX 0, 0, 164, 84
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Sprite Shadow Color"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "Shadow color (RRGGBB hex):", -1, 7, 9, 150, 10
+    EDITTEXT        IDC_SHADOW_HEX, 7, 21, 70, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+    PUSHBUTTON      "Choose...", IDC_SHADOW_CHOOSE, 82, 20, 60, 14
+
+    PUSHBUTTON      "Reset to Default", IDC_SHADOW_RESET, 7, 42, 135, 14
+
+    DEFPUSHBUTTON   "OK",     IDOK,     51, 62, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 107, 62, 50, 14
+END
+
+/* Rows are Up/Down/Left/Right/Fire, matching IDC_REMAP_LABEL_BASE/
+   IDC_REMAP_CHANGE_BASE's fixed +0..+4 order in resource.h. The current-key
+   label (e.g. "Up") is filled in dynamically at WM_INITDIALOG, not here. */
+IDD_REMAP_CONTROLS DIALOGEX 0, 0, 190, 124
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Remap Controls"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "Up:", -1, 7, 11, 40, 10
+    LTEXT           "", IDC_REMAP_LABEL_BASE + 0, 50, 11, 70, 10
+    PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 0, 125, 9, 58, 14
+
+    LTEXT           "Down:", -1, 7, 29, 40, 10
+    LTEXT           "", IDC_REMAP_LABEL_BASE + 1, 50, 29, 70, 10
+    PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 1, 125, 27, 58, 14
+
+    LTEXT           "Left:", -1, 7, 47, 40, 10
+    LTEXT           "", IDC_REMAP_LABEL_BASE + 2, 50, 47, 70, 10
+    PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 2, 125, 45, 58, 14
+
+    LTEXT           "Right:", -1, 7, 65, 40, 10
+    LTEXT           "", IDC_REMAP_LABEL_BASE + 3, 50, 65, 70, 10
+    PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 3, 125, 63, 58, 14
+
+    LTEXT           "Fire/Action:", -1, 7, 83, 40, 10
+    LTEXT           "", IDC_REMAP_LABEL_BASE + 4, 50, 83, 70, 10
+    PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 4, 125, 81, 58, 14
+
+    DEFPUSHBUTTON   "Close", IDOK, 66, 103, 50, 14
+END
+
+/* Purely informational - shown modeless (not via DialogBoxParam) while
+   capture_next_key waits for a keypress, so it deliberately has no
+   buttons and no title bar: there's nothing to confirm or navigate, just
+   press a key or Esc. */
+IDD_CAPTURE_PROMPT DIALOGEX 0, 0, 220, 40
+STYLE DS_SETFONT | WS_POPUP | WS_BORDER
+FONT 8, "MS Shell Dlg"
+BEGIN
+    CTEXT           "", IDC_CAPTURE_PROMPT_TEXT, 8, 8, 204, 24
+END
+
+/* The version line's actual text is set at WM_INITDIALOG (POKKETSTATION_
+   VERSION lives in main.c, not here). SysLink (requires ComCtl32 v6 - see
+   the /manifestdependency pragma in main.c) renders its href as a normal
+   clickable, underlined-on-hover hyperlink; about_dialog_proc's WM_NOTIFY/
+   NM_CLICK handler is what actually opens it via ShellExecuteA. */
+IDD_ABOUT DIALOGEX 0, 0, 200, 80
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About pokketstation"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "", IDC_ABOUT_VERSION, 7, 7, 186, 10
+    LTEXT           "An open-source Sony PocketStation emulator core.", -1, 7, 20, 186, 18
+    CONTROL         "<a href=""https://github.com/mentalfoundry/pokketstation"">https://github.com/mentalfoundry/pokketstation</a>",
+                    IDC_ABOUT_LINK, "SysLink", WS_TABSTOP, 7, 42, 186, 12
+    DEFPUSHBUTTON   "OK", IDOK, 75, 60, 50, 14
+END

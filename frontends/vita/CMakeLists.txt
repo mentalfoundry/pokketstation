@@ -1,5 +1,5 @@
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "Vita")
-    message(STATUS "Skipping Vita frontend (configure with the vitasdk toolchain file to build it, see frontends/vita/README.md)")
+    message(STATUS "Skipping Vita frontend (configure with the vitasdk toolchain file to build it, see docs/vita_readme.md)")
     return()
 endif()
 
