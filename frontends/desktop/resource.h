@@ -20,14 +20,17 @@
 #define IDC_SHADOW_CHOOSE 1007
 #define IDC_SHADOW_RESET 1008
 #define IDC_CAPTURE_PROMPT_TEXT 1009
-#define IDC_ABOUT_LINK 1025
-#define IDC_ABOUT_VERSION 1026
-/* 5 consecutive IDs each, one per button in fixed Up/Down/Left/Right/Fire
-   order (see button_scancodes in main.c) - IDC_REMAP_LABEL_BASE+i shows
-   binding i's current key name, IDC_REMAP_CHANGE_BASE+i is that row's
-   "Change..." button. */
+/* 6 consecutive IDs each, one per remappable action in fixed
+   Up/Down/Left/Right/Fire/Create-Debug-Log order (see button_scancodes in
+   main.c) - IDC_REMAP_LABEL_BASE+i shows binding i's current key name,
+   IDC_REMAP_CHANGE_BASE+i is that row's "Change..." button. Moved
+   IDC_ABOUT_LINK/IDC_ABOUT_VERSION up out of 1025/1026 to make room for
+   the 6th IDC_REMAP_CHANGE_BASE slot (1025). */
 #define IDC_REMAP_LABEL_BASE 1010
 #define IDC_REMAP_CHANGE_BASE 1020
+#define IDC_ABOUT_LINK 1030
+#define IDC_ABOUT_VERSION 1031
+#define IDC_ABOUT_LICENSE_LINK 1032
 
 #define ID_FILE_OPEN_BIOS 1101
 #define ID_FILE_OPEN_APP 1102

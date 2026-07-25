@@ -139,7 +139,7 @@ Audio additionally requires `IOP_STOP`/`IOP_START` bit5 ("Sound Enable", `0x0D80
 
 ## Diagnostics
 
-`arm7tdmi_t` keeps a 256-entry ring buffer of the most recently executed `(pc, cpsr)` pairs, plus a monotonic instruction counter, updated on every step regardless of caller. `psemu_write_crash_report`/`psemu_cpu_faulted` (public API) dump full register state, the fault opcode and its real fetch address if faulted, and this trace. The desktop frontend writes a timestamped `psemu_report_*.log` automatically on a CPU fault, and on-demand via an **F12** hotkey. See `test_crash_report_contents`, `test_cpu_faulted_flag`, `test_faulted_cpu_stops_advancing`.
+`arm7tdmi_t` keeps a 256-entry ring buffer of the most recently executed `(pc, cpsr)` pairs, plus a monotonic instruction counter, updated on every step regardless of caller. `psemu_write_crash_report`/`psemu_cpu_faulted` (public API) dump full register state, the fault opcode and its real fetch address if faulted, and this trace. The desktop frontend writes a timestamped `pokketstation_report_*.log` automatically on a CPU fault, and on-demand via an **F12** hotkey. See `test_crash_report_contents`, `test_cpu_faulted_flag`, `test_faulted_cpu_stops_advancing`.
 
 ## Hardware ID (F_SN)
 

@@ -95,10 +95,10 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 107, 62, 50, 14
 END
 
-/* Rows are Up/Down/Left/Right/Fire, matching IDC_REMAP_LABEL_BASE/
-   IDC_REMAP_CHANGE_BASE's fixed +0..+4 order in resource.h. The current-key
+/* Rows are Up/Down/Left/Right/Fire/Debug Log, matching IDC_REMAP_LABEL_BASE/
+   IDC_REMAP_CHANGE_BASE's fixed +0..+5 order in resource.h. The current-key
    label (e.g. "Up") is filled in dynamically at WM_INITDIALOG, not here. */
-IDD_REMAP_CONTROLS DIALOGEX 0, 0, 190, 124
+IDD_REMAP_CONTROLS DIALOGEX 0, 0, 190, 142
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Remap Controls"
 FONT 8, "MS Shell Dlg"
@@ -123,7 +123,11 @@ BEGIN
     LTEXT           "", IDC_REMAP_LABEL_BASE + 4, 50, 83, 70, 10
     PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 4, 125, 81, 58, 14
 
-    DEFPUSHBUTTON   "Close", IDOK, 66, 103, 50, 14
+    LTEXT           "Debug Log:", -1, 7, 101, 40, 10
+    LTEXT           "", IDC_REMAP_LABEL_BASE + 5, 50, 101, 70, 10
+    PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 5, 125, 99, 58, 14
+
+    DEFPUSHBUTTON   "Close", IDOK, 66, 121, 50, 14
 END
 
 /* Purely informational - shown modeless (not via DialogBoxParam) while
@@ -141,8 +145,9 @@ END
    VERSION lives in main.c, not here). SysLink (requires ComCtl32 v6 - see
    the /manifestdependency pragma in main.c) renders its href as a normal
    clickable, underlined-on-hover hyperlink; about_dialog_proc's WM_NOTIFY/
-   NM_CLICK handler is what actually opens it via ShellExecuteA. */
-IDD_ABOUT DIALOGEX 0, 0, 200, 80
+   NM_CLICK handler is what actually opens it via ShellExecuteA - both the
+   repo link and the license link below use the same mechanism. */
+IDD_ABOUT DIALOGEX 0, 0, 200, 96
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "About pokketstation"
 FONT 8, "MS Shell Dlg"
@@ -151,5 +156,7 @@ BEGIN
     LTEXT           "An open-source Sony PocketStation emulator core.", -1, 7, 20, 186, 18
     CONTROL         "<a href=""https://github.com/mentalfoundry/pokketstation"">https://github.com/mentalfoundry/pokketstation</a>",
                     IDC_ABOUT_LINK, "SysLink", WS_TABSTOP, 7, 42, 186, 12
-    DEFPUSHBUTTON   "OK", IDOK, 75, 60, 50, 14
+    CONTROL         "Licensed under the <a href=""https://www.gnu.org/licenses/gpl-3.0.html"">GNU GPLv3</a> (see LICENSE).",
+                    IDC_ABOUT_LICENSE_LINK, "SysLink", WS_TABSTOP, 7, 58, 186, 12
+    DEFPUSHBUTTON   "OK", IDOK, 75, 76, 50, 14
 END

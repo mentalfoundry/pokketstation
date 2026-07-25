@@ -33,7 +33,7 @@
    the one spot to touch, rather than something that silently drifts if
    the build environment doesn't have git available (e.g. building from a
    source zip instead of a clone). */
-#define POKKETSTATION_VERSION "v1.4.0"
+#define POKKETSTATION_VERSION "v1.4.1"
 
 /* Directory the running executable lives in, derived from argv[0] rather
    than an OS-specific "current module path" API - argv[0] is already the
@@ -68,7 +68,8 @@ static void join_path(char *out, size_t out_size, const char *dir, const char *n
    frame number - followed by psemu_write_crash_report's full CPU/trace
    dump) to disk and points the user at it on stderr. Called both
    automatically on a detected CPU fault and on-demand via a hotkey
-   (F12), since not everything worth reporting during manual testing
+   (F12 by default, remappable via Tools > Remap Controls...), since not
+   everything worth reporting during manual testing
    trips psemu_cpu_faulted() - "the game looks wrong" or "no sound" are
    just as real as a hard fault, and this session's actual Chocobo World
    crash investigation (see docs/hardware-notes.md) needed exactly this
@@ -81,7 +82,7 @@ static void write_diagnostic_report(
     struct tm *tmv = localtime(&now);
     FILE *f;
 
-    strftime(path, sizeof(path), "psemu_report_%Y%m%d_%H%M%S.log", tmv);
+    strftime(path, sizeof(path), "pokketstation_report_%Y%m%d_%H%M%S.log", tmv);
     f = fopen(path, "w");
     if (!f) {
         fprintf(stderr, "psemu: failed to write diagnostic report to %s\n", path);
@@ -143,6 +144,9 @@ typedef struct {
     char key_left[32];
     char key_right[32];
     char key_fire[32];
+    /* Not a PocketStation button - triggers write_diagnostic_report
+       on-demand (see button_scancodes in main). */
+    char key_debug_log[32];
 } app_settings_t;
 
 /* Packs 8-bit R/G/B into the same 0xRRGGBBAA layout render_framebuffer
@@ -193,6 +197,7 @@ static int load_settings(app_settings_t *settings, const char *path) {
     settings->key_left[0] = '\0';
     settings->key_right[0] = '\0';
     settings->key_fire[0] = '\0';
+    settings->key_debug_log[0] = '\0';
     settings->show_console = 0;
     settings->show_shadows = 0;
     if (f) {
@@ -221,6 +226,8 @@ static int load_settings(app_settings_t *settings, const char *path) {
                 snprintf(settings->key_right, sizeof(settings->key_right), "%s", line + 10);
             } else if (strncmp(line, "key_fire=", 9) == 0) {
                 snprintf(settings->key_fire, sizeof(settings->key_fire), "%s", line + 9);
+            } else if (strncmp(line, "key_debug_log=", 14) == 0) {
+                snprintf(settings->key_debug_log, sizeof(settings->key_debug_log), "%s", line + 14);
             } else if (strncmp(line, "show_console=", 13) == 0) {
                 settings->show_console = atoi(line + 13) != 0;
             } else if (strncmp(line, "show_shadows=", 13) == 0) {
@@ -263,6 +270,9 @@ static int load_settings(app_settings_t *settings, const char *path) {
     if (settings->key_fire[0] == '\0') {
         snprintf(settings->key_fire, sizeof(settings->key_fire), "%s", SDL_GetScancodeName(SDL_SCANCODE_Z));
     }
+    if (settings->key_debug_log[0] == '\0') {
+        snprintf(settings->key_debug_log, sizeof(settings->key_debug_log), "%s", SDL_GetScancodeName(SDL_SCANCODE_F12));
+    }
     return existed;
 }
 
@@ -282,6 +292,7 @@ static void save_settings(const app_settings_t *settings, const char *path) {
     fprintf(f, "key_left=%s\n", settings->key_left);
     fprintf(f, "key_right=%s\n", settings->key_right);
     fprintf(f, "key_fire=%s\n", settings->key_fire);
+    fprintf(f, "key_debug_log=%s\n", settings->key_debug_log);
     fprintf(f, "show_console=%d\n", settings->show_console ? 1 : 0);
     fprintf(f, "show_shadows=%d\n", settings->show_shadows ? 1 : 0);
     fclose(f);
@@ -324,17 +335,40 @@ static int parse_hex_rgb(const char *s, uint8_t *r, uint8_t *g, uint8_t *b) {
 /* One entry of the live key -> PocketStation-button mapping the main loop
    polls every frame (see button_scancodes in main) - display_name is only
    used for remap prompts/labels, never persisted itself (the scancode's
-   own SDL_GetScancodeName is what's written to settings.cfg). */
+   own SDL_GetScancodeName is what's written to settings.cfg). `bit` is 0
+   for the trailing "Create Debug Log" entry, which isn't a real
+   PocketStation button - see button_scancodes in main for how that entry
+   is actually consumed. */
 typedef struct {
     SDL_Scancode scancode;
     uint32_t bit;
     const char *display_name;
 } button_binding_t;
 
+/* Number of rows in Tools > Remap Controls - Up/Down/Left/Right/Fire plus
+   the non-button "Create Debug Log" hotkey. Matches IDD_REMAP_CONTROLS'
+   row count and the IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE ranges in
+   resource.h (6 consecutive IDs each). */
+#define REMAP_BINDING_COUNT 6
+
+/* Written to a settings.cfg key_* field in place of a real key name when
+   that row was explicitly cleared because another row just claimed its key
+   (see prompt_remap_controls) - distinct from an empty field, which means
+   "never set, use the hardcoded default" (see resolve_key_binding). Without
+   this distinction, persisting an unbound row as "" would silently revert
+   it back to its original default key on the next launch. */
+#define KEY_BINDING_UNBOUND_MARKER "(unbound)"
+
 /* `saved_name` is a settings.cfg key_* field - parsed via
    SDL_GetScancodeFromName, falling back to `fallback` if it's empty or
-   doesn't name a real key (e.g. hand-edited to garbage). */
+   doesn't name a real key (e.g. hand-edited to garbage). Explicitly
+   unbound (see KEY_BINDING_UNBOUND_MARKER) returns SDL_SCANCODE_UNKNOWN
+   rather than falling back - that's a deliberate "no key" state, not a
+   missing/invalid one. */
 static SDL_Scancode resolve_key_binding(const char *saved_name, SDL_Scancode fallback) {
+    if (strcmp(saved_name, KEY_BINDING_UNBOUND_MARKER) == 0) {
+        return SDL_SCANCODE_UNKNOWN;
+    }
     if (saved_name[0] != '\0') {
         SDL_Scancode sc = SDL_GetScancodeFromName(saved_name);
         if (sc != SDL_SCANCODE_UNKNOWN) {
@@ -344,14 +378,28 @@ static SDL_Scancode resolve_key_binding(const char *saved_name, SDL_Scancode fal
     return fallback;
 }
 
-/* Inverse of resolve_key_binding - bindings must be exactly 5 entries in
-   fixed Up/Down/Left/Right/Fire order (see button_scancodes in main). */
-static void save_key_bindings(app_settings_t *settings, const button_binding_t bindings[5]) {
-    snprintf(settings->key_up, sizeof(settings->key_up), "%s", SDL_GetScancodeName(bindings[0].scancode));
-    snprintf(settings->key_down, sizeof(settings->key_down), "%s", SDL_GetScancodeName(bindings[1].scancode));
-    snprintf(settings->key_left, sizeof(settings->key_left), "%s", SDL_GetScancodeName(bindings[2].scancode));
-    snprintf(settings->key_right, sizeof(settings->key_right), "%s", SDL_GetScancodeName(bindings[3].scancode));
-    snprintf(settings->key_fire, sizeof(settings->key_fire), "%s", SDL_GetScancodeName(bindings[4].scancode));
+/* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) is "" - indistinguishable from
+   "never set" once written to settings.cfg (see resolve_key_binding), so
+   an explicitly-unbound row is written as KEY_BINDING_UNBOUND_MARKER
+   instead. */
+static void format_key_binding_name(char *out, size_t out_size, SDL_Scancode scancode) {
+    if (scancode == SDL_SCANCODE_UNKNOWN) {
+        snprintf(out, out_size, "%s", KEY_BINDING_UNBOUND_MARKER);
+    } else {
+        snprintf(out, out_size, "%s", SDL_GetScancodeName(scancode));
+    }
+}
+
+/* Inverse of resolve_key_binding - bindings must be exactly
+   REMAP_BINDING_COUNT entries in fixed Up/Down/Left/Right/Fire/Create-Debug-
+   Log order (see button_scancodes in main). */
+static void save_key_bindings(app_settings_t *settings, const button_binding_t bindings[REMAP_BINDING_COUNT]) {
+    format_key_binding_name(settings->key_up, sizeof(settings->key_up), bindings[0].scancode);
+    format_key_binding_name(settings->key_down, sizeof(settings->key_down), bindings[1].scancode);
+    format_key_binding_name(settings->key_left, sizeof(settings->key_left), bindings[2].scancode);
+    format_key_binding_name(settings->key_right, sizeof(settings->key_right), bindings[3].scancode);
+    format_key_binding_name(settings->key_fire, sizeof(settings->key_fire), bindings[4].scancode);
+    format_key_binding_name(settings->key_debug_log, sizeof(settings->key_debug_log), bindings[5].scancode);
 }
 
 static uint8_t *read_file(const char *path, size_t *out_size) {
@@ -396,7 +444,7 @@ typedef struct {
     uint32_t *bg_rgba;
     int *show_shadows;
     uint32_t *shadow_rgba;
-    button_binding_t *button_scancodes; /* fixed 5-element Up/Down/Left/Right/Fire array, see main */
+    button_binding_t *button_scancodes; /* fixed REMAP_BINDING_COUNT-element Up/Down/Left/Right/Fire/Debug-Log array, see main */
     app_settings_t *settings;
     const char *settings_path;
 } menu_context_t;
@@ -798,8 +846,14 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
         button_binding_t *bindings = (button_binding_t *)lparam;
         int i;
         SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)bindings);
-        for (i = 0; i < 5; i++) {
-            SetDlgItemTextA(hdlg, IDC_REMAP_LABEL_BASE + i, SDL_GetScancodeName(bindings[i].scancode));
+        for (i = 0; i < REMAP_BINDING_COUNT; i++) {
+            /* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) is "" - show
+               something a user will actually recognize as "this row lost
+               its key to a clash" (see prompt_remap_controls) rather than
+               a blank label. */
+            const char *name =
+                bindings[i].scancode == SDL_SCANCODE_UNKNOWN ? "(unbound)" : SDL_GetScancodeName(bindings[i].scancode);
+            SetDlgItemTextA(hdlg, IDC_REMAP_LABEL_BASE + i, name);
         }
         return TRUE;
     }
@@ -809,7 +863,7 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
             EndDialog(hdlg, IDCANCEL);
             return TRUE;
         }
-        if (cmd >= IDC_REMAP_CHANGE_BASE && cmd < IDC_REMAP_CHANGE_BASE + 5) {
+        if (cmd >= IDC_REMAP_CHANGE_BASE && cmd < IDC_REMAP_CHANGE_BASE + REMAP_BINDING_COUNT) {
             /* 100+ is well clear of any real IDOK/IDCANCEL/control ID -
                prompt_remap_controls uses this to tell "row N's Change...
                was clicked" apart from a plain close. */
@@ -822,12 +876,12 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
     return FALSE;
 }
 
-/* Shows the current 5 bindings with a per-row "Change..." button; clicking
-   one closes this dialog (see remap_dialog_proc) so the actual keypress
-   can be captured via capture_next_key below, outside of any native
-   dialog's own keyboard-navigation message loop, then reopens the dialog
-   to show the result and allow changing another row - loops until the
-   user clicks Close. */
+/* Shows the current REMAP_BINDING_COUNT bindings with a per-row "Change..."
+   button; clicking one closes this dialog (see remap_dialog_proc) so the
+   actual keypress can be captured via capture_next_key below, outside of
+   any native dialog's own keyboard-navigation message loop, then reopens
+   the dialog to show the result and allow changing another row - loops
+   until the user clicks Close. */
 static void prompt_remap_controls(menu_context_t *ctx) {
     for (;;) {
         INT_PTR result = DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_REMAP_CONTROLS), ctx->hwnd,
@@ -840,6 +894,17 @@ static void prompt_remap_controls(menu_context_t *ctx) {
         index = (int)(result - 100);
         captured = capture_next_key(ctx->hwnd, ctx->button_scancodes[index].display_name);
         if (captured != SDL_SCANCODE_UNKNOWN) {
+            int i;
+            /* Two rows can't share a key - whichever other row previously
+               held this one becomes unbound (rather than silently leaving
+               both rows pointing at the same physical key, where only one
+               of them could ever actually be told apart from the other by
+               SDL_GetKeyboardState). */
+            for (i = 0; i < REMAP_BINDING_COUNT; i++) {
+                if (i != index && ctx->button_scancodes[i].scancode == captured) {
+                    ctx->button_scancodes[i].scancode = SDL_SCANCODE_UNKNOWN;
+                }
+            }
             ctx->button_scancodes[index].scancode = captured;
             save_key_bindings(ctx->settings, ctx->button_scancodes);
             save_settings(ctx->settings, ctx->settings_path);
@@ -856,6 +921,10 @@ static INT_PTR CALLBACK about_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
         NMHDR *nmhdr = (NMHDR *)lparam;
         if (nmhdr->idFrom == IDC_ABOUT_LINK && (nmhdr->code == NM_CLICK || nmhdr->code == NM_RETURN)) {
             ShellExecuteA(hdlg, "open", "https://github.com/mentalfoundry/pokketstation", NULL, NULL, SW_SHOWNORMAL);
+            return TRUE;
+        }
+        if (nmhdr->idFrom == IDC_ABOUT_LICENSE_LINK && (nmhdr->code == NM_CLICK || nmhdr->code == NM_RETURN)) {
+            ShellExecuteA(hdlg, "open", "https://www.gnu.org/licenses/gpl-3.0.html", NULL, NULL, SW_SHOWNORMAL);
             return TRUE;
         }
         break;
@@ -1102,8 +1171,6 @@ int main(int argc, char **argv) {
             app_path);
     }
 
-    fprintf(stderr, "psemu: press F12 at any time to write a diagnostic report to a psemu_report_*.log file\n");
-
     psemu_t *ps = psemu_create();
     if (settings.hardware_id[0] != '\0') {
         uint32_t id;
@@ -1241,18 +1308,26 @@ int main(int argc, char **argv) {
     }
 
     /* Live key -> PocketStation-button mapping the main loop polls every
-       frame - fixed Up/Down/Left/Right/Fire order (matches
+       frame - fixed Up/Down/Left/Right/Fire/Create-Debug-Log order (matches
        IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE and save_key_bindings).
        Not const/static since Tools > Remap Controls... mutates entries in
        place through menu_ctx.button_scancodes, which points at this same
-       array. */
-    button_binding_t button_scancodes[5] = {
+       array. The trailing "Create Debug Log" entry isn't a real
+       PocketStation button (bit=0, harmlessly OR'd into nothing by the
+       polling loop below) - the SDL_KEYDOWN check further down is what
+       actually uses its scancode, to trigger write_diagnostic_report on a
+       real edge (once per press) rather than every frame it's held. */
+    button_binding_t button_scancodes[REMAP_BINDING_COUNT] = {
         {resolve_key_binding(settings.key_up, SDL_SCANCODE_UP), PSEMU_BUTTON_UP, "Up"},
         {resolve_key_binding(settings.key_down, SDL_SCANCODE_DOWN), PSEMU_BUTTON_DOWN, "Down"},
         {resolve_key_binding(settings.key_left, SDL_SCANCODE_LEFT), PSEMU_BUTTON_LEFT, "Left"},
         {resolve_key_binding(settings.key_right, SDL_SCANCODE_RIGHT), PSEMU_BUTTON_RIGHT, "Right"},
         {resolve_key_binding(settings.key_fire, SDL_SCANCODE_Z), PSEMU_BUTTON_FIRE, "Fire/Action"},
+        {resolve_key_binding(settings.key_debug_log, SDL_SCANCODE_F12), 0, "Create Debug Log"},
     };
+
+    fprintf(stderr, "psemu: press %s at any time to write a diagnostic report to a pokketstation_report_*.log file\n",
+        SDL_GetScancodeName(button_scancodes[5].scancode));
 
     menu_context_t menu_ctx;
     menu_ctx.ps = ps;
@@ -1296,12 +1371,15 @@ int main(int argc, char **argv) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = 0;
-            } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == SDL_SCANCODE_F12) {
-                /* On-demand snapshot for manual testing - press F12 the
+            } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[5].scancode) {
+                /* On-demand snapshot for manual testing - press the
                    moment something looks wrong (frozen screen, missing
                    sound, garbled graphics), whether or not the CPU has
-                   actually faulted. */
-                write_diagnostic_report(ps, "manual (F12)", frame, bios_path, app_path);
+                   actually faulted. Remappable via Tools > Remap
+                   Controls..., default F12 - see button_scancodes above. */
+                char reason[64];
+                snprintf(reason, sizeof(reason), "manual (%s)", SDL_GetScancodeName(button_scancodes[5].scancode));
+                write_diagnostic_report(ps, reason, frame, bios_path, app_path);
             }
         }
 

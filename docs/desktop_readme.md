@@ -16,7 +16,7 @@ pokketstation.exe .\bios.bin .\samplememcard.mcr
 - **Double-clicking the .exe directly** (no command line) reuses the last BIOS path remembered from a previous run (see `settings.cfg` below) if there is one, otherwise it falls back to `bios.bin` next to the executable; the app/card side always looks for `memcard.mcr` next to the executable, since that path isn't remembered.
 - Launching with no BIOS and/or no app/card present (or an invalid one) isn't fatal — the window still opens; use **File > Load BIOS...** / **File > Open App/Card...** to browse to one instead.
 - The app runs without a console window by default (its diagnostic `stderr` output has nowhere to go unless you ask for one). Pass `--console` to get one, or `--no-console` to explicitly suppress it; whichever you pass is remembered in `settings.cfg` for future launches too.
-- **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button by default — remap any of the five from **Tools > Remap Controls...**. The window is freely resizable; **View > Native Size (1x)** / **Double Size (2x)** are just shortcuts back to a known-good size.
+- **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button by default, plus **F12** to write a diagnostic report — remap any of these six from **Tools > Remap Controls...**. Picking a key already used by another row unbinds it from that row instead of letting two actions share a key; an unbound row shows "(unbound)" and simply does nothing until remapped again. The window is freely resizable; **View > Native Size (1x)** / **Double Size (2x)** are just shortcuts back to a known-good size.
 - **View > Colors** switches the LCD's rendered look: **Classic** (the default muted LCD-style ink-on-sage look), **Light** (black on white), **Dark** (white on black), or **Custom Colors...** (pick any pixel/background hex pair). **View > Sprite Shadows** toggles a faint one-row "ghosting" trail approximating a real passive-matrix LCD's slow pixel response, with its own configurable color.
 - Press **F12** at any time to write a diagnostic report to a log file — see [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
 - The PocketStation's hardware ID (`F_SN`, which sets Final Fantasy VIII Chocobo World's rank) defaults to the best rank and can be viewed/edited from **Tools > Edit Hardware ID...** — see [hardware-notes.md](hardware-notes.md) for the format. This and every other setting above (remembered BIOS path, hardware ID, color scheme, sprite-shadow state, key bindings, `--console`/`--no-console` preference) persist across relaunches in `settings.cfg` next to the executable, written the moment each one actually changes.
@@ -79,7 +79,7 @@ The desktop app can write a detailed diagnostic report to a log file, in two sit
 - **Automatically**, the first time the CPU hits an unrecognized/unimplemented opcode. This is always a real emulator bug, not something you did wrong. The emulator doesn't crash — it stops stepping the CPU and freezes on the last good frame — and prints a message pointing you at the report (only visible if launched with `--console`, see above).
 - **On demand, at any time**, by pressing **F12**. Use this for anything that doesn't trip a hard fault but still looks wrong — glitched graphics, missing sound, the app seeming stuck, etc.
 
-Each report is written to the current directory as `psemu_report_<timestamp>.log` (e.g. `psemu_report_20260721_143012.log`) and contains:
+Each report is written to the current directory as `pokketstation_report_<timestamp>.log` (e.g. `pokketstation_report_20260721_143012.log`) and contains:
 - Why it was written (fault vs. manual F12) and which frame number
 - The BIOS and app/card file paths you ran with
 - Total instructions executed, held button state, `CLK_MODE`, and flash bank-select state (`F_BANK_FLG`/`F_BANK_VAL`)
@@ -87,4 +87,4 @@ Each report is written to the current directory as `psemu_report_<timestamp>.log
 - If a fault occurred: the exact unrecognized opcode and where it was fetched from
 - The last up to 8192 executed program counters (oldest first), each tagged ARM or Thumb
 
-**When filing a bug report, attach the relevant `psemu_report_*.log` file** along with a description of what you were doing right before it happened — that trace is usually the difference between a bug being fixable and not.
+**When filing a bug report, attach the relevant `pokketstation_report_*.log` file** along with a description of what you were doing right before it happened — that trace is usually the difference between a bug being fixable and not.
