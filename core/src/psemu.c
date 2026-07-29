@@ -34,6 +34,35 @@ void psemu_destroy(psemu_t *ps) {
 }
 
 void psemu_reset(psemu_t *ps) {
+    /* A true hardware-level reset: every peripheral returns to its
+       power-on default, the same way psemu_create sets each one up.
+       Loaded content survives, since a reset does not erase ROM/flash
+       content: ps->bus.bios[], ps->flash.data[], ps->flash.f_sn_lo/
+       f_sn_hi/f_cal (the hardware ID and LCD calibration), and
+       ps->has_bios are all left untouched.
+
+       Without this, reloading a different BIOS or app/card mid-session
+       left the previous session's peripheral register state (FLASH1 bank
+       mapping, INTC enable/mask, CLK_MODE, DAC buffer state, stale RAM)
+       sitting underneath the newly-loaded content, which is what caused
+       visible glitches on reload. */
+    memset(ps->bus.ram, 0, sizeof(ps->bus.ram));
+    lcd_init(&ps->lcd);
+    /* lcd_init clears dirty, correct for a fresh psemu_create where
+       there is nothing on screen yet. A mid-session reset instead needs
+       the frontend to redraw immediately, replacing whatever frame was
+       already shown. */
+    ps->lcd.dirty = 1;
+    intc_init(&ps->intc);
+    ir_init(&ps->ir);
+    timer_init(&ps->timer);
+    rtc_init(&ps->rtc);
+    dac_init(&ps->dac);
+    clk_init(&ps->clk);
+    iop_init(&ps->iop);
+    flash_reset_registers(&ps->flash);
+    ps->buttons = 0;
+    ps->real_time_cycle_carry = 0.0;
     arm7tdmi_reset(&ps->cpu, BIOS_RESET_VECTOR);
 }
 

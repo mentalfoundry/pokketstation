@@ -1734,6 +1734,64 @@ static void test_iop_stop_start_take_effect_via_single_byte_writes(void) {
     printf("test_iop_stop_start_take_effect_via_single_byte_writes OK\n");
 }
 
+static void test_psemu_reset_restores_defaults_and_preserves_content(void) {
+    /* psemu_reset must be a true hardware-level reset: every peripheral
+       register returns to its power-on default, but loaded content
+       (flash data, the hardware ID, RAM aside) is not content at all and
+       must survive - see psemu_reset's comment in psemu.c. Without this,
+       reloading a different BIOS/app mid-session left stale peripheral
+       state from the previous session in place, which is what caused
+       reload glitches. */
+    psemu_t *ps = make_arm_cpu();
+    int16_t samples[4];
+
+    /* Move several peripheral registers away from their power-on defaults. */
+    psemu_bus_write32(&ps->bus, PSEMU_INTC_BASE + 0x8, 0xFFu);   /* enable */
+    psemu_bus_write32(&ps->bus, PSEMU_CLK_BASE + 0x0, 7u);       /* CLK_MODE */
+    psemu_bus_write32(&ps->bus, PSEMU_DAC_BASE + 0x0, 1u);       /* DAC_CTRL enable */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 8, 1u);  /* F_BANK_FLG, select block 0 */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u);  /* commit */
+    psemu_bus_write8(&ps->bus, 0x10, 0xAAu);                     /* RAM content */
+    psemu_set_buttons(ps, PSEMU_BUTTON_UP);
+    ps->cpu.unimplemented = 1; /* simulate a prior CPU fault */
+
+    /* Content that must survive the reset. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE, 0x12345678u);
+    psemu_set_hardware_id(ps, 0xDEADBEEFu);
+
+    assert(ps->flash.bank_mask != 0);
+    assert(ps->buttons != 0);
+    assert(psemu_cpu_faulted(ps));
+
+    psemu_reset(ps);
+
+    /* Peripheral registers back to power-on defaults. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 0x8) == 0u);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_CLK_BASE + 0x0) == 0x10u); /* mode 0, steady bit always set */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_DAC_BASE + 0x0) == 0u);
+    assert(ps->flash.bank_mask == 0u);
+    assert(ps->flash.unlock_step == 0u);
+    assert(ps->buttons == 0u);
+    assert(!psemu_cpu_faulted(ps));
+
+    /* RAM zeroed. */
+    assert(psemu_bus_read8(&ps->bus, 0x10) == 0u);
+
+    /* Loaded content and hardware ID preserved. */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE) == 0x12345678u);
+    assert(psemu_get_hardware_id(ps) == 0xDEADBEEFu);
+
+    /* Audio outputs silence again, and the framebuffer is marked dirty so
+       the frontend redraws the now-blank screen immediately. */
+    dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE);
+    assert(psemu_get_audio_samples(ps, samples, 4) == 1u);
+    assert(samples[0] == 0);
+    assert(ps->lcd.dirty);
+
+    psemu_destroy(ps);
+    printf("test_psemu_reset_restores_defaults_and_preserves_content OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -1780,6 +1838,7 @@ int main(void) {
     test_dac_basic();
     test_iop_sound_gate_mutes_dac();
     test_iop_stop_start_take_effect_via_single_byte_writes();
+    test_psemu_reset_restores_defaults_and_preserves_content();
     printf("all cpu tests passed\n");
     return 0;
 }

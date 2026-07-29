@@ -43,11 +43,16 @@
    load-bearing. */
 #define DIRECTORY_POCKETSTATION_FLAG_OFFSET 0x10u
 
-void flash_init(flash_t *flash) {
-    memset(flash->data, 0, sizeof(flash->data));
+void flash_reset_registers(flash_t *flash) {
     flash->bank_mask = 0;
     flash->last_command = 0;
     memset(flash->bank_val, 0, sizeof(flash->bank_val));
+    flash->unlock_step = 0;
+}
+
+void flash_init(flash_t *flash) {
+    memset(flash->data, 0, sizeof(flash->data));
+    flash_reset_registers(flash);
     flash->f_sn_lo = (uint16_t)(FLASH_DEFAULT_SERIAL & 0xFFFFu);
     flash->f_sn_hi = (uint16_t)((FLASH_DEFAULT_SERIAL >> 16) & 0xFFFFu);
     /* Documented reset default (001Ah), per official register documentation.
@@ -55,7 +60,6 @@ void flash_init(flash_t *flash) {
        FlashWriteSerial always rewrites this register verbatim rather than
        computing it. */
     flash->f_cal = 0x001Au;
-    flash->unlock_step = 0;
 }
 
 uint32_t flash_get_serial(const flash_t *flash) {

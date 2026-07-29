@@ -533,6 +533,15 @@ static void prompt_open_app(menu_context_t *ctx) {
     *ctx->cpu_faulted_reported = 0;
 }
 
+/* Restarts the currently loaded BIOS and app/card from a clean state,
+   without reloading either file - the same reset psemu_reset already
+   performs after a fresh load (see its comment in psemu.c), triggered
+   on demand instead of only after a file dialog succeeds. */
+static void reset_emulation(menu_context_t *ctx) {
+    psemu_reset(ctx->ps);
+    *ctx->cpu_faulted_reported = 0;
+}
+
 /* lParam payload for hwid_dialog_proc.
    Passed in via DialogBoxParamA, retrieved with GetWindowLongPtrA(GWLP_USERDATA).
    parsed_id is filled in, and IDOK is allowed to close the dialog, only
@@ -979,6 +988,9 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         break;
     case ID_FILE_OPEN_APP:
         prompt_open_app(ctx);
+        break;
+    case ID_FILE_RESET:
+        reset_emulation(ctx);
         break;
     case ID_FILE_EXIT:
         *ctx->running = 0;
