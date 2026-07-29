@@ -33,7 +33,7 @@
    the one spot to touch, rather than something that silently drifts if
    the build environment doesn't have git available (e.g. building from a
    source zip instead of a clone). */
-#define POKKETSTATION_VERSION "v1.4.1"
+#define POKKETSTATION_VERSION "v1.5.0"
 
 /* Directory the running executable lives in, derived from argv[0] rather
    than an OS-specific "current module path" API - argv[0] is already the
