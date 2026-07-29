@@ -59,6 +59,12 @@ typedef struct psemu_bus {
     struct dac *dac;
     struct clk *clk;
     struct iop *iop;
+    /* Running total of real-hardware wait-state cycles charged by bus
+       accesses during the CURRENT instruction step - reset to 0 by
+       arm7tdmi_step before fetch/execute, read back afterward as that
+       step's true cost. See "Memory access timing" in
+       docs/hardware-notes.md. */
+    uint32_t pending_cycles;
 } psemu_bus_t;
 
 void psemu_bus_init(
@@ -71,6 +77,21 @@ uint32_t psemu_bus_read32(psemu_bus_t *bus, uint32_t addr);
 void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value);
 void psemu_bus_write16(psemu_bus_t *bus, uint32_t addr, uint16_t value);
 void psemu_bus_write32(psemu_bus_t *bus, uint32_t addr, uint32_t value);
+
+/* Opcode-fetch variants of read16/read32, used only by arm7tdmi_step - cost
+   the real per-region "Memory Access Time for Opcode Fetch" table instead
+   of the data-access table (see psemu_region_fetch_cycles), otherwise
+   identical. */
+uint16_t psemu_bus_fetch16(psemu_bus_t *bus, uint32_t addr);
+uint32_t psemu_bus_fetch32(psemu_bus_t *bus, uint32_t addr);
+
+/* Real per-region opcode-fetch wait-state cost (the documented "Memory
+   Access Time for Opcode Fetch" table) - exposed so arm_exec.c/thumb_exec.c/
+   cpu.c can cost pipeline-refill fetches (branches, PC writes, exception
+   entry) the same way psemu_bus_fetch16/32 do internally. See
+   docs/hardware-notes.md, "Memory access timing", for the table and its
+   now confirmed BIOS opcode fetch. */
+uint32_t psemu_region_fetch_cycles(uint32_t addr, int thumb);
 
 /* TEMPORARY diagnostic flag - see memory.c. */
 extern int psemu_clk_trace_enabled;

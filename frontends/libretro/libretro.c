@@ -101,7 +101,7 @@ static void submit_audio(void) {
 
 void retro_run(void) {
     update_input();
-    psemu_run(g_ps, 33000); /* not yet cycle-accurate, see docs/hardware-notes.md */
+    psemu_run(g_ps, 33000); /* cycle budget at PSEMU_ASSUMED_CPU_HZ, see docs/hardware-notes.md */
     convert_framebuffer();
     video_cb(g_framebuffer, PSEMU_LCD_WIDTH, PSEMU_LCD_HEIGHT, PSEMU_LCD_WIDTH * sizeof(uint32_t));
     submit_audio();

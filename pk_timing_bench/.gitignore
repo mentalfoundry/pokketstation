@@ -1,0 +1,8 @@
+body.elf
+body.bin
+pack
+pack.exe
+icon_convert
+icon_convert.exe
+assets/card_icon.bin
+src/*.o

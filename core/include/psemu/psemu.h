@@ -44,7 +44,7 @@ psemu_status psemu_load_bios(psemu_t *ps, const uint8_t *data, size_t size);
    card directory at slot 1, so the real BIOS's menu can navigate to and
    dispatch it exactly as it would from a full card - press Down then
    Action to get past the date/time screen, then Right then Action to
-   launch (see docs/hardware-notes.md, "App-selection and dispatch"). `size`
+   launch (see docs/app-notes.md, "App-selection and dispatch"). `size`
    is capped at 15 blocks' worth (see PSEMU_FLASH_SIZE), one less than a
    full card, since block 0 is reserved for the synthesized directory. */
 psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size);
@@ -60,7 +60,7 @@ psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size);
 /* Loads a raw FLASH2 image (e.g. a whole memory card dump) directly into
    flash, bypassing psemu_load_app's single-Title-Sector validation. Use
    this to load a real card image containing its own directory - the real
-   BIOS's app-selection menu (see docs/hardware-notes.md) then navigates
+   BIOS's app-selection menu (see docs/app-notes.md) then navigates
    and launches apps from it the same way real hardware does, entirely
    through psemu_set_buttons - no other setup is required. `data` may be
    shorter than PSEMU_FLASH_SIZE; the rest of flash is left zeroed. */

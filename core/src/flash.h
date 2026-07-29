@@ -89,7 +89,7 @@ void flash_init(flash_t *flash);
 /* Validates a PSX Title Sector app image and loads it into a synthesized
    one-entry memory-card directory at slot 1, so the real BIOS's
    app-selection/dispatch routine can actually reach it (see
-   docs/hardware-notes.md, "App-selection and dispatch"). `size` is capped
+   docs/app-notes.md, "App-selection and dispatch"). `size` is capped
    at 15 blocks (DIRECTORY_MAX_APP_BLOCKS), not the full 16, since block 0
    is reserved for the synthesized directory. */
 psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size);
@@ -99,7 +99,7 @@ uint8_t flash_read8(flash_t *flash, uint32_t addr);
 void flash_write8(flash_t *flash, uint32_t addr, uint8_t value);
 
 /* FLASH1: virtual window onto FLASH2. Each 8KB virtual bank (0-15) is
-   resolved live against F_BANK_FLG/F_BANK_VAL (see docs/hardware-notes.md,
+   resolved live against F_BANK_FLG/F_BANK_VAL (see docs/app-notes.md,
    "App-selection and dispatch") - falls back to a contiguous linear
    offset from the lowest enabled physical block when F_BANK_VAL hasn't
    been explicitly configured for a given bank. */

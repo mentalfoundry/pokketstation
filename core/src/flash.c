@@ -77,7 +77,7 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
 
     memset(flash->data, 0, sizeof(flash->data));
 
-    /* Real hardware's app-selection routine (docs/hardware-notes.md,
+    /* Real hardware's app-selection routine (docs/app-notes.md,
        "App-selection and dispatch") requires FLASH2 to carry a real memory-
        card directory, not just the app's own bytes at offset 0 - it reads
        the selected slot's directory frame, walks its block-chain link, and
@@ -260,7 +260,7 @@ static uint32_t flash_resolve_physical_bank(const flash_t *flash, uint32_t virtu
        behavior: treat the enabled physical blocks as one contiguous run
        starting at the lowest-numbered enabled block. Confirmed via real
        disassembly that this emulator's app-selection routine (see
-       "App-selection and dispatch" in docs/hardware-notes.md) only ever
+       "App-selection and dispatch" in docs/app-notes.md) only ever
        writes F_BANK_FLG, never F_BANK_VAL - so this fallback is what
        keeps ordinary multi-block app dispatch/execution working exactly
        as before for every case already tested this session. */

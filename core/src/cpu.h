@@ -69,7 +69,11 @@ typedef struct {
 void arm7tdmi_init(arm7tdmi_t *cpu, psemu_bus_t *bus);
 void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector);
 
-/* Executes one instruction, returns cycles consumed (approximate: 1 per instruction for now). */
+/* Executes one instruction (or delivers a pending FIQ/IRQ instead), returns
+   real wait-state cycles consumed - the region-costed opcode fetch plus
+   whatever data accesses/internal/pipeline-refill cycles that instruction
+   needed (see docs/hardware-notes.md, "Memory access timing"). Halted/
+   unimplemented-fault steps are a flat 1: nothing real executes. */
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu);
 
 /* Diagnostic hook (see intc.c's psemu_intc_trace_enabled and similar
@@ -93,6 +97,19 @@ void arm_set_nz(arm7tdmi_t *cpu, uint32_t result);
 uint32_t arm_adc_raw(uint32_t a, uint32_t b, uint32_t carry_in, int *carry_out, int *overflow);
 arm_shift_result_t arm_apply_shift(uint32_t value, int shift_type, uint32_t amount, int carry_in, int is_immediate_encoding);
 void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32_t return_addr);
+
+/* Adds `n` cycles beyond what the automatic opcode fetch/data-access
+   costing already charged - for internal-only (I) cycles with no bus
+   access of their own (register-specified shifts, multiply's data-
+   dependent extra cycles, LDR/LDM's fixed +1I) and for pipeline-refill
+   fetches when an instruction changes PC (branches, BX, PC-writing
+   data-processing/LDR/LDM, exception entry) - see docs/hardware-notes.md,
+   "Memory access timing", and the call sites in arm_exec.c/thumb_exec.c. */
+void arm7tdmi_add_cycles(arm7tdmi_t *cpu, uint32_t n);
+/* Real ARM7TDMI multiply early-termination cycle count (m = 1..4) for a
+   given Rs value - see the definition in arm_exec.c for the rule. Shared
+   by arm_exec.c's MUL/MLA/UMULL/UMLAL/SMULL/SMLAL and thumb_exec.c's MUL. */
+uint32_t arm7tdmi_mul_m_cycles(uint32_t rs);
 
 void arm_execute(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc);
 void thumb_execute(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc);

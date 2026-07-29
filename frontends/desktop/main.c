@@ -1303,8 +1303,15 @@ int main(int argc, char **argv) {
     if (shrink > 0) {
         RECT window_rect;
         GetWindowRect(hwnd, &window_rect);
+        /* SWP_FRAMECHANGED forces Windows to recompute the menu bar's
+           cached item rects for the new window size - without it, the
+           menu bar keeps the geometry it had at SetMenu time (before this
+           resize), so the very first click on any menu opens its dropdown
+           using stale coordinates (visibly left-facing instead of the
+           normal right-facing direction) until some later hover/click
+           forces a recalculation on its own. */
         SetWindowPos(hwnd, NULL, 0, 0, window_rect.right - window_rect.left,
-            (window_rect.bottom - window_rect.top) + shrink, SWP_NOMOVE | SWP_NOZORDER);
+            (window_rect.bottom - window_rect.top) + shrink, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
     /* Live key -> PocketStation-button mapping the main loop polls every
@@ -1406,14 +1413,15 @@ int main(int argc, char **argv) {
            showed that "fix" made on-screen blinking visibly too fast.
            Real hardware genuinely runs at a variable clock (up to
            ~7.995MHz, see the CPU_FREQ table in core/src/clk.c, and
-           docs/hardware-notes.md, "CLK_MODE") - psemu_run does scale its
-           overall throughput by the app's currently-programmed CLK_MODE,
-           but not true per-instruction cycle costs (still approximate,
-           see "Known open questions" in docs/hardware-notes.md), so any
-           single fixed per-frame budget is itself still an approximation
-           on top of that - 33000/frame is kept here specifically because
-           it's the value empirically confirmed to look right, not because
-           it's independently derived. See dac.h's PSEMU_ASSUMED_CPU_HZ
+           docs/hardware-notes.md, "CLK_MODE") - psemu_run scales its
+           overall throughput by both the app's currently-programmed
+           CLK_MODE and each instruction's real per-instruction cycle cost
+           (see "Memory access timing" in docs/hardware-notes.md), so this
+           fixed per-frame budget is a real-time reference rate, not an
+           instruction-count approximation - 33000/frame is kept here
+           specifically because it's the value empirically confirmed to
+           look right, not because it's independently derived. See dac.h's
+           PSEMU_ASSUMED_CPU_HZ
            for the matching audio-rate conversion (33000 * 32) - keep both
            in sync if this ever changes. */
         /* If the CPU has run into an opcode this emulator doesn't

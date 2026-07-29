@@ -1,6 +1,6 @@
 # Desktop frontend
 
-SDL2-based standalone app for Windows. (Linux app will be forthcoming once the emulator is feature complete).
+SDL2-based standalone app for Windows.
 
 ## Usage
 

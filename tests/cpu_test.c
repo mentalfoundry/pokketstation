@@ -295,12 +295,11 @@ static void test_arm_exceptions_and_psr(void) {
     assert(ps->cpu.r[14] == 0x54u); /* return address = pc + 4 */
     assert(ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)] == old_cpsr);
 
-    /* Switching back to USR should restore its banked SP, untouched by SVC's. */
-    ps->cpu.r[13] = 0x1234; /* SVC's own SP, distinct from USR's */
-    arm_set_mode(&ps->cpu, ARM_MODE_USR);
-    assert(ps->cpu.r[13] == 0x9000u);
-
-    /* MRS/MSR round trip on the control byte (mode + I/F/T bits). */
+    /* MRS/MSR round trip on the control byte (mode + I/F/T bits) - done
+       here, still in SVC mode (privileged) from the SWI above, since a
+       write to CPSR's control byte only succeeds from a privileged mode
+       on real hardware (see test_msr_user_mode_control_byte_is_ignored
+       for the User-mode-restricted case). */
     ps->cpu.r[0] = ARM_MODE_SVC | CPSR_I; /* value to load into CPSR control byte */
     uint32_t msr_instr = (0xEu << 28) | (1u << 24) | (1u << 21) | (1u << 16) | (0xFu << 12) | 0u;
     put32(ps, 0x58, msr_instr);
@@ -314,8 +313,57 @@ static void test_arm_exceptions_and_psr(void) {
     arm7tdmi_step(&ps->cpu);
     assert(ps->cpu.r[1] == ps->cpu.cpsr);
 
+    /* Switching back to USR should restore its banked SP, untouched by SVC's. */
+    ps->cpu.r[13] = 0x1234; /* SVC's own SP, distinct from USR's */
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    assert(ps->cpu.r[13] == 0x9000u);
+
     psemu_destroy(ps);
     printf("test_arm_exceptions_and_psr OK\n");
+}
+
+static void test_msr_user_mode_control_byte_is_ignored(void) {
+    /* Real ARM7TDMI/ARMv4T silicon: MSR to CPSR from User mode can only
+       change the condition flags (top byte) - the control byte (mode, T,
+       F, I) is protected and silently ignored, regardless of which of
+       those bits the instruction asks for. Found via a real homebrew app
+       (pk_timing_bench) that unintentionally relied on the emulator
+       previously getting this wrong: it wrote CPSR_I/F from User mode
+       expecting a real-hardware no-op, but the write actually took
+       effect here, leaving interrupts globally masked for the app's
+       entire runtime in a way real hardware never would - see
+       docs/hardware-notes.md. */
+    psemu_t *ps = make_arm_cpu();
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    ps->cpu.cpsr &= ~(CPSR_I | CPSR_F); /* reset() sets these - start from a known-clear state */
+    uint32_t before_cpsr = ps->cpu.cpsr;
+
+    /* MSR CPSR_c, r0 - attempt to switch to SVC mode and set the I bit. */
+    ps->cpu.r[0] = ARM_MODE_SVC | CPSR_I;
+    uint32_t msr_c_instr = (0xEu << 28) | (1u << 24) | (1u << 21) | (1u << 16) | (0xFu << 12) | 0u;
+    put32(ps, 0x50, msr_c_instr);
+    ps->cpu.r[15] = 0x50;
+    arm7tdmi_step(&ps->cpu);
+
+    assert(ps->cpu.cpsr == before_cpsr); /* fully unchanged - mode, I, F, T all ignored */
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_USR);
+    assert(!(ps->cpu.cpsr & CPSR_I));
+
+    /* MSR CPSR_f, r1 - the flags byte IS writable from User mode. */
+    ps->cpu.r[1] = CPSR_N | CPSR_Z | CPSR_C | CPSR_V;
+    uint32_t msr_f_instr = (0xEu << 28) | (1u << 24) | (1u << 21) | (8u << 16) | (0xFu << 12) | 1u;
+    put32(ps, 0x54, msr_f_instr);
+    ps->cpu.r[15] = 0x54;
+    arm7tdmi_step(&ps->cpu);
+
+    assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_USR); /* still unprivileged */
+    assert(ps->cpu.cpsr & CPSR_N);
+    assert(ps->cpu.cpsr & CPSR_Z);
+    assert(ps->cpu.cpsr & CPSR_C);
+    assert(ps->cpu.cpsr & CPSR_V);
+
+    psemu_destroy(ps);
+    printf("test_msr_user_mode_control_byte_is_ignored OK\n");
 }
 
 static void test_arm_exception_return(void) {
@@ -963,7 +1011,16 @@ static void test_clk_mode_keeps_rtc_dac_on_real_time(void) {
     psemu_run(ps_max, budget);
 
     long rtc_diff = (long)ps_idle->rtc.tick_accumulator - (long)ps_max->rtc.tick_accumulator;
-    assert(rtc_diff > -20 && rtc_diff < 20); /* small final-step overshoot only */
+    /* Small final-step overshoot only - but the bound is wider than it
+       used to be now that arm7tdmi_step returns a real, region-dependent
+       cycle cost (see docs/hardware-notes.md, "Memory access timing")
+       instead of a flat 1: this test's own zero-filled instruction stream
+       runs off the end of the 2KB WRAM region partway through the
+       budget, after which every step costs 2 raw cycles instead of 1, up
+       to doubling the worst-case single-step overshoot this assert has
+       to tolerate (observed ~38 vs the old flat-cost model's headroom
+       under 20). */
+    assert(rtc_diff > -60 && rtc_diff < 60);
 
     int16_t buf_idle[4096], buf_max[4096];
     uint32_t n_idle = psemu_get_audio_samples(ps_idle, buf_idle, 4096u);
@@ -1090,7 +1147,7 @@ static void test_flash_ctrl_busy_wait_bits(void) {
     /* Two real, confirmed bugs, both busy-wait loops in real BIOS/app code
        that this emulator silently hung forever - found only once real app
        execution got far enough to reach them (see
-       docs/hardware-notes.md's app-dispatch investigation). */
+       docs/app-notes.md's app-dispatch investigation). */
 
     /* Bug 1: +0 (command/commit trigger) is write-command/read-status on
        real hardware, not a plain mirror. A real routine writes 2 here
@@ -1218,7 +1275,7 @@ static void test_flash_serial_number_register_access(void) {
 }
 
 static void test_flash_load_app_synthesizes_directory(void) {
-    /* A real, confirmed bug (see docs/hardware-notes.md, "App-selection and
+    /* A real, confirmed bug (see docs/app-notes.md, "App-selection and
        dispatch"): the real BIOS's app-selection routine requires FLASH2 to
        carry a real memory-card directory, not just the app's own bytes at
        offset 0 - flash_load_app used to write the raw Title Sector straight
@@ -1684,6 +1741,7 @@ int main(void) {
     test_arm_ldrh_misaligned_quirks();
     test_arm_control_flow();
     test_arm_exceptions_and_psr();
+    test_msr_user_mode_control_byte_is_ignored();
     test_arm_exception_return();
     test_arm_ldm_exception_return();
     test_thumb_basic();

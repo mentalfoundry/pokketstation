@@ -4,11 +4,11 @@ An open-source Sony PocketStation emulator core, written in portable C, meant to
 
 ## Status
 
-Stable, broadly community tested and as cycle accurate as I can make it. LGTM and I hope you will agree.
+Stable, broadly community tested and as cycle accurate as I can make it. LGTM and I hope you will agree. If you have requests for missing features please [raise an issue](https://github.com/mentalfoundry/pokketstation/issues) and I'll take a look.
 
 See [docs/hardware-notes.md](docs/hardware-notes.md) for the technical details.
 
-**Known gaps:** IR communication timing is unverified, per-instruction cycle timing is still approximate rather than cycle-accurate (see `PSEMU_ASSUMED_CPU_HZ` in `docs/hardware-notes.md`), and a handful of edge cases (low-battery detection, `F_BANK_VAL` entries mapping multiple physical blocks to the same virtual slot, the BIOS's pre-remap boot phase) are deliberately simplified — see the "Confirmed real gaps" list at the end of `docs/hardware-notes.md` for specifics.
+**Known gaps:** IR communication timing is unverified, per-instruction cycle timing follows the documented memory-access-time table with one narrow assumed default where even that documentation doesn't specify an answer (see "Memory access timing" in `docs/hardware-notes.md`), and a handful of edge cases (low-battery detection, `F_BANK_VAL` entries mapping multiple physical blocks to the same virtual slot, the BIOS's pre-remap boot phase) are deliberately simplified — see the "Known open questions and unconfirmed behavior" list at the end of `docs/hardware-notes.md` for specifics.
 
 If you hit a crash or an unrecognized-opcode freeze, please [open an issue](https://github.com/mentalfoundry/pokketstation/issues) — include a [diagnostic report](docs/desktop_readme.md#diagnostic-reports-for-bug-reports) if you can, it makes tracking down the real bug far easier.
 
@@ -35,6 +35,7 @@ frontends/
   vita/                  PS Vita port (vita2d), built via the vitasdk toolchain
 tests/                   smoke test exercising the public API
 docs/hardware-notes.md   hardware reference (memory map, file format, sources), frontend specific readmes
+pk_timing_bench/         homebrew memory-timing benchmark app (build source + real-hardware findings)
 ```
 
 ## Building

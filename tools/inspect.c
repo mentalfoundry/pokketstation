@@ -234,9 +234,13 @@ int main(int argc, char **argv) {
                shows for a bit, 3) a beep, 4) the time-setting screen
                appears - press Down once, then Action, to continue, which
                5) lands on a clock screen - Right from there moves to the
-               first app in the list (then presumably Action launches it -
-               not yet confirmed on real hardware, but the natural next
-               step). Each real tap is ~40ms, which at the real ~4MHz
+               first app in the list, then Action launches it - the whole
+               sequence including that final Action is confirmed working:
+               button_sim=9 reuses this exact repeating pattern to reach
+               dispatch, and that path is what real-hardware testing
+               verified end-to-end for the F_SN feature (see docs/hardware-
+               notes.md, "Hardware ID (F_SN)": "confirmed working end-to-end
+               on real retail hardware"). Each real tap is ~40ms, which at the real ~4MHz
                clock is roughly 160000 cycles - a much earlier version of
                this simulation held each button for only 500 instructions
                (~300x too short given the 1-cycle-per-instruction

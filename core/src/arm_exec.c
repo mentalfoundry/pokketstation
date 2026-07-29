@@ -38,6 +38,10 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     int set_flags = (int)((instr >> 20) & 1u);
     int rn = (int)((instr >> 16) & 0xFu);
     int rd = (int)((instr >> 12) & 0xFu);
+    /* Register-specified shift amount (not an immediate shift) costs an
+       extra internal cycle - "1S+1I" instead of plain "1S" - since the
+       shifter has to wait on a register read before it can run. */
+    int reg_shift = !(instr & (1u << 25)) && (instr & (1u << 4));
 
     int shifter_carry;
     uint32_t op2 = decode_operand2(cpu, instr, pc, &shifter_carry);
@@ -121,6 +125,34 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     if (write_result) {
         arm_write_reg(cpu, rd, result);
     }
+
+    uint32_t extra = reg_shift ? 1u : 0u;
+    if (write_result && rd == 15) {
+        /* Writing PC flushes the pipeline - 2 more fetches at the new PC,
+           in whatever state (ARM/Thumb) it's in *after* this instruction
+           (an SPSR-restoring "MOVS PC,..." may have just changed it). */
+        extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
+    }
+    if (extra) {
+        arm7tdmi_add_cycles(cpu, extra);
+    }
+}
+
+/* Real ARM7TDMI multiply timing terminates early depending on Rs's value -
+   the more of its high bytes are all-0 or all-1, the fewer internal
+   cycles it costs (m = 1..4). Shared by ARM's 32x32->32/32x32->64
+   multiply forms (below) and Thumb's MUL (thumb_exec.c). */
+uint32_t arm7tdmi_mul_m_cycles(uint32_t rs) {
+    if ((rs >> 8) == 0u || (rs >> 8) == 0x00FFFFFFu) {
+        return 1u;
+    }
+    if ((rs >> 16) == 0u || (rs >> 16) == 0x0000FFFFu) {
+        return 2u;
+    }
+    if ((rs >> 24) == 0u || (rs >> 24) == 0x000000FFu) {
+        return 3u;
+    }
+    return 4u;
 }
 
 static void exec_multiply(arm7tdmi_t *cpu, uint32_t instr) {
@@ -131,6 +163,7 @@ static void exec_multiply(arm7tdmi_t *cpu, uint32_t instr) {
     int accumulate = (int)((instr >> 21) & 1u);
     int set_flags = (int)((instr >> 20) & 1u);
 
+    uint32_t m = arm7tdmi_mul_m_cycles(cpu->r[rs]);
     uint32_t result = cpu->r[rm] * cpu->r[rs];
     if (accumulate) {
         result += cpu->r[rn];
@@ -139,6 +172,9 @@ static void exec_multiply(arm7tdmi_t *cpu, uint32_t instr) {
     if (set_flags) {
         arm_set_nz(cpu, result);
     }
+    /* MUL: 1S+mI. MLA (accumulate): 1S+(m+1)I. The 1S is the opcode fetch,
+       already counted. */
+    arm7tdmi_add_cycles(cpu, accumulate ? m + 1u : m);
 }
 
 static void exec_long_multiply(arm7tdmi_t *cpu, uint32_t instr) {
@@ -150,6 +186,7 @@ static void exec_long_multiply(arm7tdmi_t *cpu, uint32_t instr) {
     int accumulate = (int)((instr >> 21) & 1u);
     int set_flags = (int)((instr >> 20) & 1u);
     uint64_t result;
+    uint32_t m = arm7tdmi_mul_m_cycles(cpu->r[rs]); /* read before rdlo/rdhi writeback in case Rs aliases them */
 
     if (is_signed) {
         result = (uint64_t)((int64_t)(int32_t)cpu->r[rm] * (int64_t)(int32_t)cpu->r[rs]);
@@ -165,6 +202,8 @@ static void exec_long_multiply(arm7tdmi_t *cpu, uint32_t instr) {
         cpu->cpsr = (cpu->cpsr & ~(CPSR_N | CPSR_Z)) | ((result & 0x8000000000000000ull) ? CPSR_N : 0u) |
                     (result == 0 ? CPSR_Z : 0u);
     }
+    /* UMULL/SMULL: 1S+(m+1)I. UMLAL/SMLAL (accumulate): 1S+(m+2)I. */
+    arm7tdmi_add_cycles(cpu, accumulate ? m + 2u : m + 1u);
 }
 
 static void exec_swap(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -183,6 +222,10 @@ static void exec_swap(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         psemu_bus_write32(cpu->bus, addr & ~3u, cpu->r[rm]);
         cpu->r[rd] = old;
     }
+    /* SWP: 1S+2N+1I - the fetch (1S) and both data accesses (2N) are
+       already counted via the opcode fetch and the read/write calls
+       above; only the extra internal cycle remains. */
+    arm7tdmi_add_cycles(cpu, 1u);
 }
 
 static void exec_bx(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -196,6 +239,11 @@ static void exec_bx(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         target &= ~3u;
     }
     cpu->r[15] = target;
+    /* BX: 2S+1N - 1S is the opcode fetch (already counted); the remaining
+       "1S+1N" is the pipeline refill, modeled as 2 more fetches at the
+       target (no S/N cost distinction on this hardware - see
+       docs/hardware-notes.md). */
+    arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0));
 }
 
 static void exec_mrs(arm7tdmi_t *cpu, uint32_t instr) {
@@ -228,6 +276,22 @@ static void exec_msr(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         uint32_t *spsr = &cpu->spsr_bank[arm_current_bank(cpu)];
         *spsr = (*spsr & ~byte_mask) | (value & byte_mask);
         return;
+    }
+
+    if ((cpu->cpsr & CPSR_MODE_MASK) == ARM_MODE_USR) {
+        /* Real ARM7TDMI/ARMv4T silicon: MSR to CPSR from User mode can
+           only change the condition flags (top byte) - the control byte
+           (mode, T, F, I) is protected and silently ignored, regardless
+           of which of those bits the instruction asks for. This is fixed
+           CPU behavior, not PocketStation-specific, but was previously
+           unenforced here - confirmed via a real homebrew app
+           (pk_timing_bench) that unintentionally relied on the bug:
+           it wrote CPSR_I/F from User mode expecting a real-hardware
+           no-op ("kept anyway since it's harmless" - see start.s), but
+           this emulator actually applied it, leaving interrupts globally
+           masked for the app's entire runtime in a way real hardware
+           never would. */
+        byte_mask &= 0xFF000000u;
     }
 
     if ((byte_mask & 0xFFu) && (value & CPSR_MODE_MASK) != (cpu->cpsr & CPSR_MODE_MASK)) {
@@ -282,6 +346,18 @@ static void exec_single_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     if ((!pre_index || writeback) && rn != 15) {
         cpu->r[rn] = final_address;
     }
+
+    if (load) {
+        /* LDR: 1S+1N+1I - fetch and data read already counted, +1I
+           remains; +1S+1N pipeline refill on top if PC was the target. */
+        uint32_t extra = 1u;
+        if (rd == 15) {
+            extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
+        }
+        arm7tdmi_add_cycles(cpu, extra);
+    }
+    /* STR: 2N - fetch (standing in for the first N) and data write
+       already counted; no extra. */
 }
 
 static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -358,6 +434,16 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
     if ((!pre_index || writeback) && rn != 15) {
         cpu->r[rn] = final_address;
     }
+
+    if (load) {
+        /* LDRH/LDRSB/LDRSH: same "1S+1N+1I(+pipeline refill)" shape as
+           LDR - see exec_single_transfer. */
+        uint32_t extra = 1u;
+        if (rd == 15) {
+            extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
+        }
+        arm7tdmi_add_cycles(cpu, extra);
+    }
 }
 
 static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -410,7 +496,8 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
        alongside "MOVS/SUBS PC,LR" - S-bit set with PC in the list means
        also restore the whole CPSR from this mode's SPSR. S-bit without PC
        in the list means something unrelated (user-bank register access),
-       not handled here. */
+       not handled here. Done before the cycle accounting below so a
+       PC-refill fetch cost reflects the post-restore ARM/Thumb state. */
     if (load && s_bit && (reg_list & 0x8000u)) {
         uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
         if (mode != ARM_MODE_USR && mode != ARM_MODE_SYS) {
@@ -419,6 +506,18 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
             cpu->cpsr = spsr;
         }
     }
+
+    if (load) {
+        /* LDM: nS+1N+1I - the n register loads are already counted (one
+           read32 call each, above); +1I remains, plus a pipeline-refill
+           +1S+1N (2 more fetches) if PC was among the loaded registers. */
+        uint32_t extra = 1u;
+        if (reg_list & 0x8000u) {
+            extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
+        }
+        arm7tdmi_add_cycles(cpu, extra);
+    }
+    /* STM: (n-1)S+2N - the n writes already counted; no extra. */
 }
 
 static void exec_branch(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -429,6 +528,9 @@ static void exec_branch(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         cpu->r[14] = pc + 4u;
     }
     cpu->r[15] = target;
+    /* B/BL: 2S+1N - 1S is the opcode fetch (already counted); the target
+       is always ARM state (no interworking on a plain branch). */
+    arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(target, 0));
 }
 
 void arm_execute(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -483,6 +585,8 @@ void arm_execute(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
     if ((instr & 0x0F000000u) == 0x0F000000u) {
         arm_enter_exception(cpu, ARM_MODE_SVC, SWI_VECTOR, pc + 4u);
+        /* Exception entry pipeline refill - same shape as B/BL above. */
+        arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(SWI_VECTOR, 0));
         return;
     }
     cpu->unimplemented = 1;

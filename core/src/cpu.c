@@ -203,6 +203,10 @@ arm_shift_result_t arm_apply_shift(uint32_t value, int shift_type, uint32_t amou
     return r;
 }
 
+void arm7tdmi_add_cycles(arm7tdmi_t *cpu, uint32_t n) {
+    cpu->bus->pending_cycles += n;
+}
+
 void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32_t return_addr) {
     uint32_t old_cpsr = cpu->cpsr;
     arm_set_mode(cpu, mode);
@@ -238,6 +242,7 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].cpsr = cpu->cpsr;
     cpu->trace_pos++;
     cpu->total_steps++;
+    cpu->bus->pending_cycles = 0;
     /* A REAL, CONFIRMED BUG this session (see docs/hardware-notes.md,
        "Interrupt controller"): FIQ was never actually delivered
        by this emulator, for any app, ever - intc_fiq_asserted (intc.c)
@@ -259,7 +264,11 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
            by every exception type and only sets I, so this one extra bit
            is set here instead of generically. */
         cpu->cpsr |= CPSR_F;
-        return 1;
+        /* Exception entry is a pipeline refill - two ARM-state fetches at
+           the vector (same "2S+1N" shape as SWI/branches; see
+           docs/hardware-notes.md, "Memory access timing"). */
+        arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(ARM_FIQ_VECTOR, 0));
+        return cpu->bus->pending_cycles;
     }
     /* IRQ is level-triggered on real hardware (the interrupt controller's
        hold & enable & INT_IRQ_MASK, not a one-shot request) - poll it live
@@ -269,17 +278,18 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
         /* Return address follows the "SUBS PC, LR, #4" handler-exit
            convention: LR_irq = address of the next instruction + 4. */
         arm_enter_exception(cpu, ARM_MODE_IRQ, ARM_IRQ_VECTOR, cpu->r[15] + 4u);
-        return 1;
+        arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(ARM_IRQ_VECTOR, 0));
+        return cpu->bus->pending_cycles;
     }
     uint32_t pc = cpu->r[15];
     if (cpu->cpsr & CPSR_T) {
-        uint16_t instr = psemu_bus_read16(cpu->bus, pc & ~1u);
+        uint16_t instr = psemu_bus_fetch16(cpu->bus, pc & ~1u);
         cpu->r[15] = pc + 2u;
         thumb_execute(cpu, instr, pc);
     } else {
-        uint32_t instr = psemu_bus_read32(cpu->bus, pc & ~3u);
+        uint32_t instr = psemu_bus_fetch32(cpu->bus, pc & ~3u);
         cpu->r[15] = pc + 4u;
         arm_execute(cpu, instr, pc);
     }
-    return 1;
+    return cpu->bus->pending_cycles;
 }

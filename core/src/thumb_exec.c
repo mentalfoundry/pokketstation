@@ -91,6 +91,7 @@ static void exec_alu(arm7tdmi_t *cpu, uint16_t instr) {
         cpu->r[rd] = sr.value;
         arm_set_nz(cpu, sr.value);
         cpu->cpsr = (cpu->cpsr & ~CPSR_C) | (sr.carry ? CPSR_C : 0u);
+        arm7tdmi_add_cycles(cpu, 1u); /* shift-by-register: +1I */
         return;
     }
     case 0x3: { /* LSR */
@@ -98,6 +99,7 @@ static void exec_alu(arm7tdmi_t *cpu, uint16_t instr) {
         cpu->r[rd] = sr.value;
         arm_set_nz(cpu, sr.value);
         cpu->cpsr = (cpu->cpsr & ~CPSR_C) | (sr.carry ? CPSR_C : 0u);
+        arm7tdmi_add_cycles(cpu, 1u);
         return;
     }
     case 0x4: { /* ASR */
@@ -105,6 +107,7 @@ static void exec_alu(arm7tdmi_t *cpu, uint16_t instr) {
         cpu->r[rd] = sr.value;
         arm_set_nz(cpu, sr.value);
         cpu->cpsr = (cpu->cpsr & ~CPSR_C) | (sr.carry ? CPSR_C : 0u);
+        arm7tdmi_add_cycles(cpu, 1u);
         return;
     }
     case 0x5: /* ADC */
@@ -124,6 +127,7 @@ static void exec_alu(arm7tdmi_t *cpu, uint16_t instr) {
         cpu->r[rd] = sr.value;
         arm_set_nz(cpu, sr.value);
         cpu->cpsr = (cpu->cpsr & ~CPSR_C) | (sr.carry ? CPSR_C : 0u);
+        arm7tdmi_add_cycles(cpu, 1u);
         return;
     }
     case 0x8: /* TST */
@@ -154,6 +158,8 @@ static void exec_alu(arm7tdmi_t *cpu, uint16_t instr) {
         result = a * b;
         cpu->r[rd] = result;
         arm_set_nz(cpu, result);
+        /* Thumb MUL: 1S+mI - same early-termination rule as ARM's MUL. */
+        arm7tdmi_add_cycles(cpu, arm7tdmi_mul_m_cycles(b));
         return;
     case 0xE: /* BIC */
         result = a & ~b;
@@ -176,11 +182,13 @@ static void exec_hi_reg_ops(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) {
     int rd = (instr & 0x7) + (h1 ? 8 : 0);
     uint32_t src = arm_read_reg(cpu, rs, pc, 1);
 
+    int pc_written = 0;
     switch (op) {
     case 0: { /* ADD */
         uint32_t result = arm_read_reg(cpu, rd, pc, 1) + src;
         if (rd == 15) {
             cpu->r[15] = result & ~1u;
+            pc_written = 1;
         } else {
             cpu->r[rd] = result;
         }
@@ -196,6 +204,7 @@ static void exec_hi_reg_ops(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) {
     case 2: /* MOV */
         if (rd == 15) {
             cpu->r[15] = src & ~1u;
+            pc_written = 1;
         } else {
             cpu->r[rd] = src;
         }
@@ -210,8 +219,17 @@ static void exec_hi_reg_ops(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) {
             target &= ~3u;
         }
         cpu->r[15] = target;
+        pc_written = 1;
         break;
     }
+    }
+    if (pc_written) {
+        /* ADD/MOV-to-PC and BX all flush the pipeline - 2 more fetches at
+           the new PC, in whatever ARM/Thumb state is current *after* the
+           write (only BX can actually change it; ADD/MOV-to-PC don't
+           interwork on real ARMv4T, they just jump within the current
+           state). */
+        arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0));
     }
 }
 
@@ -220,6 +238,7 @@ static void exec_pc_relative_load(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) 
     uint32_t imm8 = instr & 0xFFu;
     uint32_t base = (pc + 4u) & ~3u;
     cpu->r[rd] = psemu_bus_read32(cpu->bus, base + imm8 * 4u);
+    arm7tdmi_add_cycles(cpu, 1u); /* LDR: +1I, data access already counted */
 }
 
 static void exec_load_store_reg_offset(arm7tdmi_t *cpu, uint16_t instr) {
@@ -232,6 +251,7 @@ static void exec_load_store_reg_offset(arm7tdmi_t *cpu, uint16_t instr) {
 
     if (load) {
         cpu->r[rd] = byte ? psemu_bus_read8(cpu->bus, addr) : psemu_bus_read32(cpu->bus, addr & ~3u);
+        arm7tdmi_add_cycles(cpu, 1u); /* LDR/LDRB: +1I */
     } else if (byte) {
         psemu_bus_write8(cpu->bus, addr, (uint8_t)cpu->r[rd]);
     } else {
@@ -249,6 +269,7 @@ static void exec_load_store_sign_extended(arm7tdmi_t *cpu, uint16_t instr) {
 
     if (!s && !h) { /* STRH */
         psemu_bus_write16(cpu->bus, addr & ~1u, (uint16_t)cpu->r[rd]);
+        return;
     } else if (!s && h) { /* LDRH */
         cpu->r[rd] = psemu_bus_read16(cpu->bus, addr & ~1u);
     } else if (s && !h) { /* LDSB */
@@ -258,6 +279,7 @@ static void exec_load_store_sign_extended(arm7tdmi_t *cpu, uint16_t instr) {
         int16_t hw = (int16_t)psemu_bus_read16(cpu->bus, addr & ~1u);
         cpu->r[rd] = (uint32_t)(int32_t)hw;
     }
+    arm7tdmi_add_cycles(cpu, 1u); /* LDRH/LDSB/LDSH: +1I */
 }
 
 static void exec_load_store_imm_offset(arm7tdmi_t *cpu, uint16_t instr) {
@@ -271,6 +293,7 @@ static void exec_load_store_imm_offset(arm7tdmi_t *cpu, uint16_t instr) {
 
     if (load) {
         cpu->r[rd] = byte ? psemu_bus_read8(cpu->bus, addr) : psemu_bus_read32(cpu->bus, addr & ~3u);
+        arm7tdmi_add_cycles(cpu, 1u); /* LDR/LDRB: +1I */
     } else if (byte) {
         psemu_bus_write8(cpu->bus, addr, (uint8_t)cpu->r[rd]);
     } else {
@@ -287,6 +310,7 @@ static void exec_load_store_halfword_imm(arm7tdmi_t *cpu, uint16_t instr) {
 
     if (load) {
         cpu->r[rd] = psemu_bus_read16(cpu->bus, addr & ~1u);
+        arm7tdmi_add_cycles(cpu, 1u); /* LDRH: +1I */
     } else {
         psemu_bus_write16(cpu->bus, addr & ~1u, (uint16_t)cpu->r[rd]);
     }
@@ -300,6 +324,7 @@ static void exec_sp_relative(arm7tdmi_t *cpu, uint16_t instr) {
 
     if (load) {
         cpu->r[rd] = psemu_bus_read32(cpu->bus, addr & ~3u);
+        arm7tdmi_add_cycles(cpu, 1u); /* LDR: +1I */
     } else {
         psemu_bus_write32(cpu->bus, addr & ~3u, cpu->r[rd]);
     }
@@ -335,6 +360,15 @@ static void exec_push_pop(arm7tdmi_t *cpu, uint16_t instr) {
             cpu->r[15] = psemu_bus_read32(cpu->bus, cpu->r[13] & ~3u) & ~1u;
             cpu->r[13] += 4u;
         }
+        /* POP: nS+1N+1I - the n reads are already counted (one read32 call
+           each, above); +1I remains, plus a pipeline-refill +1S+1N (2 more
+           fetches, staying Thumb - real ARMv4T LDM/POP doesn't interwork
+           on PC) if PC was popped. */
+        uint32_t extra_cycles = 1u;
+        if (extra) {
+            extra_cycles += 2u * psemu_region_fetch_cycles(cpu->r[15], 1);
+        }
+        arm7tdmi_add_cycles(cpu, extra_cycles);
     } else { /* PUSH: low registers at the lowest addresses, LR just below the old SP */
         int count = extra ? 1 : 0;
         for (int i = 0; i < 8; i++) {
@@ -373,6 +407,9 @@ static void exec_multiple_transfer(arm7tdmi_t *cpu, uint16_t instr) {
         }
     }
     cpu->r[rb] = addr;
+    if (load) {
+        arm7tdmi_add_cycles(cpu, 1u); /* LDMIA: +1I; STMIA needs no extra */
+    }
 }
 
 static void exec_conditional_branch(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) {
@@ -382,15 +419,23 @@ static void exec_conditional_branch(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc
     }
     int32_t offset = (int32_t)sign_extend(instr & 0xFFu, 8) * 2;
     cpu->r[15] = (pc + 4u) + (uint32_t)offset;
+    /* Taken conditional branch: 2S+1N (1S is the opcode fetch, already
+       counted); untaken already returned above with no extra. Stays
+       Thumb. */
+    arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], 1));
 }
 
 static void exec_thumb_swi(arm7tdmi_t *cpu, uint32_t pc) {
     arm_enter_exception(cpu, ARM_MODE_SVC, THUMB_SWI_VECTOR, pc + 2u);
+    /* Exception entry always lands in ARM state - pipeline-refill fetch
+       cost uses the ARM-mode table. */
+    arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(THUMB_SWI_VECTOR, 0));
 }
 
 static void exec_unconditional_branch(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) {
     int32_t offset = (int32_t)sign_extend(instr & 0x7FFu, 11) * 2;
     cpu->r[15] = (pc + 4u) + (uint32_t)offset;
+    arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], 1));
 }
 
 static void exec_long_branch_link(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) {
@@ -400,6 +445,8 @@ static void exec_long_branch_link(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) 
     if (high_half) {
         int32_t offset_high = (int32_t)(sign_extend(offset11, 11) << 12);
         cpu->r[14] = (pc + 4u) + (uint32_t)offset_high;
+        /* First half is a plain LR update, no PC change - 1S only,
+           already counted, no extra. */
     } else {
         uint32_t target = cpu->r[14] + (offset11 << 1);
         /* LR's bit0 is set to tag the return address as Thumb, so a later
@@ -408,6 +455,8 @@ static void exec_long_branch_link(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) 
            feature. Confirmed against real ARMv4T architecture behavior. */
         cpu->r[14] = (pc + 2u) | 1u;
         cpu->r[15] = target;
+        /* Second half actually branches: 2S+1N pipeline refill. */
+        arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], 1));
     }
 }
 
