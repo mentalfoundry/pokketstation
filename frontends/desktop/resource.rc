@@ -170,7 +170,7 @@ CAPTION "About pokketstation"
 FONT 8, "MS Shell Dlg"
 BEGIN
     LTEXT           "", IDC_ABOUT_VERSION, 7, 7, 186, 10
-    LTEXT           "An open-source Sony PocketStation emulator core.", -1, 7, 20, 186, 18
+    LTEXT           "An open-source Sony PocketStation emulator.", -1, 7, 20, 186, 18
     CONTROL         "<a href=""https://github.com/mentalfoundry/pokketstation"">https://github.com/mentalfoundry/pokketstation</a>",
                     IDC_ABOUT_LINK, "SysLink", WS_TABSTOP, 7, 42, 186, 12
     CONTROL         "Licensed under the <a href=""https://www.gnu.org/licenses/gpl-3.0.html"">GNU GPLv3</a> (see LICENSE).",
