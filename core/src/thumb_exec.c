@@ -158,7 +158,7 @@ static void exec_alu(arm7tdmi_t *cpu, uint16_t instr) {
         result = a * b;
         cpu->r[rd] = result;
         arm_set_nz(cpu, result);
-        /* Thumb MUL: 1S+mI - same early-termination rule as ARM's MUL. */
+        /* Thumb MUL: 1S+mI. Same early-termination rule as ARM's MUL. */
         arm7tdmi_add_cycles(cpu, arm7tdmi_mul_m_cycles(b));
         return;
     case 0xE: /* BIC */
@@ -224,11 +224,11 @@ static void exec_hi_reg_ops(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) {
     }
     }
     if (pc_written) {
-        /* ADD/MOV-to-PC and BX all flush the pipeline - 2 more fetches at
-           the new PC, in whatever ARM/Thumb state is current *after* the
-           write (only BX can actually change it; ADD/MOV-to-PC don't
-           interwork on real ARMv4T, they just jump within the current
-           state). */
+        /* ADD/MOV-to-PC and BX all flush the pipeline: 2 more fetches at
+           the new PC. Use the ARM/Thumb state current after the write.
+           Only BX can actually change that state. On real ARMv4T,
+           ADD/MOV-to-PC do not interwork; they just jump within the
+           current state. */
         arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0));
     }
 }
@@ -360,10 +360,11 @@ static void exec_push_pop(arm7tdmi_t *cpu, uint16_t instr) {
             cpu->r[15] = psemu_bus_read32(cpu->bus, cpu->r[13] & ~3u) & ~1u;
             cpu->r[13] += 4u;
         }
-        /* POP: nS+1N+1I - the n reads are already counted (one read32 call
-           each, above); +1I remains, plus a pipeline-refill +1S+1N (2 more
-           fetches, staying Thumb - real ARMv4T LDM/POP doesn't interwork
-           on PC) if PC was popped. */
+        /* POP: nS+1N+1I. The n reads are already counted, one read32
+           call each, above. +1I remains.
+           Add a pipeline-refill +1S+1N (2 more fetches) if PC was
+           popped. This stays in Thumb state: real ARMv4T LDM/POP does
+           not interwork on PC. */
         uint32_t extra_cycles = 1u;
         if (extra) {
             extra_cycles += 2u * psemu_region_fetch_cycles(cpu->r[15], 1);
@@ -419,16 +420,16 @@ static void exec_conditional_branch(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc
     }
     int32_t offset = (int32_t)sign_extend(instr & 0xFFu, 8) * 2;
     cpu->r[15] = (pc + 4u) + (uint32_t)offset;
-    /* Taken conditional branch: 2S+1N (1S is the opcode fetch, already
-       counted); untaken already returned above with no extra. Stays
-       Thumb. */
+    /* Taken conditional branch: 2S+1N. The first 1S is the opcode fetch,
+       already counted. An untaken branch already returned above, with no
+       extra cost. This stays in Thumb state. */
     arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], 1));
 }
 
 static void exec_thumb_swi(arm7tdmi_t *cpu, uint32_t pc) {
     arm_enter_exception(cpu, ARM_MODE_SVC, THUMB_SWI_VECTOR, pc + 2u);
-    /* Exception entry always lands in ARM state - pipeline-refill fetch
-       cost uses the ARM-mode table. */
+    /* Exception entry always lands in ARM state.
+       The pipeline-refill fetch cost uses the ARM-mode table. */
     arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(THUMB_SWI_VECTOR, 0));
 }
 
@@ -445,17 +446,19 @@ static void exec_long_branch_link(arm7tdmi_t *cpu, uint16_t instr, uint32_t pc) 
     if (high_half) {
         int32_t offset_high = (int32_t)(sign_extend(offset11, 11) << 12);
         cpu->r[14] = (pc + 4u) + (uint32_t)offset_high;
-        /* First half is a plain LR update, no PC change - 1S only,
-           already counted, no extra. */
+        /* The first half is a plain LR update, with no PC change.
+           Cost is 1S only, already counted. No extra cost applies. */
     } else {
         uint32_t target = cpu->r[14] + (offset11 << 1);
-        /* LR's bit0 is set to tag the return address as Thumb, so a later
-           "BX LR" correctly stays in Thumb instead of switching to ARM -
-           true since Thumb BL was introduced (ARMv4T), not an ARMv5 BLX
-           feature. Confirmed against real ARMv4T architecture behavior. */
+        /* This code sets LR's bit0 to tag the return address as Thumb.
+           A later "BX LR" then correctly stays in Thumb, instead of
+           switching to ARM.
+           This has held true since Thumb BL was introduced in ARMv4T.
+           It is not an ARMv5 BLX-only feature. Confirmed against real
+           ARMv4T architecture behavior. */
         cpu->r[14] = (pc + 2u) | 1u;
         cpu->r[15] = target;
-        /* Second half actually branches: 2S+1N pipeline refill. */
+        /* The second half actually branches: 2S+1N pipeline refill. */
         arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], 1));
     }
 }

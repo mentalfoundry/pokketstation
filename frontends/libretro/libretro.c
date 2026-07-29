@@ -107,9 +107,9 @@ void retro_run(void) {
     submit_audio();
 }
 
-/* Real PocketStation hardware needs its 16KB BIOS ROM dumped from a unit
-   you own; RetroArch's usual convention is a system file, not a bundled
-   asset, since the BIOS is copyrighted Sony firmware. */
+/* The BIOS is copyrighted Sony firmware, not a bundled asset.
+   Dump the 16KB BIOS ROM from real hardware you own.
+   RetroArch's usual convention is to load this as a system file. */
 static bool load_bios(void) {
     const char *system_dir = NULL;
     if (!environ_cb(RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY, &system_dir) || !system_dir) {
@@ -141,8 +141,8 @@ bool retro_load_game(const struct retro_game_info *game) {
     if (!load_bios()) {
         return false;
     }
-    /* Content-sniffed rather than gated on the file's extension - see
-       psemu_load_content's own doc comment for the exact priority order. */
+    /* This emulator sniffs file content, instead of checking the file extension.
+       See psemu_load_content's own doc comment for the exact priority order. */
     if (psemu_load_content(g_ps, (const uint8_t *)game->data, game->size) != PSEMU_OK) {
         return false;
     }

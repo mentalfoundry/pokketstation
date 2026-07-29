@@ -38,9 +38,9 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     int set_flags = (int)((instr >> 20) & 1u);
     int rn = (int)((instr >> 16) & 0xFu);
     int rd = (int)((instr >> 12) & 0xFu);
-    /* Register-specified shift amount (not an immediate shift) costs an
-       extra internal cycle - "1S+1I" instead of plain "1S" - since the
-       shifter has to wait on a register read before it can run. */
+    /* A register-specified shift amount costs an extra internal cycle:
+       "1S+1I" instead of plain "1S". An immediate shift amount does not.
+       The shifter must wait on a register read before it can run. */
     int reg_shift = !(instr & (1u << 25)) && (instr & (1u << 4));
 
     int shifter_carry;
@@ -112,8 +112,9 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
         if (rd == 15 && mode != ARM_MODE_USR && mode != ARM_MODE_SYS) {
             /* "MOVS/SUBS PC, ..." in a privileged mode is the standard
-               exception-return idiom: restore the whole CPSR (mode, I/F/T,
-               NZCV) from this mode's SPSR instead of just updating flags. */
+               exception-return idiom.
+               It restores the whole CPSR (mode, I/F/T, NZCV) from this
+               mode's SPSR, instead of just updating flags. */
             uint32_t spsr = cpu->spsr_bank[arm_current_bank(cpu)];
             arm_set_mode(cpu, spsr & CPSR_MODE_MASK);
             cpu->cpsr = spsr;
@@ -128,9 +129,10 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
 
     uint32_t extra = reg_shift ? 1u : 0u;
     if (write_result && rd == 15) {
-        /* Writing PC flushes the pipeline - 2 more fetches at the new PC,
-           in whatever state (ARM/Thumb) it's in *after* this instruction
-           (an SPSR-restoring "MOVS PC,..." may have just changed it). */
+        /* Writing PC flushes the pipeline: 2 more fetches at the new PC.
+           Use the ARM/Thumb state that applies after this instruction
+           runs. An SPSR-restoring "MOVS PC,..." may have just changed
+           that state. */
         extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
     }
     if (extra) {
@@ -138,10 +140,11 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 }
 
-/* Real ARM7TDMI multiply timing terminates early depending on Rs's value -
-   the more of its high bytes are all-0 or all-1, the fewer internal
-   cycles it costs (m = 1..4). Shared by ARM's 32x32->32/32x32->64
-   multiply forms (below) and Thumb's MUL (thumb_exec.c). */
+/* Real ARM7TDMI multiply timing terminates early depending on Rs's value.
+   The more of its high bytes are all-0 or all-1, the fewer internal
+   cycles it costs (m = 1..4).
+   Shared by ARM's 32x32->32/32x32->64 multiply forms (below) and Thumb's
+   MUL (thumb_exec.c). */
 uint32_t arm7tdmi_mul_m_cycles(uint32_t rs) {
     if ((rs >> 8) == 0u || (rs >> 8) == 0x00FFFFFFu) {
         return 1u;
@@ -222,9 +225,10 @@ static void exec_swap(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         psemu_bus_write32(cpu->bus, addr & ~3u, cpu->r[rm]);
         cpu->r[rd] = old;
     }
-    /* SWP: 1S+2N+1I - the fetch (1S) and both data accesses (2N) are
-       already counted via the opcode fetch and the read/write calls
-       above; only the extra internal cycle remains. */
+    /* SWP: 1S+2N+1I.
+       The opcode fetch (1S) and both data accesses (2N) are already
+       counted, via the opcode fetch and the read/write calls above.
+       Only the extra internal cycle remains. */
     arm7tdmi_add_cycles(cpu, 1u);
 }
 
@@ -239,10 +243,10 @@ static void exec_bx(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         target &= ~3u;
     }
     cpu->r[15] = target;
-    /* BX: 2S+1N - 1S is the opcode fetch (already counted); the remaining
-       "1S+1N" is the pipeline refill, modeled as 2 more fetches at the
-       target (no S/N cost distinction on this hardware - see
-       docs/hardware-notes.md). */
+    /* BX: 2S+1N. The first 1S is the opcode fetch, already counted.
+       The remaining "1S+1N" is the pipeline refill, modeled as 2 more
+       fetches at the target. This hardware makes no S/N cost
+       distinction; see docs/hardware-notes.md. */
     arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0));
 }
 
@@ -279,18 +283,19 @@ static void exec_msr(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 
     if ((cpu->cpsr & CPSR_MODE_MASK) == ARM_MODE_USR) {
-        /* Real ARM7TDMI/ARMv4T silicon: MSR to CPSR from User mode can
-           only change the condition flags (top byte) - the control byte
-           (mode, T, F, I) is protected and silently ignored, regardless
-           of which of those bits the instruction asks for. This is fixed
-           CPU behavior, not PocketStation-specific, but was previously
-           unenforced here - confirmed via a real homebrew app
-           (pk_timing_bench) that unintentionally relied on the bug:
-           it wrote CPSR_I/F from User mode expecting a real-hardware
-           no-op ("kept anyway since it's harmless" - see start.s), but
-           this emulator actually applied it, leaving interrupts globally
-           masked for the app's entire runtime in a way real hardware
-           never would. */
+        /* On real ARM7TDMI/ARMv4T silicon, MSR to CPSR from User mode can
+           only change the condition flags (top byte).
+           The control byte (mode, T, F, I) is protected. Real hardware
+           silently ignores a User-mode write to it, regardless of which
+           control bits the instruction asks for.
+           This is fixed CPU behavior, not specific to the PocketStation.
+           This emulator did not enforce it before this fix.
+           A real homebrew app (pk_timing_bench) unintentionally relied
+           on this behavior. It wrote CPSR_I/F from User mode, expecting
+           a real-hardware no-op (see start.s: "kept anyway since it's
+           harmless"). Before this fix, this emulator applied the write
+           instead, masking interrupts globally for the app's entire
+           runtime. Real hardware never does this. */
         byte_mask &= 0xFF000000u;
     }
 
@@ -348,16 +353,17 @@ static void exec_single_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 
     if (load) {
-        /* LDR: 1S+1N+1I - fetch and data read already counted, +1I
-           remains; +1S+1N pipeline refill on top if PC was the target. */
+        /* LDR: 1S+1N+1I. The fetch and data read are already counted;
+           +1I remains. Add a +1S+1N pipeline refill if PC was the
+           target. */
         uint32_t extra = 1u;
         if (rd == 15) {
             extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
         }
         arm7tdmi_add_cycles(cpu, extra);
     }
-    /* STR: 2N - fetch (standing in for the first N) and data write
-       already counted; no extra. */
+    /* STR: 2N. The fetch (standing in for the first N) and the data
+       write are already counted. No extra cost applies. */
 }
 
 static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -380,20 +386,22 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
         uint32_t value;
         switch (sh) {
         case 1: { /* LDRH */
-            /* A real, confirmed ARM7TDMI hardware quirk (documented for the
-               same core in GBA homebrew circles, and directly confirmed
-               here against a real app - see docs/hardware-notes.md,
-               "CPU"): a misaligned halfword read
-               (address bit0 set) isn't just silently rounded down to the
-               halfword below - real silicon rotates the loaded halfword
-               right by 8 bits (swaps its two bytes) before it reaches the
-               register. This emulator used to just read the aligned
-               halfword with no rotation, which is indistinguishable from
-               the odd-address read for callers who mask off the high
-               byte - exactly the pattern a real PocketStation homebrew's
-               font-glyph routine relies on (LDRH with post-increment #1,
-               masked to the low byte, to walk a byte-packed table one
-               byte at a time) - so every other byte came out wrong. */
+            /* A confirmed real ARM7TDMI hardware quirk. Documented for
+               the same core in GBA homebrew circles, and confirmed
+               directly here against a real app. See
+               docs/hardware-notes.md, "CPU".
+               A misaligned halfword read (address bit0 set) is not
+               silently rounded down to the halfword below. Real silicon
+               rotates the loaded halfword right by 8 bits, swapping its
+               two bytes, before it reaches the register.
+               This emulator used to read the aligned halfword with no
+               rotation instead. For a caller that masks off the high
+               byte, this looks the same as the correctly rotated
+               odd-address read. A real PocketStation homebrew's
+               font-glyph routine relies on exactly this pattern: LDRH
+               with post-increment #1, masked to the low byte, to walk a
+               byte-packed table one byte at a time. So every other byte
+               came out wrong. */
             uint16_t h = psemu_bus_read16(cpu->bus, address & ~1u);
             if (address & 1u) {
                 h = (uint16_t)((h >> 8) | (h << 8));
@@ -408,10 +416,11 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
         }
         case 3: { /* LDRSH */
             if (address & 1u) {
-                /* Real ARM7TDMI silicon doesn't rotate-and-sign-extend a
-                   misaligned LDRSH the way LDRH rotates - it behaves as a
-                   sign-extended BYTE read (LDRSB) from the odd address
-                   instead. Same documented quirk family as LDRH above. */
+                /* Real ARM7TDMI silicon does not rotate-and-sign-extend a
+                   misaligned LDRSH the way LDRH rotates.
+                   It instead behaves as a sign-extended byte read (LDRSB)
+                   from the odd address. Same documented quirk family as
+                   LDRH above. */
                 int8_t b = (int8_t)psemu_bus_read8(cpu->bus, address);
                 value = (uint32_t)(int32_t)b;
             } else {
@@ -437,7 +446,7 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
 
     if (load) {
         /* LDRH/LDRSB/LDRSH: same "1S+1N+1I(+pipeline refill)" shape as
-           LDR - see exec_single_transfer. */
+           LDR. See exec_single_transfer. */
         uint32_t extra = 1u;
         if (rd == 15) {
             extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
@@ -492,11 +501,13 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         cpu->r[rn] = up ? base + (uint32_t)count * 4u : base - (uint32_t)count * 4u;
     }
 
-    /* "LDM ...,{...,PC}^" is the other standard exception-return idiom
-       alongside "MOVS/SUBS PC,LR" - S-bit set with PC in the list means
-       also restore the whole CPSR from this mode's SPSR. S-bit without PC
-       in the list means something unrelated (user-bank register access),
-       not handled here. Done before the cycle accounting below so a
+    /* "LDM ...,{...,PC}^" is the other standard exception-return idiom,
+       alongside "MOVS/SUBS PC,LR".
+       S-bit set with PC in the register list also restores the whole
+       CPSR from this mode's SPSR. S-bit set without PC in the list means
+       something unrelated (user-bank register access); this function
+       does not handle that case.
+       This restore runs before the cycle accounting below, so a
        PC-refill fetch cost reflects the post-restore ARM/Thumb state. */
     if (load && s_bit && (reg_list & 0x8000u)) {
         uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
@@ -508,8 +519,8 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 
     if (load) {
-        /* LDM: nS+1N+1I - the n register loads are already counted (one
-           read32 call each, above); +1I remains, plus a pipeline-refill
+        /* LDM: nS+1N+1I. The n register loads are already counted, one
+           read32 call each, above. +1I remains. Add a pipeline-refill
            +1S+1N (2 more fetches) if PC was among the loaded registers. */
         uint32_t extra = 1u;
         if (reg_list & 0x8000u) {
@@ -517,7 +528,7 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         }
         arm7tdmi_add_cycles(cpu, extra);
     }
-    /* STM: (n-1)S+2N - the n writes already counted; no extra. */
+    /* STM: (n-1)S+2N. The n writes are already counted. No extra cost applies. */
 }
 
 static void exec_branch(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -528,8 +539,9 @@ static void exec_branch(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         cpu->r[14] = pc + 4u;
     }
     cpu->r[15] = target;
-    /* B/BL: 2S+1N - 1S is the opcode fetch (already counted); the target
-       is always ARM state (no interworking on a plain branch). */
+    /* B/BL: 2S+1N. The first 1S is the opcode fetch, already counted.
+       The target is always ARM state; a plain branch does not
+       interwork. */
     arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(target, 0));
 }
 
@@ -585,7 +597,7 @@ void arm_execute(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
     if ((instr & 0x0F000000u) == 0x0F000000u) {
         arm_enter_exception(cpu, ARM_MODE_SVC, SWI_VECTOR, pc + 4u);
-        /* Exception entry pipeline refill - same shape as B/BL above. */
+        /* Exception entry pipeline refill: same shape as B/BL above. */
         arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(SWI_VECTOR, 0));
         return;
     }

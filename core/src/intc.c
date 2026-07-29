@@ -4,12 +4,11 @@
 
 #include "cpu.h"
 
-/* Diagnostic flag - see cpu.h's psemu_debug_current_pc. Off by default so
-   it costs nothing in normal use; tools/inspect.c's `intctrace` flag turns
-   it on to log every real INTC access with its real PC, since static
-   disassembly can't reliably tell ARM from Thumb code without tracking
-   runtime mode. Kept as permanent diagnostic infrastructure, not tied to
-   any single investigation. */
+/* Diagnostic flag; see cpu.h's psemu_debug_current_pc.
+   Off by default, so it costs nothing in normal use.
+   tools/inspect.c's `intctrace` flag turns it on, to log every real INTC access with its real PC.
+   Static disassembly cannot reliably tell ARM from Thumb code without tracking runtime mode.
+   This flag is permanent diagnostic infrastructure, not tied to any single investigation. */
 int psemu_intc_trace_enabled = 0;
 
 static const char *offset_name(uint32_t word_index) {
@@ -111,35 +110,34 @@ void intc_set_line(intc_t *intc, uint32_t line, int state) {
         return;
     }
     if (state) {
-        /* Every asserted source latches into `hold` (this drives real IRQ
-           delivery via hold & enable & INT_IRQ_MASK) - STATUS_MASK bits
-           (buttons, RTC) ALSO latch into `status` for direct polling.
-           Earlier this only put STATUS_MASK bits into `status`, NEVER
-           `hold` - confirmed wrong by disassembling the real BIOS: its
-           top-level IRQ handler tests `hold & enable & 0x200` (RTC) and
-           its installed periodic callback tests `hold & 1` (Action
-           button), both landing on real handlers (RTC ack + day-rollover
-           bookkeeping; see docs/hardware-notes.md) that never ran under
-           the old status-only routing - buttons/RTC could never
-           interrupt-deliver at all, only be seen by code that happened
-           to poll `status` directly. */
+        /* Every asserted source latches into `hold`.
+           This drives real IRQ delivery via hold & enable & INT_IRQ_MASK.
+           STATUS_MASK bits (buttons, RTC) also latch into `status`, for direct polling.
+
+           History: this code originally put STATUS_MASK bits into `status` only, never into `hold`.
+           Disassembling the real BIOS confirmed this was wrong.
+           The BIOS's top-level IRQ handler tests `hold & enable & 0x200` (RTC).
+           Its installed periodic callback tests `hold & 1` (Action button).
+           Both land on real handlers (RTC ack plus day-rollover bookkeeping; see docs/hardware-notes.md) that
+           never ran under the old status-only routing.
+           Under that old routing, buttons and RTC could never interrupt-deliver at all.
+           Code could only see them by polling `status` directly. */
         intc->hold |= line;
         intc->status |= line & INT_STATUS_MASK;
     } else {
-        /* Tried making only STATUS follow de-assertion here (INT_INPUT
-           "Raw Interrupt Signal Levels" is distinct from INT_LATCH
-           "Interrupt Request Flags", and the real RTC handler
-           does explicitly acknowledge its own bit) - but disproved
-           empirically: the real button-action callback (traced at
-           0x04003784) never acknowledges bit 0, so making a button
-           release leave `hold` latched forever caused the CPU to
-           re-enter the IRQ handler on nearly every subsequent
-           instruction after a single press (559034 re-entries in 20M
-           instructions in one test - clearly not how a real, usable
-           device behaves). Buttons evidently clear `hold` on release
-           same as `status`; only RTC's real handler happens to also
-           ack explicitly, which is harmless here either way since ack
-           already clears both. */
+        /* History: an earlier version made only STATUS follow de-assertion here.
+           The reasoning: INT_INPUT ("Raw Interrupt Signal Levels") is distinct from INT_LATCH
+           ("Interrupt Request Flags"), and the real RTC handler does explicitly acknowledge its own bit.
+
+           Real-hardware tracing disproved this: the real button-action callback, traced at 0x04003784, never
+           acknowledges bit 0. Leaving `hold` latched forever after a button release caused the CPU to
+           re-enter the IRQ handler on nearly every subsequent instruction after a single press.
+           One test measured 559034 re-entries in 20 million instructions.
+           A real, usable device does not behave this way.
+
+           Buttons clear `hold` on release, the same as `status`.
+           Only RTC's real handler also acks explicitly.
+           This is harmless either way, because ack already clears both `hold` and `status`. */
         intc->status &= ~line;
         intc->hold &= ~line;
     }

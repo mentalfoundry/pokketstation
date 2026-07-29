@@ -1,27 +1,41 @@
 # pokketstation
 
-An open-source Sony PocketStation emulator core, written in portable C, meant to be reused across a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app, and a PS Vita homebrew port (WIP).
+This is an open-source Sony PocketStation emulator core, written in portable C. It is meant for reuse across a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app, and a PS Vita homebrew port (work in progress).
 
 ## Status
 
-Stable, broadly community tested and as cycle accurate as I can make it. LGTM and I hope you will agree. If you have requests for missing features please [raise an issue](https://github.com/mentalfoundry/pokketstation/issues) and I'll take a look.
+This project is stable, broadly tested by the community, and as cycle-accurate as possible. If you have requests for missing features, please [raise an issue](https://github.com/mentalfoundry/pokketstation/issues).
 
 See [docs/hardware-notes.md](docs/hardware-notes.md) for the technical details.
 
-**Known gaps:** IR communication timing is unverified, per-instruction cycle timing follows the documented memory-access-time table with one narrow assumed default where even that documentation doesn't specify an answer (see "Memory access timing" in `docs/hardware-notes.md`), and a handful of edge cases (low-battery detection, `F_BANK_VAL` entries mapping multiple physical blocks to the same virtual slot, the BIOS's pre-remap boot phase) are deliberately simplified — see the "Known open questions and unconfirmed behavior" list at the end of `docs/hardware-notes.md` for specifics.
+**Known gaps:**
+- IR communication timing is unverified.
+- Per-instruction cycle timing follows the documented memory-access-time table, with one assumed default where the documentation itself gives no answer (see "Memory access timing" in `docs/hardware-notes.md`).
+- A handful of edge cases are deliberately simplified: low-battery detection, `F_BANK_VAL` entries that map multiple physical blocks to the same virtual slot, and the BIOS's pre-remap boot phase.
 
-If you hit a crash or an unrecognized-opcode freeze, please [open an issue](https://github.com/mentalfoundry/pokketstation/issues) — include a [diagnostic report](docs/desktop_readme.md#diagnostic-reports-for-bug-reports) if you can, it makes tracking down the real bug far easier.
+See the "Known open questions and unconfirmed behavior" list at the end of `docs/hardware-notes.md` for specifics.
+
+If you hit a crash or an unrecognized-opcode freeze, please [open an issue](https://github.com/mentalfoundry/pokketstation/issues). Include a [diagnostic report](docs/desktop_readme.md#diagnostic-reports-for-bug-reports) if you can; it makes finding the real bug far easier.
 
 ## Usage
 
-Download the latest [release](https://github.com/mentalfoundry/pokketstation/releases) package for your platform, then follow the usage guide for whichever frontend you downloaded. **Neither bundles a PocketStation BIOS** — it's copyrighted Sony firmware, so you need to supply your own dump extracted from real hardware.
+Download the latest [release](https://github.com/mentalfoundry/pokketstation/releases) package for your platform. Then follow the usage guide for whichever frontend you downloaded. **Neither bundles a PocketStation BIOS.** The BIOS is copyrighted Sony firmware; you must supply your own dump, extracted from real hardware.
 
 - [Desktop app](docs/desktop_readme.md#usage)
 - [Libretro core](docs/libretro_readme.md#usage)
 
 ### Reaching a single loaded app
 
-A single-app load (`.pss`/`.mcs`, either frontend) boots through the real BIOS the same way a full memory card does — there's no shortcut past it. The real, hardware-confirmed sequence (see `docs/hardware-notes.md`): after the HELLO/heart/beep power-on animation, press **Down** once then **Action** to get past the date/time screen, then **Right** once to move from the clock screen to the app (**Action** launches it from there). Real taps are brief (~40ms) but a deliberate, clean press-and-release reads more reliably than mashing.
+A single-app load (`.pss`/`.mcs`, either frontend) boots through the real BIOS the same way a full memory card does. There is no shortcut past it.
+
+**The real, hardware-confirmed button sequence** (see `docs/hardware-notes.md`):
+
+1. Wait for the HELLO/heart/beep power-on animation to finish.
+2. Press **Down** once, then **Action**, to get past the date/time screen.
+3. Press **Right** once, to move from the clock screen to the app.
+4. Press **Action** to launch it.
+
+Real button taps are brief, approximately 40ms. A deliberate, clean press-and-release reads more reliably than mashing the button.
 
 ## Layout
 
@@ -40,11 +54,11 @@ pk_timing_bench/         homebrew memory-timing benchmark app (build source + re
 
 ## Building
 
-Full build instructions (prerequisites, Windows/Linux/macOS steps) live in the [desktop frontend's build guide](docs/desktop_readme.md#building) — the core, tools, tests, and the libretro core all build the same way, with no extra dependencies beyond what's documented there.
+Full build instructions (prerequisites, Windows/Linux/macOS steps) live in the [desktop frontend's build guide](docs/desktop_readme.md#building). The core, tools, tests, and the libretro core all build the same way, with no extra dependencies beyond what is documented there.
 
-- [Desktop app](docs/desktop_readme.md) — usage, building, and diagnostic reports
-- [Libretro core](docs/libretro_readme.md) — usage and building; one extra step versus the desktop app (fetches `libretro-common` on first configure, needs internet access)
+- [Desktop app](docs/desktop_readme.md): usage, building, and diagnostic reports.
+- [Libretro core](docs/libretro_readme.md): usage and building. One extra step versus the desktop app: it fetches `libretro-common` on first configure, and needs internet access for that.
 
 ## License
 
-GPLv3, see [LICENSE](LICENSE). [docs/hardware-notes.md](docs/hardware-notes.md) has a licensing note on what prior art is safe to reference.
+Licensed GPLv3; see [LICENSE](LICENSE). [docs/hardware-notes.md](docs/hardware-notes.md) has a licensing note on what prior art is safe to reference.

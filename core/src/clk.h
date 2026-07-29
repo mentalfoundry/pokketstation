@@ -5,13 +5,15 @@
 
 #define CLK_REG_SPAN 0x8u
 
-/* CPU/timer clock speed control, confirmed against real hardware behavior:
-   writing `mode` (bits 0-3, index into CPU_FREQ below)
-   reprograms the ARM7's real oscillator rate; reading `mode` ORs in a
-   "steady" bit (0x10) that a real BIOS boot loop polls before proceeding.
-   Real hardware ties timer/RTC/DAC-bit-banging rates to this same shared
-   clock, so all of them speed up and slow down together - see
-   clk_current_hz() and psemu_run()'s use of it. */
+/* CPU/timer clock speed control.
+   Confirmed against real hardware behavior.
+
+   Writing `mode` (bits 0-3, an index into CPU_FREQ below) reprograms the ARM7's real oscillator rate.
+   Reading `mode` ORs in a "steady" bit (0x10). A real BIOS boot loop polls this bit before proceeding.
+
+   Real hardware ties the timer, RTC, and DAC-bit-banging rates to this same shared clock.
+   All of them speed up and slow down together.
+   See clk_current_hz() and psemu_run()'s use of it. */
 typedef struct clk {
     uint32_t mode;
     uint32_t control;

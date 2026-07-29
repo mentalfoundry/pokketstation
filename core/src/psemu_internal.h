@@ -26,9 +26,9 @@ struct psemu {
     dac_t dac;
     clk_t clk;
     iop_t iop;
-    /* Fractional carry between psemu_run() calls for converting real
-       elapsed time back into the fixed PSEMU_ASSUMED_CPU_HZ reference
-       currency that Timer/RTC/DAC expect - see psemu_run's comment. */
+    /* Fractional carry between psemu_run() calls.
+       Converts real elapsed time back into the fixed PSEMU_ASSUMED_CPU_HZ reference
+       rate that Timer, RTC, and DAC expect. See psemu_run's comment for details. */
     double real_time_cycle_carry;
     uint32_t buttons; /* last-set PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;

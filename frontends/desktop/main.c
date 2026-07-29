@@ -8,10 +8,11 @@
 #include <shellapi.h>
 
 #ifdef _MSC_VER
-/* SysLink (Help > About's clickable repo link) only exists in ComCtl32
-   v6+; without this, the OS loader binds the old v5.82 system DLL (no
-   manifest = no side-by-side version selection) and CreateDialog would
-   silently fail to create that one control. */
+/* SysLink is Help > About's clickable repo link.
+   SysLink exists only in ComCtl32 v6 or later.
+   Without this manifest, the OS loader binds the old v5.82 system DLL instead.
+   The old DLL has no manifest, so it supports no side-by-side version selection.
+   Without v6, CreateDialog silently fails to create the SysLink control. */
 #pragma comment(linker, \
     "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' " \
     "processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -27,19 +28,18 @@
 
 #define SCALE 8
 
-/* Shown in Help > About - bump this by hand to match whatever's actually
-   being released (e.g. the latest git tag) each time one goes out. Not
-   wired up to git/CMake automatically on purpose - a plain string here is
-   the one spot to touch, rather than something that silently drifts if
-   the build environment doesn't have git available (e.g. building from a
-   source zip instead of a clone). */
+/* Shown in Help > About.
+   Bump this value by hand to match each release, for example the latest git tag.
+   This is deliberately not wired up to git or CMake automatically.
+   This string is the one spot to edit for a new release.
+   A source zip build has no git available, so an automatic value could silently drift. */
 #define POKKETSTATION_VERSION "v1.5.0"
 
-/* Directory the running executable lives in, derived from argv[0] rather
-   than an OS-specific "current module path" API - argv[0] is already the
-   full path when Explorer double-click-launches an exe, which is the one
-   case this is actually needed for (CLI invocations pass explicit paths
-   and never hit this). */
+/* Returns the directory the running executable lives in.
+   This derives the directory from argv[0], not an OS-specific "current module path" API.
+   Explorer already passes the full path in argv[0] when a double-click launches the exe.
+   This is the one case that needs this function.
+   A CLI invocation passes explicit paths and never reaches this code. */
 static void get_exe_dir(const char *argv0, char *out, size_t out_size) {
     const char *last_sep = NULL;
     const char *p;
@@ -64,17 +64,15 @@ static void join_path(char *out, size_t out_size, const char *dir, const char *n
     }
 }
 
-/* Writes a timestamped diagnostic report (frontend context - reason,
-   frame number - followed by psemu_write_crash_report's full CPU/trace
-   dump) to disk and points the user at it on stderr. Called both
-   automatically on a detected CPU fault and on-demand via a hotkey
-   (F12 by default, remappable via Tools > Remap Controls...), since not
-   everything worth reporting during manual testing
-   trips psemu_cpu_faulted() - "the game looks wrong" or "no sound" are
-   just as real as a hard fault, and this session's actual Chocobo World
-   crash investigation (see docs/hardware-notes.md) needed exactly this
-   kind of state dump, built by hand with one-off tracing, to get
-   anywhere. */
+/* Writes a timestamped diagnostic report to disk, and points the user at it on stderr.
+   The report has frontend context: the reason string and the frame number.
+   The report also has psemu_write_crash_report's full CPU and trace dump.
+   Two callers trigger this: an automatic call on a detected CPU fault, and an
+   on-demand call via a hotkey (F12 by default, remappable via Tools > Remap Controls...).
+   Not every issue worth reporting trips psemu_cpu_faulted(). "The game looks wrong" and
+   "no sound" are real issues too.
+   This session's Chocobo World crash investigation (see docs/hardware-notes.md) needed
+   exactly this kind of state dump, built by hand through one-off tracing. */
 static void write_diagnostic_report(
     const psemu_t *ps, const char *reason, unsigned long frame, const char *bios_path, const char *app_path) {
     char path[64];
@@ -97,61 +95,65 @@ static void write_diagnostic_report(
     fprintf(stderr, "psemu: wrote diagnostic report to %s\n", path);
 }
 
-/* Small preferences file the desktop app owns outright - not a format any
-   external tool reads or writes, unlike the hardware ID's own encoding
-   (see psemu_parse_hardware_id's comment in psemu.h). Remembers:
-     - The last successfully-loaded BIOS path, so a double-click launch
-       (no CLI args) doesn't need bios.bin sitting next to the .exe once a
-       real BIOS has been picked at least once via File > Open or a CLI
-       argument.
-     - The PocketStation hardware serial number (F_SN) - the core's own
-       default (PSEMU_DEFAULT_HARDWARE_ID) already gives every fresh
-       Chocobo World save the best rank, but a homebrew ID-editing tool
-       can change it in-session, and there's no other persistent store for
-       that (it lives in a flash "header" region outside the ordinary
-       128KB card image, so it isn't part of any .mcr/.mcs file). Stored
-       as exactly 8 plain hex digits, the same form a real "ID rewriter"
-       homebrew itself displays and edits - confirmed via real hardware
-       there's no "first digit must be a letter" restriction, e.g. a real
-       unit accepts and persists "EEEEEEEE". Empty means "use the
-       default".
+/* This app's own small preferences file.
+   No external tool reads or writes this format.
+   This differs from the hardware ID's own encoding (see psemu_parse_hardware_id's
+   comment in psemu.h).
+
+   settings.cfg remembers:
+     - The last successfully-loaded BIOS path.
+       This lets a double-click launch (no CLI args) work without bios.bin sitting
+       next to the .exe, once a real BIOS has been picked at least once via
+       File > Open or a CLI argument.
+     - The PocketStation hardware serial number (F_SN).
+       The core's own default (PSEMU_DEFAULT_HARDWARE_ID) already gives every fresh
+       Chocobo World save the best rank.
+       A homebrew ID-editing tool can change this value in-session.
+       No other persistent store exists for this value: it lives in a flash "header"
+       region outside the ordinary 128KB card image, so it is not part of any
+       .mcr/.mcs file.
+       This app stores the value as exactly 8 plain hex digits, the same form a real
+       "ID rewriter" homebrew itself displays and edits.
+       Real hardware confirms there is no "first digit must be a letter" restriction:
+       a real unit accepts and persists "EEEEEEEE".
+       An empty value means "use the default".
      - The --console/--no-console choice.
-   Saved immediately at the point each of these actually changes (BIOS
-   loaded via a CLI arg or File > Open, hardware ID edited via Tools >
-   Edit Hardware ID, or an explicit --console/--no-console flag) rather
-   than batched up for a single write at exit - a force-kill or crash
-   mid-session would otherwise silently lose whatever changed since
-   launch. */
+
+   This app saves settings.cfg immediately at the point each value actually changes:
+   BIOS loaded via a CLI arg or File > Open, hardware ID edited via Tools > Edit
+   Hardware ID, or an explicit --console/--no-console flag.
+   This app does not batch changes for a single write at exit.
+   A force-kill or crash mid-session would otherwise silently lose whatever changed
+   since launch. */
 #define SETTINGS_CONFIG_NAME "settings.cfg"
 
 typedef struct {
     char bios_path[1024];
     char hardware_id[PSEMU_HARDWARE_ID_STRING_SIZE];
-    /* "RRGGBB" hex, or empty for the Classic preset's default (a fresh
-       settings.cfg's starting point - see load_settings and the
-       DISPLAY_*_CLASSIC constants below). */
+    /* "RRGGBB" hex, or empty for the Classic preset's default.
+       The Classic preset is a fresh settings.cfg's starting point.
+       See load_settings and the DISPLAY_*_CLASSIC constants below. */
     char pixel_color[7];
     char bg_color[7];
     /* "RRGGBB" hex, or empty for DISPLAY_SHADOW_COLOR's default. */
     char shadow_color[7];
     int show_console;
     int show_shadows;
-    /* SDL_GetScancodeName()-formatted key names (e.g. "Up", "Z", "Left
-       Ctrl"), or empty for that button's hardcoded default - see
-       resolve_key_binding. */
+    /* SDL_GetScancodeName()-formatted key names (e.g. "Up", "Z", "Left Ctrl").
+       Empty means "use that button's hardcoded default". See resolve_key_binding. */
     char key_up[32];
     char key_down[32];
     char key_left[32];
     char key_right[32];
     char key_fire[32];
-    /* Not a PocketStation button - triggers write_diagnostic_report
-       on-demand (see button_scancodes in main). */
+    /* Not a PocketStation button. Triggers write_diagnostic_report on demand
+       (see button_scancodes in main). */
     char key_debug_log[32];
 } app_settings_t;
 
-/* Packs 8-bit R/G/B into the same 0xRRGGBBAA layout render_framebuffer
-   writes into the pixel buffer (see its own comment on
-   SDL_PIXELFORMAT_RGBA8888's byte order) - alpha is always opaque. */
+/* Packs 8-bit R/G/B into the same 0xRRGGBBAA layout render_framebuffer writes
+   into the pixel buffer. See render_framebuffer's own comment on
+   SDL_PIXELFORMAT_RGBA8888's byte order. Alpha is always opaque. */
 #define RGBA_PACK(r, g, b) \
     ((((uint32_t)(r)) << 24) | (((uint32_t)(g)) << 16) | (((uint32_t)(b)) << 8) | 0xFFu)
 
@@ -159,30 +161,31 @@ typedef struct {
 #define DISPLAY_BG_LIGHT RGBA_PACK(0xFF, 0xFF, 0xFF)
 #define DISPLAY_PIXEL_DARK RGBA_PACK(0xFF, 0xFF, 0xFF)
 #define DISPLAY_BG_DARK RGBA_PACK(0x00, 0x00, 0x00)
-/* Approximates an unlit reflective/transflective LCD like a watch or
-   Tamagotchi's - a dark, slightly warm ink color rather than pure black,
-   against a muted sage-gray (not white) background. The default color
-   scheme for a freshly-initialized settings.cfg (see load_settings). */
+/* Approximates an unlit reflective/transflective LCD, like a watch or a Tamagotchi's.
+   Pixel color: a dark, slightly warm ink color, not pure black.
+   Background color: a muted sage-gray, not white.
+   This is the default color scheme for a freshly-initialized settings.cfg.
+   See load_settings. */
 #define DISPLAY_PIXEL_CLASSIC RGBA_PACK(0x11, 0x1A, 0x15)
 #define DISPLAY_BG_CLASSIC RGBA_PACK(0xBC, 0xC7, 0xB9)
 
-/* Faint "ghosting" real late-90s STN/passive-matrix LCDs (watches,
-   Tamagotchis, and the PocketStation itself) show trailing a lit pixel,
-   from slow crystal response rather than a real drop shadow - always this
-   fixed color regardless of the active color scheme, per View > Sprite
-   Shadows. */
+/* Real late-90s STN/passive-matrix LCDs (watches, Tamagotchis, and the
+   PocketStation itself) show faint "ghosting" trailing a lit pixel.
+   This comes from slow crystal response, not a real drop shadow.
+   This fixed shadow color applies regardless of the active color scheme.
+   See View > Sprite Shadows. */
 #define DISPLAY_SHADOW_COLOR RGBA_PACK(0x8E, 0x9B, 0x8E)
 
-/* Inverse of RGBA_PACK's top 3 bytes, formatted the way settings.cfg
-   stores colors ("RRGGBB", see save_settings). */
+/* Inverse of RGBA_PACK's top 3 bytes. Formats the value the way settings.cfg
+   stores colors ("RRGGBB"). See save_settings. */
 static void format_rgba_hex(uint32_t rgba, char *out, size_t out_size) {
     snprintf(out, out_size, "%02X%02X%02X", (unsigned)(rgba >> 24) & 0xFFu, (unsigned)(rgba >> 16) & 0xFFu,
         (unsigned)(rgba >> 8) & 0xFFu);
 }
 
-/* Returns nonzero if `path` already existed (and was read from), 0 if it
-   didn't - callers use this to tell "first run, nothing to read yet" from
-   "an existing file just happened to not set every field". */
+/* Returns nonzero if `path` already existed and was read from. Returns 0 if it
+   did not exist. Callers use this to tell "first run, nothing to read yet"
+   apart from "an existing file just happened to not set every field". */
 static int load_settings(app_settings_t *settings, const char *path) {
     FILE *f = fopen(path, "r");
     char line[1200];
@@ -236,13 +239,14 @@ static int load_settings(app_settings_t *settings, const char *path) {
         }
         fclose(f);
     }
-    /* No settings.cfg yet, or an existing one written before one of these
-       fields existed - fill in the real default for whichever is still
-       blank (PSEMU_DEFAULT_HARDWARE_ID, the Classic color scheme, the
-       default shadow color, and the original hardcoded key bindings)
-       rather than leaving it blank, so the file always shows what's
-       actually in effect instead of an implicit fallback nothing on disk
-       hints at. */
+    /* This handles two cases: no settings.cfg yet, or an existing file written
+       before one of these fields existed.
+       Fill in the real default for each field that is still blank:
+       PSEMU_DEFAULT_HARDWARE_ID, the Classic color scheme, the default shadow
+       color, and the original hardcoded key bindings.
+       Do not leave any field blank.
+       This way, the file always shows what is actually in effect, instead of
+       an implicit fallback that nothing on disk hints at. */
     if (settings->hardware_id[0] == '\0') {
         psemu_format_hardware_id(PSEMU_DEFAULT_HARDWARE_ID, settings->hardware_id, sizeof(settings->hardware_id));
     }
@@ -311,8 +315,8 @@ static int hex_nibble(char c) {
     return -1;
 }
 
-/* Parses exactly 6 hex digits ("RRGGBB") and nothing else - same
-   deliberately-strict, no-alternate-format spirit as
+/* Parses exactly 6 hex digits ("RRGGBB") and nothing else.
+   This is deliberately strict, with no alternate format allowed, matching
    psemu_parse_hardware_id in psemu.h. */
 static int parse_hex_rgb(const char *s, uint8_t *r, uint8_t *g, uint8_t *b) {
     int nibbles[6];
@@ -332,39 +336,43 @@ static int parse_hex_rgb(const char *s, uint8_t *r, uint8_t *g, uint8_t *b) {
     return 1;
 }
 
-/* One entry of the live key -> PocketStation-button mapping the main loop
-   polls every frame (see button_scancodes in main) - display_name is only
-   used for remap prompts/labels, never persisted itself (the scancode's
-   own SDL_GetScancodeName is what's written to settings.cfg). `bit` is 0
-   for the trailing "Create Debug Log" entry, which isn't a real
-   PocketStation button - see button_scancodes in main for how that entry
-   is actually consumed. */
+/* One entry of the live key-to-PocketStation-button mapping.
+   The main loop polls this mapping every frame (see button_scancodes in main).
+   display_name is used only for remap prompts and labels. This app never
+   persists display_name itself; it persists the scancode's own
+   SDL_GetScancodeName to settings.cfg instead.
+   `bit` is 0 for the trailing "Create Debug Log" entry.
+   This entry is not a real PocketStation button.
+   See button_scancodes in main for how this entry is actually consumed. */
 typedef struct {
     SDL_Scancode scancode;
     uint32_t bit;
     const char *display_name;
 } button_binding_t;
 
-/* Number of rows in Tools > Remap Controls - Up/Down/Left/Right/Fire plus
-   the non-button "Create Debug Log" hotkey. Matches IDD_REMAP_CONTROLS'
-   row count and the IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE ranges in
+/* Number of rows in Tools > Remap Controls: Up, Down, Left, Right, Fire, plus
+   the non-button "Create Debug Log" hotkey.
+   This matches IDD_REMAP_CONTROLS' row count.
+   This also matches the IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE ranges in
    resource.h (6 consecutive IDs each). */
 #define REMAP_BINDING_COUNT 6
 
-/* Written to a settings.cfg key_* field in place of a real key name when
-   that row was explicitly cleared because another row just claimed its key
-   (see prompt_remap_controls) - distinct from an empty field, which means
-   "never set, use the hardcoded default" (see resolve_key_binding). Without
-   this distinction, persisting an unbound row as "" would silently revert
-   it back to its original default key on the next launch. */
+/* This app writes this marker to a settings.cfg key_* field in place of a
+   real key name, when that row was explicitly cleared because another row
+   just claimed its key (see prompt_remap_controls).
+   This marker is distinct from an empty field. An empty field means "never
+   set, use the hardcoded default" (see resolve_key_binding).
+   Without this distinction, persisting an unbound row as "" would silently
+   revert it to its original default key on the next launch. */
 #define KEY_BINDING_UNBOUND_MARKER "(unbound)"
 
-/* `saved_name` is a settings.cfg key_* field - parsed via
-   SDL_GetScancodeFromName, falling back to `fallback` if it's empty or
-   doesn't name a real key (e.g. hand-edited to garbage). Explicitly
-   unbound (see KEY_BINDING_UNBOUND_MARKER) returns SDL_SCANCODE_UNKNOWN
-   rather than falling back - that's a deliberate "no key" state, not a
-   missing/invalid one. */
+/* `saved_name` is a settings.cfg key_* field.
+   This function parses it via SDL_GetScancodeFromName.
+   It falls back to `fallback` if `saved_name` is empty, or does not name a
+   real key (for example, hand-edited to garbage).
+   An explicitly unbound field (see KEY_BINDING_UNBOUND_MARKER) returns
+   SDL_SCANCODE_UNKNOWN instead of falling back.
+   This is a deliberate "no key" state, not a missing or invalid one. */
 static SDL_Scancode resolve_key_binding(const char *saved_name, SDL_Scancode fallback) {
     if (strcmp(saved_name, KEY_BINDING_UNBOUND_MARKER) == 0) {
         return SDL_SCANCODE_UNKNOWN;
@@ -378,10 +386,11 @@ static SDL_Scancode resolve_key_binding(const char *saved_name, SDL_Scancode fal
     return fallback;
 }
 
-/* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) is "" - indistinguishable from
-   "never set" once written to settings.cfg (see resolve_key_binding), so
-   an explicitly-unbound row is written as KEY_BINDING_UNBOUND_MARKER
-   instead. */
+/* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) returns "".
+   Once written to settings.cfg, "" is indistinguishable from "never set"
+   (see resolve_key_binding).
+   This function writes KEY_BINDING_UNBOUND_MARKER instead, for an
+   explicitly-unbound row. */
 static void format_key_binding_name(char *out, size_t out_size, SDL_Scancode scancode) {
     if (scancode == SDL_SCANCODE_UNKNOWN) {
         snprintf(out, out_size, "%s", KEY_BINDING_UNBOUND_MARKER);
@@ -390,9 +399,9 @@ static void format_key_binding_name(char *out, size_t out_size, SDL_Scancode sca
     }
 }
 
-/* Inverse of resolve_key_binding - bindings must be exactly
-   REMAP_BINDING_COUNT entries in fixed Up/Down/Left/Right/Fire/Create-Debug-
-   Log order (see button_scancodes in main). */
+/* Inverse of resolve_key_binding.
+   `bindings` must hold exactly REMAP_BINDING_COUNT entries, in fixed
+   Up/Down/Left/Right/Fire/Create-Debug-Log order (see button_scancodes in main). */
 static void save_key_bindings(app_settings_t *settings, const button_binding_t bindings[REMAP_BINDING_COUNT]) {
     format_key_binding_name(settings->key_up, sizeof(settings->key_up), bindings[0].scancode);
     format_key_binding_name(settings->key_down, sizeof(settings->key_down), bindings[1].scancode);
@@ -425,8 +434,9 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
     return buf;
 }
 
-/* State the menu bar's WM_COMMAND handlers need to reach, bundled since
-   SDL_SetWindowsMessageHook only takes a single void *userdata. */
+/* State the menu bar's WM_COMMAND handlers need to reach.
+   This is bundled because SDL_SetWindowsMessageHook only takes a single
+   void *userdata. */
 typedef struct {
     psemu_t *ps;
     uint8_t **bios;
@@ -523,10 +533,10 @@ static void prompt_open_app(menu_context_t *ctx) {
     *ctx->cpu_faulted_reported = 0;
 }
 
-/* lParam payload for hwid_dialog_proc, passed in via DialogBoxParamA and
-   retrieved with GetWindowLongPtrA(GWLP_USERDATA) - parsed_id is only
-   filled in (and IDOK only allowed to close the dialog) once the edit
-   control's text has actually passed psemu_parse_hardware_id. */
+/* lParam payload for hwid_dialog_proc.
+   Passed in via DialogBoxParamA, retrieved with GetWindowLongPtrA(GWLP_USERDATA).
+   parsed_id is filled in, and IDOK is allowed to close the dialog, only
+   after the edit control's text passes psemu_parse_hardware_id. */
 typedef struct {
     char text[PSEMU_HARDWARE_ID_STRING_SIZE];
     uint32_t parsed_id;
@@ -537,9 +547,10 @@ static INT_PTR CALLBACK hwid_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPA
     case WM_INITDIALOG:
         SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)lparam);
         SetDlgItemTextA(hdlg, IDC_HWID_EDIT, ((hwid_dialog_data_t *)lparam)->text);
-        /* PSEMU_HARDWARE_ID_STRING_SIZE includes the '\0' - the canonical
-           form is always exactly 8 hex digits, so cap typed input there
-           instead of letting psemu_parse_hardware_id reject it later. */
+        /* PSEMU_HARDWARE_ID_STRING_SIZE includes the '\0'.
+           The canonical form is always exactly 8 hex digits.
+           Cap typed input at that length instead of letting
+           psemu_parse_hardware_id reject it later. */
         SendDlgItemMessageA(hdlg, IDC_HWID_EDIT, EM_SETLIMITTEXT, PSEMU_HARDWARE_ID_STRING_SIZE - 1, 0);
         return TRUE;
     case WM_COMMAND:
@@ -573,11 +584,12 @@ static void prompt_edit_hardware_id(menu_context_t *ctx) {
     }
 }
 
-/* Resizes the window so its *client* area (where the framebuffer actually
-   renders) becomes exactly PSEMU_LCD_{WIDTH,HEIGHT} * SCALE * multiplier,
-   regardless of however much chrome (menu bar, title bar, borders) the
-   window currently has - same before/after-GetClientRect technique used
-   to compensate for the menu bar's height at startup. */
+/* Resizes the window so its *client* area, where the framebuffer actually
+   renders, becomes exactly PSEMU_LCD_{WIDTH,HEIGHT} * SCALE * multiplier.
+   This holds regardless of how much chrome (menu bar, title bar, borders)
+   the window currently has.
+   This uses the same before/after-GetClientRect technique that compensates
+   for the menu bar's height at startup. */
 static void resize_client_to_scale(HWND hwnd, int multiplier) {
     RECT client, window_rect;
     int chrome_w, chrome_h, target_w, target_h;
@@ -605,16 +617,17 @@ static void set_sprite_shadows(menu_context_t *ctx, int enabled) {
     save_settings(ctx->settings, ctx->settings_path);
 }
 
-/* Fills the IDC_PIXEL_HEX/IDC_BG_HEX edit control at `edit_id` with
-   whatever ChooseColorA returns, seeded from that field's current text
-   (falling back to black if it isn't valid hex yet) - lets a "Choose..."
-   click and hand-typing the hex code freely mix, either one just
-   overwrites the same field. */
+/* Fills the IDC_PIXEL_HEX/IDC_BG_HEX edit control at `edit_id` with whatever
+   ChooseColorA returns.
+   This seeds ChooseColorA from that field's current text, falling back to
+   black if the text is not valid hex yet.
+   A "Choose..." click and hand-typing the hex code can freely mix: either
+   one just overwrites the same field. */
 static void choose_color_into_hex_field(HWND hdlg, int edit_id) {
-    /* CHOOSECOLOR requires a caller-owned 16-entry custom-color scratch
-       array; static so the user's custom-palette additions survive
-       between picks, both within one dialog session and across separate
-       menu invocations, rather than resetting every time. */
+    /* CHOOSECOLOR requires a caller-owned 16-entry custom-color scratch array.
+       This array is static so the user's custom-palette additions survive
+       between picks, both within one dialog session and across separate menu
+       invocations, instead of resetting every time. */
     static COLORREF custom_colors[16] = {0};
     char text[7];
     uint8_t r, g, b;
@@ -635,9 +648,9 @@ static void choose_color_into_hex_field(HWND hdlg, int edit_id) {
     }
 }
 
-/* lParam payload for custom_colors_dialog_proc - same pattern as
-   hwid_dialog_data_t: parsed_*_rgba is only filled in (and IDOK only
-   allowed to close the dialog) once both hex fields have actually passed
+/* lParam payload for custom_colors_dialog_proc.
+   Same pattern as hwid_dialog_data_t: parsed_*_rgba is filled in, and IDOK
+   is allowed to close the dialog, only after both hex fields pass
    parse_hex_rgb. */
 typedef struct {
     char pixel_hex[7];
@@ -700,8 +713,8 @@ static void prompt_custom_colors(menu_context_t *ctx) {
     }
 }
 
-/* lParam payload for shadow_color_dialog_proc - same pattern as
-   custom_colors_dialog_data_t, just one color instead of two. */
+/* lParam payload for shadow_color_dialog_proc.
+   Same pattern as custom_colors_dialog_data_t, but with one color instead of two. */
 typedef struct {
     char shadow_hex[7];
     uint32_t parsed_shadow_rgba;
@@ -722,9 +735,9 @@ static INT_PTR CALLBACK shadow_color_dialog_proc(HWND hdlg, UINT msg, WPARAM wpa
             choose_color_into_hex_field(hdlg, IDC_SHADOW_HEX);
             return TRUE;
         case IDC_SHADOW_RESET: {
-            /* Only resets the field's displayed text, not the live
-               setting - OK still has to be clicked to actually apply (and
-               persist) it, same as any other edit in this dialog, so
+            /* This resets only the field's displayed text, not the live setting.
+               OK still must be clicked to apply and persist it, the same as any other
+               edit in this dialog.
                Reset-then-Cancel is a no-op. */
             char default_hex[7];
             format_rgba_hex(DISPLAY_SHADOW_COLOR, default_hex, sizeof(default_hex));
@@ -765,8 +778,9 @@ static void prompt_shadow_color(menu_context_t *ctx) {
     }
 }
 
-/* No buttons, nothing to wire up beyond letting the default dialog
-   handling run - IDD_CAPTURE_PROMPT is purely a static text display. */
+/* IDD_CAPTURE_PROMPT is purely a static text display.
+   It has no buttons, so this handler only lets the default dialog
+   handling run. */
 static INT_PTR CALLBACK capture_prompt_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam) {
     (void)hdlg;
     (void)wparam;
@@ -774,21 +788,25 @@ static INT_PTR CALLBACK capture_prompt_dialog_proc(HWND hdlg, UINT msg, WPARAM w
     return msg == WM_INITDIALOG ? TRUE : FALSE;
 }
 
-/* Blocks - draining SDL's own event queue directly, the same way
-   DialogBoxParamA blocks the caller with its own message loop - until the
-   user presses a key (returned) or Esc/closes the window (returns
-   SDL_SCANCODE_UNKNOWN, treated as "cancelled"). This has to go through
-   SDL_PollEvent rather than a native dialog/message loop: capturing a raw
-   Win32 WM_KEYDOWN and converting it to an SDL_Scancode by hand would mean
-   reimplementing SDL's own (nontrivial, per-platform) scancode table,
-   which is exactly what button_scancodes[].scancode and
-   SDL_GetKeyboardState both already rely on SDL to get right - safer to
-   just ask SDL directly, the same way normal gameplay input already does.
-   A real SDL_QUIT during this wait can't be cleanly bubled back out
-   through the nested call stack that led here (WM_COMMAND handler ->
-   this), so it's treated as a cancel too; the user's next close attempt
-   after that proceeds normally since this only ever blocks for a single
-   keypress. */
+/* Blocks by draining SDL's own event queue directly.
+   This is the same way DialogBoxParamA blocks the caller with its own
+   message loop.
+   Returns the pressed key once the user presses one.
+   Returns SDL_SCANCODE_UNKNOWN, treated as "cancelled", if the user presses
+   Esc or closes the window.
+
+   This uses SDL_PollEvent instead of a native dialog or message loop.
+   Capturing a raw Win32 WM_KEYDOWN and converting it to an SDL_Scancode by
+   hand would mean reimplementing SDL's own per-platform scancode table.
+   That table is nontrivial. button_scancodes[].scancode and
+   SDL_GetKeyboardState both already rely on SDL to get it right.
+   Asking SDL directly is safer, the same way normal gameplay input already does.
+
+   A real SDL_QUIT during this wait cannot cleanly bubble back out through
+   the nested call stack that led here (WM_COMMAND handler, then this
+   function). This function treats SDL_QUIT as a cancel too.
+   The user's next close attempt proceeds normally after that, since this
+   function only ever blocks for a single keypress. */
 static SDL_Scancode capture_next_key(HWND hwnd, const char *button_name) {
     char message[160];
     HWND prompt;
@@ -796,14 +814,14 @@ static SDL_Scancode capture_next_key(HWND hwnd, const char *button_name) {
     int have_result = 0;
     SDL_Scancode result = SDL_SCANCODE_UNKNOWN;
 
-    /* CreateDialogParamA (modeless), not DialogBoxParamA - a modal dialog
-       would block this function from ever reaching the SDL_PollEvent loop
-       below, the same problem MessageBoxA had. Shown via
-       SW_SHOWNOACTIVATE so it never takes activation/keyboard focus away
-       from `hwnd` in the first place - that's what was previously causing
-       the pressed key to get eaten by Windows' own menu-mnemonic handling
-       (heard as the system beep) instead of ever reaching SDL as a real
-       SDL_KEYDOWN. */
+    /* This uses CreateDialogParamA (modeless), not DialogBoxParamA.
+       A modal dialog would block this function from ever reaching the
+       SDL_PollEvent loop below. MessageBoxA had this same problem.
+       This shows the dialog via SW_SHOWNOACTIVATE, so it never takes
+       activation or keyboard focus away from `hwnd`.
+       Without SW_SHOWNOACTIVATE, Windows' own menu-mnemonic handling ate the
+       pressed key (heard as the system beep) instead of it ever reaching SDL
+       as a real SDL_KEYDOWN. */
     prompt = CreateDialogParamA(
         GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_CAPTURE_PROMPT), hwnd, capture_prompt_dialog_proc, 0);
     snprintf(message, sizeof(message), "Press the key you want to use for %s.\n\nPress Esc to cancel.", button_name);
@@ -847,10 +865,9 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
         int i;
         SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)bindings);
         for (i = 0; i < REMAP_BINDING_COUNT; i++) {
-            /* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) is "" - show
-               something a user will actually recognize as "this row lost
-               its key to a clash" (see prompt_remap_controls) rather than
-               a blank label. */
+            /* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) returns "".
+               Show a label the user will recognize as "this row lost its key to a
+               clash" (see prompt_remap_controls), instead of a blank label. */
             const char *name =
                 bindings[i].scancode == SDL_SCANCODE_UNKNOWN ? "(unbound)" : SDL_GetScancodeName(bindings[i].scancode);
             SetDlgItemTextA(hdlg, IDC_REMAP_LABEL_BASE + i, name);
@@ -864,9 +881,9 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
             return TRUE;
         }
         if (cmd >= IDC_REMAP_CHANGE_BASE && cmd < IDC_REMAP_CHANGE_BASE + REMAP_BINDING_COUNT) {
-            /* 100+ is well clear of any real IDOK/IDCANCEL/control ID -
-               prompt_remap_controls uses this to tell "row N's Change...
-               was clicked" apart from a plain close. */
+            /* 100+ is well clear of any real IDOK/IDCANCEL/control ID.
+               prompt_remap_controls uses this range to tell "row N's Change... was
+               clicked" apart from a plain close. */
             EndDialog(hdlg, 100 + (cmd - IDC_REMAP_CHANGE_BASE));
             return TRUE;
         }
@@ -876,12 +893,14 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
     return FALSE;
 }
 
-/* Shows the current REMAP_BINDING_COUNT bindings with a per-row "Change..."
-   button; clicking one closes this dialog (see remap_dialog_proc) so the
-   actual keypress can be captured via capture_next_key below, outside of
-   any native dialog's own keyboard-navigation message loop, then reopens
-   the dialog to show the result and allow changing another row - loops
-   until the user clicks Close. */
+/* Shows the current REMAP_BINDING_COUNT bindings, each with a per-row
+   "Change..." button.
+   Clicking a "Change..." button closes this dialog (see remap_dialog_proc).
+   This lets capture_next_key below capture the actual keypress, outside of
+   any native dialog's own keyboard-navigation message loop.
+   This function then reopens the dialog to show the result, and to allow
+   changing another row.
+   This loops until the user clicks Close. */
 static void prompt_remap_controls(menu_context_t *ctx) {
     for (;;) {
         INT_PTR result = DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_REMAP_CONTROLS), ctx->hwnd,
@@ -895,11 +914,10 @@ static void prompt_remap_controls(menu_context_t *ctx) {
         captured = capture_next_key(ctx->hwnd, ctx->button_scancodes[index].display_name);
         if (captured != SDL_SCANCODE_UNKNOWN) {
             int i;
-            /* Two rows can't share a key - whichever other row previously
-               held this one becomes unbound (rather than silently leaving
-               both rows pointing at the same physical key, where only one
-               of them could ever actually be told apart from the other by
-               SDL_GetKeyboardState). */
+            /* Two rows cannot share a key.
+               Whichever other row previously held this key becomes unbound.
+               Otherwise, both rows would silently point at the same physical key.
+               SDL_GetKeyboardState could then never tell the two rows apart. */
             for (i = 0; i < REMAP_BINDING_COUNT; i++) {
                 if (i != index && ctx->button_scancodes[i].scancode == captured) {
                     ctx->button_scancodes[i].scancode = SDL_SCANCODE_UNKNOWN;
@@ -943,9 +961,10 @@ static void show_about(menu_context_t *ctx) {
     DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_ABOUT), ctx->hwnd, about_dialog_proc, 0);
 }
 
-/* Installed via SDL_SetWindowsMessageHook - fires synchronously from
-   within SDL_PollEvent's own message pump (same thread, no locking
-   needed), so it's safe to mutate *ctx and call psemu_* directly here. */
+/* Installed via SDL_SetWindowsMessageHook.
+   Fires synchronously from within SDL_PollEvent's own message pump, on
+   the same thread, so no locking is needed.
+   It is safe to mutate *ctx and call psemu_* functions directly here. */
 static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned int message, Uint64 wparam,
     Sint64 lparam) {
     (void)hwnd;
@@ -1014,26 +1033,26 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels, uint32_t pix
     const uint8_t *fb = psemu_get_framebuffer(ps);
     for (int row = 0; row < PSEMU_LCD_HEIGHT; row++) {
         for (int col = 0; col < PSEMU_LCD_WIDTH; col++) {
-            /* SDL_PIXELFORMAT_RGBA8888 packs a 32-bit value as
-               (R<<24)|(G<<16)|(B<<8)|A regardless of host endianness -
-               0xFF000000 is R=0xFF,G=0,B=0,A=0 (pure red, alpha-
-               transparent), not opaque black - pixel_rgba/bg_rgba (see
-               RGBA_PACK) already account for this, so callers must not
-               pass plain 0xRRGGBB values here. */
+            /* SDL_PIXELFORMAT_RGBA8888 packs a 32-bit value as (R<<24)|(G<<16)|(B<<8)|A,
+               regardless of host endianness.
+               Example: 0xFF000000 means R=0xFF, G=0, B=0, A=0. This is pure red with
+               transparent alpha, not opaque black.
+               pixel_rgba and bg_rgba (see RGBA_PACK) already account for this layout.
+               Callers must not pass plain 0xRRGGBB values here. */
             pixels[row * PSEMU_LCD_WIDTH + col] = lcd_bit_on(fb, row, col) ? pixel_rgba : bg_rgba;
         }
     }
     if (!show_shadows) {
         return;
     }
-    /* Approximates the faint "ghosting" a real late-90s STN/passive-matrix
-       LCD shows trailing a lit pixel (slow crystal response, not a real
-       drop shadow) - shadow_rgba (DISPLAY_SHADOW_COLOR by default, but
-       user-configurable via View > Sprite Shadows > Shadow Color...) one
-       row below each lit pixel, drawn as a second pass so it never
-       overwrites an actually-lit pixel (checked against `fb` directly, not
-       the just-written output, since two adjacent source pixels being lit
-       must never dim each other). */
+    /* Approximates the faint "ghosting" a real late-90s STN/passive-matrix LCD
+       shows trailing a lit pixel.
+       This ghosting comes from slow crystal response, not a real drop shadow.
+       This draws shadow_rgba (DISPLAY_SHADOW_COLOR by default, user-configurable
+       via View > Sprite Shadows > Shadow Color...) one row below each lit pixel.
+       This runs as a second pass, so it never overwrites an actually-lit pixel.
+       This checks against `fb` directly, not the just-written output.
+       Two adjacent lit source pixels must never dim each other. */
     for (int row = 0; row < PSEMU_LCD_HEIGHT - 1; row++) {
         for (int col = 0; col < PSEMU_LCD_WIDTH; col++) {
             if (lcd_bit_on(fb, row, col) && !lcd_bit_on(fb, row + 1, col)) {
@@ -1046,9 +1065,10 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels, uint32_t pix
 int main(int argc, char **argv) {
     char exe_dir[900];
     char settings_config_path[1024];
-    /* Mutable (not just const char * into argv) so File > Load BIOS/Open
-       App can overwrite the current path in place after a successful reload -
-       used for the F12/crash diagnostic report's "bios:"/"app:" lines. */
+    /* Mutable, not just const char * into argv.
+       File > Load BIOS.../Open App can overwrite the current path in place
+       after a successful reload.
+       Used for the F12/crash diagnostic report's "bios:"/"app:" lines. */
     char bios_path[1024];
     char app_path[1024];
     const char *positional[2];
@@ -1060,9 +1080,9 @@ int main(int argc, char **argv) {
     int i;
 
     {
-        /* Registers SysLink (Help > About's clickable repo link) - a no-op
-           for every other dialog in this file, so doing this once up
-           front is simplest rather than threading it through each
+        /* Registers SysLink, Help > About's clickable repo link.
+           This is a no-op for every other dialog in this file.
+           Doing this once up front is simpler than threading it through each
            DialogBoxParamA call site individually. */
         INITCOMMONCONTROLSEX icc;
         icc.dwSize = sizeof(icc);
@@ -1070,26 +1090,29 @@ int main(int argc, char **argv) {
         InitCommonControlsEx(&icc);
     }
 
-    /* Computed regardless of how paths/flags were given below - the
-       settings file always lives next to the executable, not next to
+    /* Computed regardless of how paths or flags are given below.
+       The settings file always lives next to the executable, not next to
        whatever content path the user passed on the command line. */
     get_exe_dir(argv[0], exe_dir, sizeof(exe_dir));
     join_path(settings_config_path, sizeof(settings_config_path), exe_dir, SETTINGS_CONFIG_NAME);
     if (!load_settings(&settings, settings_config_path)) {
-        /* First run - settings.cfg didn't exist yet, so write it out right
-           away with the defaults load_settings just filled in (e.g.
-           hardware_id) rather than waiting for some other change (BIOS
-           load, hardware ID edit, etc.) to trigger the first save. An
-           existing file is left exactly as read here even if a field
-           happened to be blank in it - only ever rewritten by an actual
-           update, same as everything else in settings.cfg. */
+        /* This is a first run: settings.cfg did not exist yet.
+           Write it out right away with the defaults load_settings just filled in
+           (for example, hardware_id).
+           Do not wait for some other change (BIOS load, hardware ID edit, etc.)
+           to trigger the first save.
+           An existing file is left exactly as read here, even if a field happened
+           to be blank in it.
+           This app rewrites a field only on an actual update, the same as
+           everything else in settings.cfg. */
         save_settings(&settings, settings_config_path);
     }
 
-    /* --console/--no-console are the only flags; everything else is a
-       positional arg. Extra positional args beyond 2 are silently ignored,
-       matching this parsing's long-standing behavior of only ever reading
-       the first two. */
+    /* --console and --no-console are the only flags; everything else is a
+       positional arg.
+       This silently ignores extra positional args beyond 2.
+       This matches this parsing's long-standing behavior of reading only the
+       first two positional args. */
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--console") == 0) {
             saw_console_flag = 1;
@@ -1099,11 +1122,12 @@ int main(int argc, char **argv) {
             positional[npositional++] = argv[i];
         }
     }
-    /* An explicit flag always wins for this run; absent either, fall back
-       to the persisted preference from settings.cfg (0 if there's no
-       settings file yet). Only persist when a flag actually changed it -
-       otherwise this run's resolved value already matches what's on disk
-       and there's nothing to update. */
+    /* An explicit flag always wins for this run.
+       Absent either flag, this falls back to the persisted preference from
+       settings.cfg (0 if there is no settings file yet).
+       This persists the value only when a flag actually changed it.
+       Otherwise, this run's resolved value already matches what is on disk,
+       and there is nothing to update. */
     show_console = saw_console_flag ? 1 : (saw_no_console_flag ? 0 : settings.show_console);
     if (saw_console_flag || saw_no_console_flag) {
         settings.show_console = show_console;
@@ -1111,11 +1135,12 @@ int main(int argc, char **argv) {
     }
 
     if (show_console) {
-        /* Built as a GUI-subsystem executable (see CMakeLists.txt's
-           add_executable(... WIN32 ...)) so no console is attached by
-           default and every fprintf(stderr, ...) below would otherwise go
-           nowhere visible - --console opts back into one for anyone who
-           wants to see them (e.g. while testing from a terminal). */
+        /* This app is built as a GUI-subsystem executable (see CMakeLists.txt's
+           add_executable(... WIN32 ...)).
+           No console is attached by default, so every fprintf(stderr, ...) below
+           would otherwise go nowhere visible.
+           --console opts back into a console, for anyone who wants to see this
+           output, for example while testing from a terminal. */
         AllocConsole();
         freopen("CONOUT$", "w", stdout);
         freopen("CONOUT$", "w", stderr);
@@ -1125,14 +1150,15 @@ int main(int argc, char **argv) {
         snprintf(bios_path, sizeof(bios_path), "%s", positional[0]);
         snprintf(app_path, sizeof(app_path), "%s", positional[1]);
     } else if (npositional == 0) {
-        /* No positional arguments at all means Explorer double-click-
-           launched the .exe rather than a terminal invocation - fall back
-           first to the BIOS path remembered in settings.cfg from a
-           previous run's File > Open (or CLI argument), then to a BIOS
-           dump sitting next to the .exe, since there's no command line to
-           pass a path on. The memory-card/app path isn't remembered in
-           settings.cfg (only the BIOS is, per its comment above), so it
-           always falls back to the same next-to-the-.exe convention. */
+        /* No positional arguments at all means Explorer double-click-launched the
+           .exe, rather than a terminal invocation.
+           There is no command line to pass a path on, so this falls back first to
+           the BIOS path remembered in settings.cfg from a previous run's
+           File > Open (or CLI argument), then to a BIOS dump sitting next to the
+           .exe.
+           settings.cfg does not remember the memory-card/app path; it remembers
+           only the BIOS path (see its comment above).
+           The app path always falls back to the same next-to-the-.exe convention. */
         if (settings.bios_path[0] != '\0') {
             snprintf(bios_path, sizeof(bios_path), "%s", settings.bios_path);
         } else {
@@ -1152,11 +1178,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Neither a missing nor an invalid BIOS/app-or-card file is fatal
-       anymore - the menu bar's File > Load BIOS.../Open App/Card... lets
-       the user browse to one after the window comes up, so launch either
-       way and just leave psemu without one loaded (psemu_run no-ops until
-       a BIOS is actually loaded - see psemu_run's !ps->has_bios check). */
+    /* A missing or invalid BIOS/app-or-card file is no longer fatal.
+       The menu bar's File > Load BIOS.../Open App/Card... lets the user
+       browse to one after the window comes up.
+       This app launches either way, and leaves psemu without one loaded.
+       psemu_run no-ops until a BIOS is actually loaded (see psemu_run's
+       !ps->has_bios check). */
     size_t bios_size = 0, app_size = 0;
     uint8_t *bios = read_file(bios_path, &bios_size);
     uint8_t *app = read_file(app_path, &app_size);
@@ -1184,12 +1211,12 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Colors > Light/Dark/Classic/Custom Colors... all funnel through here
-       on next launch (see save_settings above) - load_settings always
-       fills in a real value (Classic, on a fresh settings.cfg) for both
-       fields, so this Light fallback only matters if settings.cfg's
-       content somehow doesn't parse (e.g. hand-edited to something
-       invalid). */
+    /* Colors > Light/Dark/Classic/Custom Colors... all funnel through here on
+       the next launch (see save_settings above).
+       load_settings always fills in a real value for both fields (Classic, on
+       a fresh settings.cfg).
+       This Light fallback matters only if settings.cfg's content fails to
+       parse, for example if it was hand-edited to something invalid. */
     uint32_t pixel_rgba = DISPLAY_PIXEL_LIGHT;
     uint32_t bg_rgba = DISPLAY_BG_LIGHT;
     {
@@ -1226,11 +1253,10 @@ int main(int argc, char **argv) {
     }
     psemu_reset(ps);
 
-    /* Persist a BIOS that just loaded successfully right away (whether it
-       came from a CLI argument or the settings-remembered/next-to-the-.exe
-       default) rather than waiting for exit - see the settings-file
-       comment above for why. A failed load leaves settings.bios_path
-       untouched. */
+    /* Persist a successfully-loaded BIOS path right away, whether it came from
+       a CLI argument or the settings-remembered/next-to-the-.exe default.
+       Do not wait for exit. See the settings-file comment above for why.
+       A failed load leaves settings.bios_path untouched. */
     if (bios) {
         snprintf(settings.bios_path, sizeof(settings.bios_path), "%s", bios_path);
         save_settings(&settings, settings_config_path);
@@ -1241,11 +1267,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Resizable - the 32x32 framebuffer is stretched to fill the entire
-       render target on every frame regardless of its size (render_copy's
-       NULL dstrect below), so free-form resizing just works without any
-       extra handling; View > Native/Double Size are just a shortcut back
-       to a known-good size, not the only sizes supported. */
+    /* This window is resizable.
+       The 32x32 framebuffer stretches to fill the entire render target on
+       every frame, regardless of its size (render_copy's NULL dstrect below).
+       Free-form resizing works without any extra handling.
+       View > Native/Double Size are just a shortcut back to a known-good size,
+       not the only sizes this app supports. */
     SDL_Window *window = SDL_CreateWindow("pokketstation", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         PSEMU_LCD_WIDTH * SCALE, PSEMU_LCD_HEIGHT * SCALE, SDL_WINDOW_RESIZABLE);
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -1276,11 +1303,12 @@ int main(int argc, char **argv) {
     }
     HWND hwnd = wm_info.info.win.window;
 
-    /* SDL registers its own window class with no icon, so the exe's
-       resource icon (see resource.rc) doesn't show up on the title bar or
-       Alt-Tab on its own even though it's already the taskbar/Explorer
-       icon - load it explicitly at both sizes Windows actually asks for
-       and set it on the window directly. */
+    /* SDL registers its own window class with no icon.
+       The exe's resource icon (see resource.rc) is already the taskbar and
+       Explorer icon, but it does not show up on the title bar or Alt-Tab on
+       its own.
+       Load the icon explicitly at both sizes Windows actually asks for, and
+       set it on the window directly. */
     HICON icon_big = (HICON)LoadImageA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDI_MAINICON), IMAGE_ICON,
         GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
     HICON icon_small = (HICON)LoadImageA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDI_MAINICON), IMAGE_ICON,
@@ -1292,10 +1320,11 @@ int main(int argc, char **argv) {
     RECT client_before;
     GetClientRect(hwnd, &client_before);
     SetMenu(hwnd, menu);
-    /* SetMenu shrinks the client area to make room for the menu bar unless
-       the window grows to compensate - grow by exactly however much it
-       just shrank so the emulator keeps rendering at its native
-       SCALE-scaled size instead of getting clipped or letterboxed. */
+    /* SetMenu shrinks the client area to make room for the menu bar, unless
+       the window grows to compensate.
+       Grow the window by exactly however much the client area just shrank.
+       This keeps the emulator rendering at its native SCALE-scaled size,
+       instead of getting clipped or letterboxed. */
     RECT client_after;
     GetClientRect(hwnd, &client_after);
     int shrink =
@@ -1303,27 +1332,32 @@ int main(int argc, char **argv) {
     if (shrink > 0) {
         RECT window_rect;
         GetWindowRect(hwnd, &window_rect);
-        /* SWP_FRAMECHANGED forces Windows to recompute the menu bar's
-           cached item rects for the new window size - without it, the
-           menu bar keeps the geometry it had at SetMenu time (before this
-           resize), so the very first click on any menu opens its dropdown
-           using stale coordinates (visibly left-facing instead of the
-           normal right-facing direction) until some later hover/click
-           forces a recalculation on its own. */
+        /* SWP_FRAMECHANGED forces Windows to recompute the menu bar's cached item
+           rects for the new window size.
+           Without it, the menu bar keeps the geometry it had at SetMenu time,
+           before this resize.
+           The first click on any menu then opens its dropdown using stale
+           coordinates: visibly left-facing instead of the normal right-facing
+           direction.
+           This wrong direction persists until some later hover or click forces a
+           recalculation on its own. */
         SetWindowPos(hwnd, NULL, 0, 0, window_rect.right - window_rect.left,
             (window_rect.bottom - window_rect.top) + shrink, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
-    /* Live key -> PocketStation-button mapping the main loop polls every
-       frame - fixed Up/Down/Left/Right/Fire/Create-Debug-Log order (matches
-       IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE and save_key_bindings).
-       Not const/static since Tools > Remap Controls... mutates entries in
-       place through menu_ctx.button_scancodes, which points at this same
-       array. The trailing "Create Debug Log" entry isn't a real
-       PocketStation button (bit=0, harmlessly OR'd into nothing by the
-       polling loop below) - the SDL_KEYDOWN check further down is what
-       actually uses its scancode, to trigger write_diagnostic_report on a
-       real edge (once per press) rather than every frame it's held. */
+    /* Live key-to-PocketStation-button mapping. The main loop polls this
+       mapping every frame.
+       Fixed order: Up, Down, Left, Right, Fire, Create-Debug-Log.
+       This order matches IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE and
+       save_key_bindings.
+       Not const or static: Tools > Remap Controls... mutates entries in place
+       through menu_ctx.button_scancodes, which points at this same array.
+       The trailing "Create Debug Log" entry is not a real PocketStation
+       button. Its bit is 0, so the polling loop below harmlessly ORs it into
+       nothing.
+       The SDL_KEYDOWN check further down is what actually uses its scancode.
+       That check triggers write_diagnostic_report on a real edge, once per
+       press, not every frame the key is held. */
     button_binding_t button_scancodes[REMAP_BINDING_COUNT] = {
         {resolve_key_binding(settings.key_up, SDL_SCANCODE_UP), PSEMU_BUTTON_UP, "Up"},
         {resolve_key_binding(settings.key_down, SDL_SCANCODE_DOWN), PSEMU_BUTTON_DOWN, "Down"},
@@ -1362,14 +1396,14 @@ int main(int argc, char **argv) {
     int16_t audio_buf[1024];
     unsigned long frame = 0;
 
-    /* Minimum number of frames a button reads as pressed once detected,
-       stretching a quick real tap to match the duration already
-       confirmed (via scripted headless testing) to reliably register
-       with the real BIOS. At 32Hz, a real ~40ms tap is only ~1.3 frames -
-       if it lands awkwardly between two per-frame SDL_GetKeyboardState
-       polls, the emulator could see it for a small fraction of a frame,
-       too short for the BIOS's own input handling to count it as a
-       completed press. */
+    /* Minimum number of frames a button reads as pressed, once detected.
+       This stretches a quick real tap to match the duration confirmed, via
+       scripted headless testing, to reliably register with the real BIOS.
+       At 32Hz, a real ~40ms tap is only ~1.3 frames.
+       If a tap lands awkwardly between two per-frame SDL_GetKeyboardState
+       polls, this emulator could see it for only a small fraction of a frame.
+       That fraction is too short for the BIOS's own input handling to count
+       it as a completed press. */
 #define BUTTON_LATCH_FRAMES 5
     int latch_frames_remaining[sizeof(button_scancodes) / sizeof(button_scancodes[0])] = {0};
 
@@ -1379,11 +1413,11 @@ int main(int argc, char **argv) {
             if (event.type == SDL_QUIT) {
                 running = 0;
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[5].scancode) {
-                /* On-demand snapshot for manual testing - press the
-                   moment something looks wrong (frozen screen, missing
-                   sound, garbled graphics), whether or not the CPU has
-                   actually faulted. Remappable via Tools > Remap
-                   Controls..., default F12 - see button_scancodes above. */
+                /* On-demand snapshot for manual testing.
+                   Press this key the moment something looks wrong (frozen screen, missing
+                   sound, garbled graphics), whether or not the CPU has actually faulted.
+                   Remappable via Tools > Remap Controls..., default F12.
+                   See button_scancodes above. */
                 char reason[64];
                 snprintf(reason, sizeof(reason), "manual (%s)", SDL_GetScancodeName(button_scancodes[5].scancode));
                 write_diagnostic_report(ps, reason, frame, bios_path, app_path);
@@ -1406,35 +1440,35 @@ int main(int argc, char **argv) {
         }
         psemu_set_buttons(ps, buttons);
 
-        /* 33000 cycles at a 32Hz refresh (~1.056MHz effective) - reverted
-           from an earlier attempt to match rtc.h's RTC_TICK_CYCLES
-           (~4MHz), which turned out to be an unvalidated guess matching
-           one uncalibrated constant to another: real-hardware testing
-           showed that "fix" made on-screen blinking visibly too fast.
-           Real hardware genuinely runs at a variable clock (up to
-           ~7.995MHz, see the CPU_FREQ table in core/src/clk.c, and
-           docs/hardware-notes.md, "CLK_MODE") - psemu_run scales its
-           overall throughput by both the app's currently-programmed
-           CLK_MODE and each instruction's real per-instruction cycle cost
-           (see "Memory access timing" in docs/hardware-notes.md), so this
-           fixed per-frame budget is a real-time reference rate, not an
-           instruction-count approximation - 33000/frame is kept here
-           specifically because it's the value empirically confirmed to
-           look right, not because it's independently derived. See dac.h's
-           PSEMU_ASSUMED_CPU_HZ
-           for the matching audio-rate conversion (33000 * 32) - keep both
-           in sync if this ever changes. */
-        /* If the CPU has run into an opcode this emulator doesn't
-           recognize, register/memory state is no longer meaningful - a
-           real, confirmed bug found this way (see docs/hardware-notes.md,
-           "Known open questions" - "Chocobo World event-screen crash")
-           reaches this after ~1.3 billion instructions of otherwise-correct
-           real gameplay, so
-           this can't be assumed harmless just because it hasn't happened
-           yet. Stop stepping the CPU once this trips (freezing on the
-           last good frame) instead of silently continuing to feed it
-           garbage forever, which previously looked to a player like an
-           unexplained hang/crash with zero diagnostic information. */
+        /* This budget is 33000 cycles per frame at a 32Hz refresh, ~1.056MHz effective.
+           This reverts an earlier attempt to match rtc.h's RTC_TICK_CYCLES (~4MHz).
+           That earlier attempt was an unvalidated guess, matching one uncalibrated
+           constant to another.
+           Real-hardware testing showed that "fix" made on-screen blinking visibly
+           too fast.
+           Real hardware runs at a variable clock, up to ~7.995MHz (see
+           the CPU_FREQ table in core/src/clk.c, and docs/hardware-notes.md,
+           "CLK_MODE").
+           psemu_run scales its overall throughput by both the app's
+           currently-programmed CLK_MODE, and each instruction's real
+           per-instruction cycle cost (see "Memory access timing" in
+           docs/hardware-notes.md).
+           This fixed per-frame budget is a real-time reference rate, not an
+           instruction-count approximation.
+           33000 cycles per frame is kept here because real-hardware testing
+           confirmed it looks right, not because it is independently derived.
+           See dac.h's PSEMU_ASSUMED_CPU_HZ for the matching audio-rate conversion
+           (33000 * 32). Keep both values in sync if this ever changes. */
+        /* If the CPU hits an opcode this emulator does not recognize, register and
+           memory state are no longer meaningful.
+           A real, confirmed bug found this way (see docs/hardware-notes.md,
+           "Known open questions", "Chocobo World event-screen crash") reaches this
+           point after ~1.3 billion instructions of otherwise-correct real gameplay.
+           Do not assume this state is harmless just because it has not happened yet.
+           Stop stepping the CPU once this trips, freezing on the last good frame.
+           Do not silently continue feeding the CPU garbage forever.
+           Before this fix, that silent continuation looked to a player like an
+           unexplained hang or crash with zero diagnostic information. */
         if (!psemu_cpu_faulted(ps)) {
             psemu_run(ps, 33000);
         } else if (!cpu_faulted_reported) {
@@ -1470,10 +1504,11 @@ int main(int argc, char **argv) {
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    /* No settings save here - bios_path, hardware_id, and show_console are
-       each already persisted immediately at the point they last changed
-       (see the settings-file comment above), so there's nothing left to
-       flush on exit. */
+    /* No settings save here.
+       bios_path, hardware_id, and show_console are each already persisted
+       immediately at the point they last changed (see the settings-file
+       comment above).
+       Nothing is left to flush on exit. */
     psemu_destroy(ps);
     free(bios);
     free(app);

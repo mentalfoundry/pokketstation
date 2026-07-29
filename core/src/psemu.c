@@ -50,9 +50,10 @@ psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size) {
     return flash_load_app(&ps->flash, data, size);
 }
 
-/* A PS1 directory frame: byte 0 is the in-use marker, bytes 4-7 are the
-   file's total data size (little-endian, a multiple of FLASH_BLOCK_SIZE),
-   the rest is link/filename bookkeeping this emulator doesn't need. */
+/* A PS1 directory frame layout:
+   - Byte 0 is the in-use marker.
+   - Bytes 4-7 hold the file's total data size, little-endian, a multiple of FLASH_BLOCK_SIZE.
+   - The rest holds link/filename bookkeeping that this emulator does not need. */
 #define MCS_HEADER_SIZE 0x80u
 #define MCS_DATASIZE_OFFSET 0x04u
 
@@ -114,18 +115,19 @@ static int hex_digit_value(char c) {
 }
 
 int psemu_parse_hardware_id(const char *str, uint32_t *out_id) {
-    /* The only accepted form: exactly 8 plain hex digits (0-9, A-F/a-f) -
-       real hardware has no "first digit must be a letter" restriction at
-       all (confirmed via real-hardware testing: a real ID-editing
-       homebrew happily writes and persists a value like "EEEEEEEE"). This
-       is also exactly what that homebrew itself displays and edits: 8 raw
-       hex nibbles, nothing more structured than that - deliberately not also accepting
-       the letter+8-decimal-digit "sticker" form real units print under
-       their front cover, so this file is what-you-see-is-what-you-get
-       rather than hiding a second, less-general encoding inside it; a
-       frontend wanting to accept sticker-format input directly is free to
-       convert it before calling this, but that's a frontend-level
-       convenience, not something baked into the canonical format itself. */
+    /* This function accepts only one form: exactly 8 plain hex digits (0-9, A-F/a-f).
+       Real hardware has no "first digit must be a letter" restriction.
+       Real-hardware testing confirmed this: a real ID-editing homebrew writes and
+       persists a value like "EEEEEEEE".
+       This form is also exactly what that homebrew displays and edits: 8 raw hex
+       nibbles, nothing more structured.
+       This function deliberately does not accept the letter+8-decimal-digit "sticker"
+       form that real units print under their front cover.
+       This keeps a persisted hardware-ID string what-you-see-is-what-you-get, instead
+       of hiding a second, less-general encoding inside it.
+       A frontend that wants to accept sticker-format input directly can convert it
+       before calling this function.
+       That conversion is a frontend-level convenience, not part of the canonical format. */
     uint32_t value;
     int i;
 
@@ -148,19 +150,20 @@ int psemu_parse_hardware_id(const char *str, uint32_t *out_id) {
 }
 
 void psemu_format_hardware_id(uint32_t id, char *buf, size_t buf_size) {
-    /* Canonical form (see psemu_parse_hardware_id): 8 plain hex digits,
-       matching a real ID-editing homebrew's own on-screen representation
-       exactly and able to round-trip every value the real hardware actually allows -
-       unlike the letter+8-decimal "sticker" form, which cannot represent
-       a high byte outside A-Z/a-z at all. */
+    /* The canonical form (see psemu_parse_hardware_id) is 8 plain hex digits.
+       This matches a real ID-editing homebrew's own on-screen representation exactly.
+       This form can round-trip every value the real hardware allows.
+       The letter+8-decimal "sticker" form cannot do this: it cannot represent a high
+       byte outside A-Z/a-z. */
     snprintf(buf, buf_size, "%08X", (unsigned)id);
 }
 
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons) {
-    /* Real hardware asserts a button's interrupt line on every press/release
-       edge (see docs/hardware-notes.md), not as a polled level - translate
-       our own PSEMU_BUTTON_* bits (an emulator-side convention, not real
-       hardware's bit layout) to the real INT_BTN_* bits per source. */
+    /* Real hardware asserts a button's interrupt line on every press/release edge
+       (see docs/hardware-notes.md). Real hardware does not use a polled level for this.
+       This code translates this emulator's own PSEMU_BUTTON_* bits to the real
+       INT_BTN_* bits.
+       PSEMU_BUTTON_* is an emulator-side convention, not real hardware's bit layout. */
     static const struct {
         uint32_t psemu_bit;
         uint32_t int_bit;
@@ -178,17 +181,19 @@ void psemu_set_buttons(psemu_t *ps, uint32_t buttons) {
         if (changed & button_map[i].psemu_bit) {
             intc_set_line(&ps->intc, button_map[i].int_bit, (buttons & button_map[i].psemu_bit) != 0);
         } else if (buttons & button_map[i].psemu_bit) {
-            /* Still held, no fresh edge this call - HOLD should only
-               pulse on the press edge, not stay latched as a sustained
-               level for the whole physical hold duration. Confirmed via
-               a real-hardware discrepancy: the generic system-tick
-               callback branches on `hold & INT_BTN_ACTION` *before* its
-               RTC check, so a continuously-set hold bit permanently
-               skips the RTC-driven redraw path for as long as the
-               button is held - but real hardware keeps redrawing/
-               blinking normally while held, only acting on release.
-               STATUS (unaffected here) keeps tracking the live level for
-               any code that polls it directly. */
+            /* The button is still held; there is no fresh edge this call.
+               HOLD should only pulse on the press edge.
+               HOLD should not stay latched as a sustained level for the whole physical
+               hold duration.
+
+               A real-hardware discrepancy confirmed this. The generic system-tick
+               callback branches on `hold & INT_BTN_ACTION` before its RTC check. A
+               continuously-set hold bit permanently skips the RTC-driven redraw path
+               for as long as the button is held. Real hardware keeps redrawing and
+               blinking normally while the button is held; it only acts on release.
+
+               STATUS is unaffected here: it keeps tracking the live level, for any
+               code that polls it directly. */
             intc_clear_hold_only(&ps->intc, button_map[i].int_bit);
         }
     }
@@ -199,38 +204,39 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     if (!ps->has_bios) {
         return 0;
     }
-    /* `cycles` is a time budget expressed at the reference clock rate
-       PSEMU_ASSUMED_CPU_HZ (see dac.h). See docs/hardware-notes.md,
-       "CLK_MODE", for the summary; here's the reasoning in full:
+    /* `cycles` is a time budget expressed at the reference clock rate PSEMU_ASSUMED_CPU_HZ
+       (see dac.h). See docs/hardware-notes.md, "CLK_MODE", for a summary. This comment
+       gives the full reasoning.
 
-       Timer follows raw, CLK_MODE-scaled step_cycles - real timers are
-       clocked by the System Clock (i.e. genuinely tied to the CPU's
-       variable clock, not an independent oscillator) and via direct
-       measurement: with Timer
-       pinned to a fixed reference rate instead, the HELLO animation
-       (driven by the same Timer1 heartbeat that drives audio - both are
-       confirmed GUI-code uses of the same IRQ) ran ~4x too
-       slow during CLK_MODE=7, and the date-setting screen's blink ran
-       ~2x too fast during CLK_MODE=4 - both errors matching the ratio
-       between CLK_MODE=7/4's real Hz and the fixed reference rate
-       almost exactly (3.97x and 2.01x respectively), confirming Timer's
-       rate needs to track CLK_MODE for real, not be decoupled from it.
+       Timer follows raw, CLK_MODE-scaled step_cycles.
+       Real timers are clocked by the System Clock, so they are tied directly to the
+       CPU's variable clock, not to an independent oscillator.
+       Direct measurement confirmed this. Pinning Timer to a fixed reference rate
+       instead produced two errors:
+       - The HELLO animation ran about 4x too slow during CLK_MODE=7. The HELLO
+         animation is driven by the same Timer1 heartbeat that drives audio; both are
+         confirmed GUI-code uses of the same IRQ.
+       - The date-setting screen's blink ran about 2x too fast during CLK_MODE=4.
+       Both errors matched the ratio between CLK_MODE=7/4's real Hz and the fixed
+       reference rate almost exactly: 3.97x and 2.01x respectively.
+       This confirms that Timer's rate must track CLK_MODE, not be decoupled from it.
 
-       RTC and DAC remain pinned to real elapsed time regardless of
-       CLK_MODE, for different reasons: RTC is a genuinely separate,
-       CPU-clock-independent oscillator (confirmed via real hardware's
-       RTC ticking at a flat real 1Hz, unrelated to its
-       CPU-frequency setting), and this emulator's
-       DAC resampling needs a fixed real-time OUTPUT rate to feed a
-       standard audio API, regardless of how often the app actually
-       writes new DACV content (which, via Timer, does still track
-       CLK_MODE - that's the audio content/pitch itself, correctly
-       varying with CLK_MODE same as real hardware). A fractional carry
-       (ps->real_time_cycle_carry) converts each step's real elapsed time
-       (via the *currently active* clk_current_hz()) back into the fixed
-       PSEMU_ASSUMED_CPU_HZ reference currency RTC/DAC assume, preserving
-       real time exactly across steps despite integer truncation - the
-       same accumulator pattern dac_tick already uses internally. */
+       RTC and DAC remain pinned to real elapsed time regardless of CLK_MODE, for
+       different reasons.
+       RTC is a separate, CPU-clock-independent oscillator. Real hardware
+       confirms this: its RTC ticks at a flat real 1Hz, unrelated to its CPU-frequency
+       setting.
+       This emulator's DAC resampling needs a fixed real-time output rate, to feed a
+       standard audio API. This holds regardless of how often the app actually writes
+       new DACV content.
+       DACV content still tracks CLK_MODE via Timer: the audio content and pitch
+       correctly vary with CLK_MODE, the same as on real hardware.
+
+       A fractional carry (ps->real_time_cycle_carry) converts each step's real elapsed
+       time, via the currently active clk_current_hz(), back into the fixed
+       PSEMU_ASSUMED_CPU_HZ reference rate that RTC and DAC assume. This preserves real
+       time exactly across steps, despite integer truncation. dac_tick already uses this
+       same accumulator pattern internally. */
     double budget_seconds = (double)cycles / (double)PSEMU_ASSUMED_CPU_HZ;
     double elapsed_seconds = 0.0;
     uint32_t ran = 0;
@@ -270,11 +276,11 @@ void psemu_write_crash_report(const psemu_t *ps, FILE *f) {
     fprintf(f, "clk mode: 0x%08X\n", ps->clk.mode);
     fprintf(f, "cpu faulted (unrecognized opcode): %s\n", cpu->unimplemented ? "YES" : "no");
 
-    /* FLASH1 (0x02000000+) is a live virtual window resolved against
-       F_BANK_FLG/F_BANK_VAL, not a fixed offset into FLASH2 (see
-       docs/hardware-notes.md) - without this, any FLASH1 address in the
-       trace/registers below can't be reliably translated back to a
-       physical byte offset for static analysis after the fact. */
+    /* FLASH1 (0x02000000+) is a live virtual window, resolved against F_BANK_FLG/F_BANK_VAL.
+       FLASH1 is not a fixed offset into FLASH2 (see docs/hardware-notes.md).
+       Without this bank information, a FLASH1 address in the trace or registers below
+       cannot be reliably translated back to a physical byte offset for static analysis
+       after the fact. */
     fprintf(f, "flash F_BANK_FLG (bank_mask): 0x%08X\n", ps->flash.bank_mask);
     fprintf(f, "flash F_BANK_VAL (bank_val[physical] = virtual):\n");
     for (i = 0; i < FLASH_BANK_VAL_COUNT; i++) {
@@ -290,12 +296,11 @@ void psemu_write_crash_report(const psemu_t *ps, FILE *f) {
         thumb ? "thumb" : "arm");
 
     if (cpu->unimplemented) {
-        /* r[15] has already been advanced past the faulting instruction
-           (arm7tdmi_step does this before dispatch) - undo that to find
-           where it was actually fetched from, then mask to the natural
-           alignment for this mode (matching tools/inspect.c's own crash
-           reporter, which originally got this wrong - see
-           docs/hardware-notes.md). */
+        /* r[15] has already been advanced past the faulting instruction; arm7tdmi_step
+           does this before dispatch. This code undoes that advance, to find where the
+           instruction was actually fetched from. This code then masks the result to the
+           natural alignment for this mode. This matches tools/inspect.c's own crash
+           reporter, which originally got this wrong (see docs/hardware-notes.md). */
         uint32_t fault_pc = thumb ? cpu->r[15] - 2u : cpu->r[15] - 4u;
         uint32_t fetch_pc = thumb ? (fault_pc & ~1u) : (fault_pc & ~3u);
         uint32_t raw = thumb ? psemu_bus_read16((psemu_bus_t *)&ps->bus, fetch_pc)
@@ -341,9 +346,10 @@ psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
         return PSEMU_ERR_BAD_SIZE;
     }
     memcpy(ps, buf, sizeof(psemu_t));
-    /* bus/cpu hold self-referential pointers into this struct; the raw
-       copy above carries over stale addresses from whatever psemu_t the
-       state was saved from, so they must be re-linked to this instance. */
+    /* bus and cpu hold self-referential pointers into this struct.
+       The raw copy above carries over stale addresses from whatever psemu_t the state
+       was saved from.
+       These pointers must be re-linked to this instance. */
     ps->bus.lcd = &ps->lcd;
     ps->bus.intc = &ps->intc;
     ps->bus.flash = &ps->flash;

@@ -3,51 +3,53 @@
 
 #include <stdint.h>
 
-/* Sony PocketStation DAC (audio out), confirmed against real
-   hardware - see docs/hardware-notes.md. Two 32-bit
-   registers at 0x0D800010: ctrl(+0x0, bit0 = audio enable), data(+0x4,
-   bits 6-15 = DACV, a signed 10-bit two's-complement output level,
-   +max=0x1FF, center=0, -max=0x200; bits 0-5 should be zero).
-   Audio must ALSO be enabled via IOP_STOP/IOP_START
-   bit5 (see iop.h) - both gates must be open for sound to play.
+/* Sony PocketStation DAC (audio out). Confirmed against real hardware; see docs/hardware-notes.md.
 
-   Real hardware has no square-wave/noise generator or sound DMA channel
-   - software produces tones entirely by writing new DACV levels to
-   DAC_DATA at audio rates (typically driven by Timer1/IRQ-8), i.e. it's
-   a raw, CPU-bit-banged 1-sample-at-a-time DAC with no fixed sample
-   rate of its own. To expose this through a standard fixed-rate audio
-   API, dac_tick resamples the currently-held output level (zero-order
-   hold - the value most recently written stays "current" until the next
-   write) into a ring buffer at a fixed internal rate, PSEMU_DAC_SAMPLE_RATE_HZ. */
+   The DAC has two 32-bit registers at 0x0D800010.
+   ctrl is at +0x0. Bit 0 enables audio output.
+   data is at +0x4. Bits 6-15 hold DACV, a signed 10-bit two's-complement output level.
+   DACV's maximum positive value is 0x1FF. Its center value is 0. Its maximum negative value is 0x200.
+   Bits 0-5 of data should stay zero.
+
+   Audio also needs IOP_STOP/IOP_START bit 5 set (see iop.h).
+   Both gates, DAC ctrl bit0 and IOP bit5, must be open before sound plays.
+
+   Real hardware has no square-wave or noise generator, and no sound DMA channel.
+   Software produces every tone by writing new DACV levels to DAC_DATA at audio rates.
+   Timer1/IRQ-8 typically drives these writes.
+   This makes the DAC a raw, CPU-bit-banged, one-sample-at-a-time device with no fixed sample rate of its own.
+
+   dac_tick exposes this through a standard fixed-rate audio API.
+   It resamples the currently-held output level into a ring buffer, at a fixed rate: PSEMU_DAC_SAMPLE_RATE_HZ.
+   This resampling uses zero-order hold: the most recently written value stays current until the next write. */
 #define DAC_REG_SPAN 0x10u
 
-/* Real hardware runs at a variable clock via CLK_MODE (see clk.h) - up
-   to ~8MHz (mode 8+). PSEMU_ASSUMED_CPU_HZ is the
-   fixed reference rate psemu_run's cycle budget is expressed at
-   (matching frontends/desktop/main.c's real-time pacing: 33000 cycles
-   per 32Hz frame) - an earlier version of this file assumed ~4MHz
-   instead (matching rtc.h's RTC_TICK_CYCLES), which was an unvalidated
-   guess matching one uncalibrated constant to another; real-hardware
-   testing showed that rate made on-screen animations visibly too fast,
-   so this follows the frontend's own empirically-confirmed pacing
-   instead. dac_tick (like rtc_tick) is always fed cycles already
-   converted to this reference rate regardless of the CPU's current
-   CLK_MODE - see psemu_run's comment in psemu.c for why. Keep this in
-   sync with main.c's psemu_run() cycle count if that ever changes -
-   otherwise audio pitch/tempo and on-screen timing will drift apart
-   from each other again. */
-/* Reverted back to this original, longer-validated value (33000u * 32u,
-   matching frontends/desktop/main.c's real-time pacing) after a session
-   spent binary-searching an ear-tuned fudge factor (1077120u, briefly
-   committed) to fix audio pitch reported "slightly too high" once Timer
-   started tracking CLK_MODE directly (see psemu_run's comment in
-   psemu.c). That tuning was explicitly flagged as a stopgap with no
-   hardware frequency reference behind it, likely masking a real,
-   fixable bug elsewhere (e.g. an ARM cycle-timing inaccuracy in
-   arm_exec.c/thumb_exec.c) rather than reflecting truth - reverted here
-   on request rather than carrying an unconfirmed fudge forward. If the
-   "slightly too high" pitch report resurfaces, look for the underlying
-   cycle-timing bug before re-tuning this value by ear again. */
+/* Real hardware runs at a variable clock, controlled via CLK_MODE (see clk.h).
+   This clock reaches approximately 8MHz at mode 8 and above.
+
+   PSEMU_ASSUMED_CPU_HZ is the fixed reference rate for psemu_run's cycle budget.
+   This value matches frontends/desktop/main.c's real-time pacing: 33000 cycles per 32Hz frame (33000 * 32 = 1056000).
+
+   dac_tick and rtc_tick always receive cycles already converted to this reference rate.
+   This conversion happens regardless of the CPU's current CLK_MODE.
+   See psemu_run's comment in psemu.c for the reason.
+
+   Keep this value in sync with main.c's psemu_run() cycle count if that count ever changes.
+   Otherwise audio pitch/tempo and on-screen timing will drift apart from each other.
+
+   History: an earlier version of this file assumed approximately 4MHz instead, matching rtc.h's RTC_TICK_CYCLES.
+   That was an unvalidated guess: it matched one uncalibrated constant to another, with no independent confirmation.
+   Real-hardware testing showed that rate made on-screen animations visibly too fast.
+   This value now follows the frontend's own empirically-confirmed pacing instead.
+
+   A later session tried an ear-tuned fudge factor, 1077120u, after Timer started tracking CLK_MODE directly
+   (see psemu_run's comment in psemu.c). That change aimed to fix an audio pitch reported "slightly too high".
+   That fudge factor was explicitly a stopgap, with no hardware frequency reference behind it.
+   Whether it masked a real, fixable bug elsewhere (for example an ARM cycle-timing inaccuracy in
+   arm_exec.c/thumb_exec.c) is unconfirmed.
+   This value was reverted to 33000u * 32u (1056000u) on request, instead of carrying an unconfirmed fudge forward.
+   If the "slightly too high" pitch report resurfaces, look for the underlying cycle-timing bug before
+   re-tuning this value by ear again. */
 #define PSEMU_ASSUMED_CPU_HZ 1056000u
 #define PSEMU_DAC_SAMPLE_RATE_HZ 8000u
 #define DAC_CYCLES_PER_SAMPLE (PSEMU_ASSUMED_CPU_HZ / PSEMU_DAC_SAMPLE_RATE_HZ) /* = 132 */
@@ -71,20 +73,18 @@ void dac_init(dac_t *dac);
 uint8_t dac_read8(dac_t *dac, uint32_t offset);
 void dac_write8(dac_t *dac, uint32_t offset, uint8_t value);
 
-/* Mirrors the IOP_STOP/IOP_START bit5 gate (see iop.h) into the DAC -
-   both it and ctrl's enable bit must be set for dac_tick to output
-   non-silent samples. */
+/* Mirrors the IOP_STOP/IOP_START bit5 gate (see iop.h) into the DAC.
+   dac_tick outputs non-silent samples only when both this gate and ctrl's enable bit are set. */
 void dac_set_iop_muted(dac_t *dac, int muted);
 
-/* Advances by `cycles`, resampling the currently-held DAC output level
-   into the sample buffer at PSEMU_DAC_SAMPLE_RATE_HZ. Outputs silence
-   while ctrl's enable bit is clear, or while IOP-muted (see
-   dac_set_iop_muted). */
+/* Advances by `cycles`.
+   Resamples the currently-held DAC output level into the sample buffer at PSEMU_DAC_SAMPLE_RATE_HZ.
+   Outputs silence while ctrl's enable bit is clear, or while IOP-muted (see dac_set_iop_muted). */
 void dac_tick(dac_t *dac, uint32_t cycles);
 
-/* Drains up to max_samples into buf (mono, signed 16-bit), returns the
-   number actually written (less than max_samples if the buffer is
-   currently more empty than that). */
+/* Drains up to max_samples into buf (mono, signed 16-bit).
+   Returns the number of samples actually written.
+   This is less than max_samples when the buffer holds fewer samples than requested. */
 uint32_t dac_read_samples(dac_t *dac, int16_t *buf, uint32_t max_samples);
 
 #endif

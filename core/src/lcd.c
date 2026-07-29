@@ -24,8 +24,8 @@ static void lcd_recompute_presented(lcd_t *lcd) {
         return;
     }
 
-    /* ROT: rotate 180 degrees - reverse scanline order and reverse the 32
-       pixels within each scanline (bit0<->bit31, ...). */
+    /* ROT: rotate 180 degrees.
+       Reverse scanline order, and reverse the 32 pixels within each scanline (bit0<->bit31, and so on). */
     for (row = 0; row < rows; row++) {
         uint32_t src_word = (uint32_t)lcd->vram[row * 4u] | ((uint32_t)lcd->vram[row * 4u + 1u] << 8) |
                              ((uint32_t)lcd->vram[row * 4u + 2u] << 16) | ((uint32_t)lcd->vram[row * 4u + 3u] << 24);

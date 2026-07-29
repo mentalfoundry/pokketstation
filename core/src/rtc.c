@@ -5,12 +5,10 @@
 void rtc_init(rtc_t *rtc) {
     rtc->mode = 0;
     rtc->control = 0;
-    /* Real silicon power-on-reset values (RTCClock/RTCCalendar reset
-       columns) - day-of-week BCD 4, date 1998-01-01. An arbitrary
-       1999-01-01 would match the BIOS's well-known "resets itself to
-       Jan 1999" software quirk, but that's a software action rather
-       than the actual hardware POR value - not used here since these
-       are the real POR values. */
+    /* Real hardware power-on-reset values (RTCClock/RTCCalendar reset columns): day-of-week BCD 4, date 1998-01-01.
+       An arbitrary 1999-01-01 would match the BIOS's well-known "resets itself to Jan 1999" software quirk.
+       That quirk is a software action, not the real hardware POR value.
+       This emulator uses the real POR values instead. */
     rtc->time = 0x04000000u;
     rtc->date = 0x00980101u;
     rtc->tick_accumulator = 0;
@@ -35,9 +33,9 @@ uint8_t rtc_read8(rtc_t *rtc, uint32_t offset) {
     return (uint8_t)(*reg >> ((offset % 4u) * 8u));
 }
 
-/* Increments the BCD field selected by mode>>1, with the exact wraparound
-   arithmetic confirmed against real hardware's register-write behavior
-   (case 7, year-hi, is a documented no-op). */
+/* Increments the BCD field selected by mode>>1.
+   The wraparound arithmetic is confirmed against real hardware's register-write behavior.
+   Case 7 (year-hi) is a documented no-op. */
 static void rtc_increment_field(rtc_t *rtc) {
     switch (rtc->mode >> 1) {
     case 0: /* seconds */
@@ -120,10 +118,10 @@ void rtc_write8(rtc_t *rtc, uint32_t offset, uint8_t value) {
         return;
     }
 
-    /* control: only byte 0 carries meaning in observed real usage. Writing
-       1 while already 1 triggers the increment and resets to 0; writing
-       while 0 just stores (real code deliberately writes 1 twice for a
-       single increment - see docs/hardware-notes.md). */
+    /* control: only byte 0 carries meaning in observed real usage.
+       Writing 1 while control already holds 1 triggers the increment and resets control to 0.
+       Writing while control holds 0 just stores the value.
+       Real code deliberately writes 1 twice for a single increment; see docs/hardware-notes.md. */
     if (shift == 0u) {
         if (rtc->control == 1u && value == 1u) {
             rtc_increment_field(rtc);
@@ -134,13 +132,11 @@ void rtc_write8(rtc_t *rtc, uint32_t offset, uint8_t value) {
     }
 }
 
-/* Unconditional seconds -> minutes -> hours -> day-of-week cascade - this
-   codebase's own RTC auto-advance logic (the auto-advance side, not the
-   control-register-triggered side). Deliberately does NOT cascade into
-   date on a day rollover - a gap in this codebase's own history that no
-   independent source explains; no independent source documents the real
-   date-rollover mechanism either, so this gap is inherited rather than
-   invented. */
+/* Unconditional seconds -> minutes -> hours -> day-of-week cascade.
+   This is this emulator's own RTC auto-advance logic (the auto-advance side, not the control-register-triggered side).
+   It deliberately does not cascade into date on a day rollover.
+   This is a gap in this codebase's own history; no independent source explains it.
+   No independent source documents the real date-rollover mechanism either, so this gap is inherited, not invented. */
 static void rtc_advance_second(rtc_t *rtc) {
     rtc->time += 0x00000001u;
     if ((rtc->time & 0x0000000Fu) != 0x0000000Au) {

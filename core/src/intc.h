@@ -5,26 +5,27 @@
 
 #define INTC_REG_SPAN 0x14u
 
-/* Real PocketStation interrupt controller and sources, independently
-   corrected against a real BIOS disassembly - see docs/hardware-notes.md. Registers
-   at 0x0A000000: hold(+0x0, read-only from software's view - "invalid
-   write" per real hardware), status(+0x4, likewise read-only), enable
-   (+0x8, write ORs bits in), mask(+0xC, write ANDs matching bits out of
-   enable), acknowledge(+0x10, write-only, clears matching bits from both
-   hold and status).
+/* Real PocketStation interrupt controller and sources.
+   Independently corrected against a real BIOS disassembly; see docs/hardware-notes.md.
 
-   Every asserted source latches into HOLD, which (gated by ENABLE) drives
-   the CPU's IRQ/FIQ lines. Button presses and the RTC tick (bits within
-   INT_STATUS_MASK) ALSO latch into STATUS, for direct polling without
-   disturbing the interrupt-delivery state (e.g. the RTC wait-for-pulse
-   loop). This codebase's own interrupt-routing logic originally put
-   STATUS_MASK bits into `status` ONLY, never `hold` - that was the
-   initial implementation, but a real BIOS disassembly showed its top-level
-   IRQ handler testing `hold & enable & 0x200` (RTC) and its installed
-   periodic callback testing `hold & 1` (Action button), both landing on
-   real handlers (confirmed by tracing them) that could never run under
-   that status-only routing. Real hardware evidently
-   asserts these sources into both registers. */
+   Registers at 0x0A000000:
+   - hold (+0x0): read-only from software's view. Real hardware treats a write here as invalid.
+   - status (+0x4): likewise read-only.
+   - enable (+0x8): a write ORs bits in.
+   - mask (+0xC): a write ANDs matching bits out of enable.
+   - acknowledge (+0x10): write-only. Clears matching bits from both hold and status.
+
+   Every asserted source latches into HOLD. HOLD, gated by ENABLE, drives the CPU's IRQ/FIQ lines.
+   Button presses and the RTC tick (bits within INT_STATUS_MASK) also latch into STATUS.
+   STATUS lets code poll a source directly without disturbing the interrupt-delivery state, for example the
+   RTC wait-for-pulse loop.
+
+   History: this codebase's own interrupt-routing logic originally put STATUS_MASK bits into `status` only,
+   never into `hold`. A real BIOS disassembly showed this was wrong.
+   The BIOS's top-level IRQ handler tests `hold & enable & 0x200` (RTC).
+   Its installed periodic callback tests `hold & 1` (Action button).
+   Both land on real handlers, confirmed by tracing them, that could never run under the old status-only routing.
+   Real hardware asserts these sources into both registers; this emulator now matches that. */
 #define INT_BTN_ACTION 0x00000001u
 #define INT_BTN_RIGHT 0x00000002u
 #define INT_BTN_LEFT 0x00000004u
@@ -48,9 +49,9 @@ typedef struct intc {
     uint32_t status;
     uint32_t enable;
     uint32_t mask;
-    /* Byte-write accumulators: real code always does a clean 32-bit store,
-       so the semantic effect (OR into enable, etc.) is applied once the
-       top byte of such a store lands. */
+    /* Byte-write accumulators.
+       Real code always performs a clean 32-bit store.
+       This emulator applies the semantic effect (OR into enable, etc.) once the top byte of that store lands. */
     uint32_t enable_write_scratch;
     uint32_t mask_write_scratch;
     uint32_t ack_write_scratch;
@@ -63,26 +64,25 @@ void intc_write8(intc_t *intc, uint32_t offset, uint8_t value);
 /* TEMPORARY diagnostic flag - see intc.c. */
 extern int psemu_intc_trace_enabled;
 
-/* Sets or clears an interrupt source (see INT_* above), routing it to
-   STATUS or HOLD per INT_STATUS_MASK - mirrors real hardware's
-   interrupt-routing logic. Passing line=0 is a no-op (asserted state is always
-   computed on demand by intc_irq_asserted/intc_fiq_asserted, so unlike
-   real hardware there is no separate "recompute" step to trigger). */
+/* Sets or clears an interrupt source (see INT_* above).
+   Routes it to STATUS or HOLD per INT_STATUS_MASK, mirroring real hardware's interrupt-routing logic.
+   Passing line=0 is a no-op.
+   intc_irq_asserted/intc_fiq_asserted always compute the asserted state on demand.
+   Unlike real hardware, there is no separate "recompute" step to trigger. */
 void intc_set_line(intc_t *intc, uint32_t line, int state);
 uint32_t intc_get_line(intc_t *intc, uint32_t line);
 
-/* Clears `line` from HOLD only, leaving STATUS untouched - used for
-   sources whose HOLD pulse should represent only the initiating edge,
-   not a sustained level for as long as the source's live condition
-   remains true (see psemu_set_buttons in psemu.c for why buttons need
-   this: a real BIOS callback branches on `hold` to decide which source
-   to service, and a held button whose hold bit never clears would
-   permanently starve every other source checked after it in that same
-   branch chain - confirmed via a real-hardware discrepancy: the button-
-   action branch sits before the RTC check in the callback, so a
-   continuously-set hold bit would block RTC-driven redraws for as long
-   as the button is held, when real hardware evidently keeps redrawing
-   normally and only acts on release). */
+/* Clears `line` from HOLD only, leaving STATUS untouched.
+   Use this for sources whose HOLD pulse should represent only the initiating edge, not a sustained level.
+
+   See psemu_set_buttons in psemu.c for why buttons need this.
+   A real BIOS callback branches on `hold` to decide which source to service.
+   A held button whose hold bit never clears would permanently starve every other source checked later in
+   that same branch chain.
+
+   This is confirmed via a real-hardware discrepancy: the button-action branch sits before the RTC check in
+   the callback. A continuously-set hold bit would block RTC-driven redraws for as long as the button stays held.
+   Real hardware instead keeps redrawing normally, and only acts on release. */
 void intc_clear_hold_only(intc_t *intc, uint32_t line);
 
 int intc_irq_asserted(intc_t *intc);

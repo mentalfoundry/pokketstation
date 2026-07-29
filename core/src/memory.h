@@ -12,26 +12,26 @@
 #define PSEMU_FLASH_CTRL_BASE 0x06000000u
 #define PSEMU_FLASH2_BASE 0x08000000u
 /* Confirmed against real hardware: the interrupt controller (see
-   intc.h) - hold(+0x0), status(+0x4, buttons + RTC), enable(+0x8),
-   mask(+0xC), acknowledge(+0x10). */
+   intc.h). hold (+0x0), status (+0x4, buttons + RTC), enable (+0x8),
+   mask (+0xC), acknowledge (+0x10). */
 #define PSEMU_INTC_BASE 0x0A000000u
 /* Confirmed against real hardware: 3 independent timers (see timer.h). */
 #define PSEMU_TIMER_BASE 0x0A800000u
 /* Confirmed against real hardware: CLK_MODE, CPU/timer clock speed
-   control (see clk.h). A real BIOS boot loop polls this (LDR/TST #0x10/BEQ)
-   before touching flash control, waiting for the clock to stabilize after a
-   speed change. */
+   control (see clk.h). A real BIOS boot loop polls this (LDR/TST
+   #0x10/BEQ) before it touches flash control. It waits for the clock to
+   stabilize after a speed change. */
 #define PSEMU_CLK_BASE 0x0B000000u
 /* Confirmed against real hardware: the real-time clock (see rtc.h). */
 #define PSEMU_RTC_BASE 0x0B800000u
 #define PSEMU_IR_BASE 0x0C800000u
-/* Confirmed against real hardware: LCD_MODE
-   (+0x0, DISON/ROT/draw-mode) and LCD_CAL (+0x4) - see lcd.h. */
+/* Confirmed against real hardware: LCD_MODE (+0x0, DISON/ROT/draw-mode)
+   and LCD_CAL (+0x4). See lcd.h. */
 #define PSEMU_LCD_MODE_BASE 0x0D000000u
 #define PSEMU_LCD_VRAM_BASE 0x0D000100u
-/* Confirmed against real hardware: IOP
-   power control (see iop.h) - IOP_CTRL(+0x0), IOP_STOP/IOP_STAT(+0x4),
-   IOP_START(+0x8), IOP_DATA(+0xC). */
+/* Confirmed against real hardware: IOP power control (see iop.h).
+   IOP_CTRL (+0x0), IOP_STOP/IOP_STAT (+0x4), IOP_START (+0x8),
+   IOP_DATA (+0xC). */
 #define PSEMU_IOP_BASE 0x0D800000u
 /* Confirmed against real hardware: the
    audio DAC (see dac.h). */
@@ -60,10 +60,10 @@ typedef struct psemu_bus {
     struct clk *clk;
     struct iop *iop;
     /* Running total of real-hardware wait-state cycles charged by bus
-       accesses during the CURRENT instruction step - reset to 0 by
-       arm7tdmi_step before fetch/execute, read back afterward as that
-       step's true cost. See "Memory access timing" in
-       docs/hardware-notes.md. */
+       accesses during the current instruction step. arm7tdmi_step
+       resets this to 0 before fetch/execute, then reads it back
+       afterward as that step's true cost. See "Memory access timing"
+       in docs/hardware-notes.md. */
     uint32_t pending_cycles;
 } psemu_bus_t;
 
@@ -78,19 +78,19 @@ void psemu_bus_write8(psemu_bus_t *bus, uint32_t addr, uint8_t value);
 void psemu_bus_write16(psemu_bus_t *bus, uint32_t addr, uint16_t value);
 void psemu_bus_write32(psemu_bus_t *bus, uint32_t addr, uint32_t value);
 
-/* Opcode-fetch variants of read16/read32, used only by arm7tdmi_step - cost
-   the real per-region "Memory Access Time for Opcode Fetch" table instead
-   of the data-access table (see psemu_region_fetch_cycles), otherwise
-   identical. */
+/* Opcode-fetch variants of read16/read32, used only by arm7tdmi_step.
+   These cost the real per-region "Memory Access Time for Opcode Fetch"
+   table instead of the data-access table (see psemu_region_fetch_cycles).
+   Otherwise identical to read16/read32. */
 uint16_t psemu_bus_fetch16(psemu_bus_t *bus, uint32_t addr);
 uint32_t psemu_bus_fetch32(psemu_bus_t *bus, uint32_t addr);
 
 /* Real per-region opcode-fetch wait-state cost (the documented "Memory
-   Access Time for Opcode Fetch" table) - exposed so arm_exec.c/thumb_exec.c/
-   cpu.c can cost pipeline-refill fetches (branches, PC writes, exception
-   entry) the same way psemu_bus_fetch16/32 do internally. See
-   docs/hardware-notes.md, "Memory access timing", for the table and its
-   now confirmed BIOS opcode fetch. */
+   Access Time for Opcode Fetch" table). Exposed so arm_exec.c/
+   thumb_exec.c/cpu.c can cost pipeline-refill fetches (branches, PC
+   writes, exception entry) the same way psemu_bus_fetch16/32 do
+   internally. See docs/hardware-notes.md, "Memory access timing", for
+   the table and its now-confirmed BIOS opcode fetch. */
 uint32_t psemu_region_fetch_cycles(uint32_t addr, int thumb);
 
 /* TEMPORARY diagnostic flag - see memory.c. */

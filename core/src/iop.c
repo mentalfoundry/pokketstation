@@ -6,11 +6,10 @@ void iop_init(iop_t *iop) {
 
 uint8_t iop_read8(iop_t *iop, uint32_t offset) {
     uint32_t shift = (offset % 4u) * 8u;
-    /* Only IOP_STAT (+0x4, aliased with IOP_STOP) and IOP_DATA (+0xC)
-       are documented as readable; IOP_CTRL (+0x0) and IOP_START (+0x8)
-       are write-only/undocumented on read, so just return the current
-       bitmask for anything in this span - harmless, since no known BIOS
-       code reads +0x0 or +0x8. */
+    /* Only IOP_STAT (+0x4, aliased with IOP_STOP) and IOP_DATA (+0xC) are documented as readable.
+       IOP_CTRL (+0x0) and IOP_START (+0x8) are write-only, or undocumented on read.
+       This function returns the current bitmask for any offset in this span.
+       This is harmless, because no known BIOS code reads +0x0 or +0x8. */
     return (uint8_t)(iop->data >> shift);
 }
 

@@ -12,8 +12,8 @@ void timer_init(timer_t *timer) {
     }
 }
 
-/* Control bits 0-1: 0 or 3 = /2, 1 = /32, 2 = /512 - confirmed matching
-   real hardware's timer-start behavior and documented divider values. */
+/* control bits 0-1: 0 or 3 = /2, 1 = /32, 2 = /512.
+   Confirmed matching real hardware's timer-start behavior and documented divider values. */
 static uint32_t timer_divisor(uint32_t control) {
     switch (control & TIMER_CTRL_DIVIDER_MASK) {
     case 1:
@@ -72,11 +72,9 @@ void timer_write8(timer_t *timer, uint32_t offset, uint8_t value) {
     case 2:
         reg = &timer->timers[index].control;
         *reg = (*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        /* Real hardware restarts the prescaler whenever control is
-           rewritten (matches this codebase's own timer-start logic being
-           re-invoked from its control-write handling on every control
-           write) - drop any partial divisor progress so a mode/enable
-           change starts from a clean edge. */
+        /* Real hardware restarts the prescaler whenever control is rewritten.
+           This matches this emulator's own timer-start logic, which re-invokes on every control write.
+           Drop any partial divisor progress so a mode/enable change starts from a clean edge. */
         timer->timers[index].cycle_accumulator = 0;
         return;
     default:
@@ -98,13 +96,11 @@ void timer_tick(timer_t *timer, struct intc *intc, uint32_t cycles) {
             continue;
         }
 
-        /* The timer's own count only decrements once per `divisor` raw
-           cycles (control bits 0-1 select /2, /32, or /512) - confirmed
-           against real hardware's timer-start behavior and its documented
-           divider table. An earlier version of this
-           function decremented count by raw cycles directly, ignoring
-           the divisor entirely, which made any timer using a slower
-           divisor fire far more often than real hardware. */
+        /* The timer's own count decrements once per `divisor` raw cycles.
+           control bits 0-1 select /2, /32, or /512.
+           This is confirmed against real hardware's timer-start behavior and its documented divider table.
+           History: an earlier version of this function decremented count by raw cycles directly, ignoring
+           the divisor entirely. This made any timer using a slower divisor fire far more often than real hardware. */
         divisor = timer_divisor(t->control);
         t->cycle_accumulator += cycles;
         ticks = t->cycle_accumulator / divisor;

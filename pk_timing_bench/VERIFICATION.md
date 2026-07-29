@@ -1,14 +1,16 @@
 # Real-hardware verification log
 
-Real, raw output from running `pk_timing_bench.mcs` on actual PocketStation hardware, kept here so anyone comparing their own unit (or their own emulator's output) against a known-good run has something concrete to check against. See [README.md](README.md) for what each screen means, how to build, and the full debugging history behind the current build (crash → LCD_MODE/VRAM/FLASH-width fixes → Timer0 wraparound fix → both icons).
+This log holds real, raw output from running `pk_timing_bench.mcs` on real PocketStation hardware. Use it to compare your own unit, or your own emulator's output, against a known-good run.
 
-Each entry below is one full run: build state tested, the exact hardware, and every screen's raw hex values as read directly off the device.
+See [README.md](README.md) for what each screen means, how to build this app, and the full debugging history behind the current build. That history runs: crash, then LCD_MODE/VRAM/FLASH-width fixes, then the Timer0 wraparound fix, then both icons.
+
+Each entry below is one full run. Each entry lists the build state tested, the exact hardware, and every screen's raw hex values, read directly off the device.
 
 ---
 
 ## 2026-07-28 — retail PocketStation unit
 
-**Build tested:** the current committed `pk_timing_bench.mcs` (GNU-toolchain build; includes the Timer0-wraparound 16-bit mask fix, the `FLASH_CTRL` fast-rate emulator update, and both icons - the PocketStation on-device browse icon and the standard PS1 memory-card icon).
+**Build tested:** the current committed `pk_timing_bench.mcs`, a GNU-toolchain build. It includes the Timer0-wraparound 16-bit mask fix, the `FLASH_CTRL` fast-rate emulator update, and both icons: the PocketStation on-device browse icon, and the standard PS1 memory-card icon.
 
 | Screen | Test (top) | Control (bottom) |
 |---|---|---|
@@ -25,10 +27,10 @@ Screen 5 (raw Timer0 diagnostic, not deltas):
 
 **Interpretation:**
 
-- Screen 1: top notably larger than bottom (~1.7:1, diluted from a pure 2:1 opcode-fetch signal by non-fetch loop overhead) — sanity check passes, the measurement methodology is trustworthy.
-- Screen 2: test == control exactly — confirms `FLASH_CTRL` gets WRAM's fast 1-cycle data-access rate, not the slow rate.
-- Screens 3/4: clean, small values — no `0xFFFFxxxx` wraparound artifact, confirming the 16-bit Timer0 masking fix holds on real hardware, not just in the emulator.
-- Screen 5 sanity check: `(0x6269 − 0xE23D) mod 65536 = 0x802C`, matching screen 3's test value exactly — the raw counter data is internally consistent.
-- Both icons (the on-device browse-screen stopwatch, and the standard PS1 memory-card icon as shown by a real console's own manager or PC tools) were visually confirmed correct.
+- Screen 1: top is notably larger than bottom, about 1.7:1. Non-fetch loop overhead dilutes this from a pure 2:1 opcode-fetch signal. The sanity check passes; the measurement methodology is trustworthy.
+- Screen 2: test equals control exactly. This confirms `FLASH_CTRL` gets WRAM's fast 1-cycle data-access rate, not the slow rate.
+- Screens 3 and 4: both show clean, small values. Neither shows the `0xFFFFxxxx` wraparound artifact. This confirms the 16-bit Timer0 masking fix holds on real hardware, not just in the emulator.
+- Screen 5 sanity check: `(0x6269 − 0xE23D) mod 65536 = 0x802C`. This matches screen 3's test value exactly. The raw counter data is internally consistent.
+- Both icons were visually confirmed correct: the on-device browse-screen stopwatch icon, and the standard PS1 memory-card icon, as shown by a real console's own manager or PC tools.
 
-No crashes, hangs, or other anomalies on this run.
+This run had no crashes, no hangs, and no other anomalies.

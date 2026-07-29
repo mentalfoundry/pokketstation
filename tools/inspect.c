@@ -132,10 +132,10 @@ int main(int argc, char **argv) {
     if (select_block > 0) {
         printf("forcing RAM u16 @0x00D0 = %d every instruction (diagnostic)\n", select_block);
     } else if (select_block < 0) {
-        /* Negative: poke once at reset instead of every instruction - the
-           real BIOS may use 0x00D0 as scratch for something unrelated
-           later in execution, and forcing it every step could corrupt
-           that instead of just selecting an app slot. */
+        /* Negative: poke once at reset instead of every instruction.
+           The real BIOS's later use of 0x00D0 as scratch is
+           unconfirmed; forcing it every step could corrupt that use
+           instead of just selecting an app slot. */
         int slot = -select_block;
         ps->bus.ram[0xD0] = (uint8_t)(slot & 0xFF);
         ps->bus.ram[0xD1] = (uint8_t)((slot >> 8) & 0xFF);
@@ -216,7 +216,7 @@ int main(int argc, char **argv) {
             /* Navigation sequence: Down (move selection), then Fire
                (confirm/launch) - the system-tick callback only ever
                tests the Action-button hold bit, never Up/Right/Down/Left,
-               so plain repeated Fire presses may never actually navigate
+               so plain repeated Fire presses alone do not navigate
                the real menu. 60000-instruction phase: Down for 1000,
                gap, Fire for 1000, gap. */
             long phase = i % 60000;
@@ -241,7 +241,7 @@ int main(int argc, char **argv) {
                verified end-to-end for the F_SN feature (see docs/hardware-
                notes.md, "Hardware ID (F_SN)": "confirmed working end-to-end
                on real retail hardware"). Each real tap is ~40ms, which at the real ~4MHz
-               clock is roughly 160000 cycles - a much earlier version of
+               clock is ~160000 cycles - a much earlier version of
                this simulation held each button for only 500 instructions
                (~300x too short given the 1-cycle-per-instruction
                approximation), which could fail to register at all if the
@@ -268,7 +268,7 @@ int main(int argc, char **argv) {
             /* Diagnostic: hold Fire down continuously from instr #0 for
                the entire run, with no release - matching a user
                physically holding a key down in the interactive desktop
-               frontend, to check whether a genuinely sustained level on
+               frontend, to check whether a sustained level on
                the INTC hold bit causes the CPU to livelock (immediately
                re-entering the IRQ handler on every subsequent step,
                never letting the resumed USR instruction execute) rather
@@ -399,7 +399,7 @@ int main(int argc, char **argv) {
                    fixed timing (an earlier fixed-tap-count version sent
                    one extra RIGHT edge and overshot past 7 back to 0) -
                    keep tapping RIGHT, with a real-tap cadence, until the
-                   cursor genuinely reads 7, then switch to tapping
+                   cursor reads 7, then switch to tapping
                    ACTION repeatedly so it's not missed by a timing gap. */
                 static long phase_start = -1;
                 static int edited = 0;

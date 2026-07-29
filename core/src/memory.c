@@ -14,10 +14,11 @@
 #include "rtc.h"
 #include "timer.h"
 
-/* Diagnostic flag - see intc.c's psemu_intc_trace_enabled for the same
+/* Diagnostic flag. See intc.c's psemu_intc_trace_enabled for the same
    pattern. tools/inspect.c's `clktrace` flag turns this on to log every
-   real CLK_MODE and DAC_CTRL write with its real PC (see docs/hardware-
-   notes.md, "CLK_MODE"). Kept as permanent diagnostic infrastructure. */
+   real CLK_MODE and DAC_CTRL write, with its real PC (see
+   docs/hardware-notes.md, "CLK_MODE"). Kept as permanent diagnostic
+   infrastructure. */
 int psemu_clk_trace_enabled = 0;
 
 void psemu_bus_init(
@@ -38,28 +39,29 @@ void psemu_bus_init(
 }
 
 /* Real per-region data-access wait-state cost (the documented "Memory
-   Access Time for Data Read/Write" table - see docs/hardware-notes.md,
-   "Memory access timing"). Confirmed: cost doesn't depend on 8/16/32-bit
-   width or sequential/non-sequential access, so this is added exactly once
-   per logical psemu_bus_read/write* call below, never per constituent
-   byte. */
+   Access Time for Data Read/Write" table). See docs/hardware-notes.md,
+   "Memory access timing". Confirmed: this cost does not depend on
+   8/16/32-bit width, or on sequential vs. non-sequential access. This
+   function is called exactly once per logical psemu_bus_read/write*
+   call below, never once per byte. */
 static uint32_t psemu_region_data_cycles(uint32_t addr) {
     if (addr < PSEMU_RAM_SIZE) {
         return 1u; /* WRAM */
     }
-    /* FLASH_CTRL (the F_xxx bank-select/F_WAIT/F_SN registers) gets WRAM's
-       fast 1-cycle rate - confirmed on real retail hardware via this
+    /* FLASH_CTRL (the F_xxx bank-select/F_WAIT/F_SN registers) gets
+       WRAM's fast 1-cycle rate. Confirmed on real hardware, via this
        project's own homebrew timing-benchmark app: a tight loop reading
-       FLASH_CTRL+0x100 (F_BANK_VAL[0]) 30000 times came back with the exact
-       same elapsed-tick count as an identical loop reading plain WRAM, on
-       real silicon. The documented table only says "WRAM (and SOME F_xxx
-       ports)" get the fast rate without naming which ports; this had
-       previously been guessed the OTHER way (slow, matching FLASH/BIOS)
-       based on disassembling an independent third-party emulator's own
-       source - real hardware now overrides that guess, per this project's
-       own trust order (real hardware over independent-emulator
-       disassembly). See docs/hardware-notes.md's "Memory access timing"
-       section and docs/app-notes.md for the full real-hardware result. */
+       FLASH_CTRL+0x100 (F_BANK_VAL[0]) 30000 times returned the exact
+       same elapsed-tick count as an identical loop reading plain WRAM.
+
+       The documented table says only "WRAM (and SOME F_xxx ports)" get
+       the fast rate, without naming which ports. This had previously
+       been guessed the other way: slow, matching FLASH/BIOS, based on
+       disassembling an independent third-party emulator's source. Real
+       hardware now overrides that guess, per this project's own trust
+       order: real hardware over independent-emulator disassembly. See
+       docs/hardware-notes.md's "Memory access timing" section and
+       docs/app-notes.md for the full real-hardware result. */
     if (addr >= PSEMU_FLASH_CTRL_BASE && addr < PSEMU_FLASH_CTRL_BASE + FLASH_CTRL_SPAN) {
         return 1u;
     }
@@ -76,37 +78,46 @@ uint32_t psemu_region_fetch_cycles(uint32_t addr, int thumb) {
         return thumb ? 1u : 2u; /* FLASH: 2 cycles ARM, 1 cycle Thumb */
     }
     if (addr >= PSEMU_BIOS_BASE && addr < PSEMU_BIOS_BASE + PSEMU_BIOS_SIZE) {
-        /* The real kernel executes directly out of BIOS
-           ROM constantly, so this can't be left uncosted. Equal to
-           FLASH's rate INCLUDING its ARM/Thumb split (2 cycles ARM, 1 cycle
-           Thumb), not a flat 2 for both: external reference data-access table
-           groups BIOS with VIRT/PHYS/XTRA_FLASH as one slow-rate entry, and
-           its bus-width section separately says "FLASH and BIOS ROM seem to
-           be allowed to be read only in 16bit and 32bit units... RAM can be
-           freely read/written in 8bit, 16bit, and 32bit units" - both
-           mentions pair BIOS with FLASH's bus behavior, never WRAM's, so
-           FLASH's full rate makes sense. Now also backed by real retail 
-           hardware, not just documentation inference: this project's own 
-           pk_timing_bench homebrew timed a real BIOS ARM helper against a 
-           WRAM-copied version (~1.2x slower, consistent with BIOS paying FLASH's
-           2-cycle ARM rate against WRAM's 1-cycle rate) and a real BIOS
-           Thumb helper the same way (~1.02x, consistent with BIOS's Thumb
-           rate matching WRAM's 1-cycle rate, same as FLASH's own Thumb
-           rate) - both point the same direction as the guess above. Not as
-           strong as a direct BIOS-disassembly trace, since loop/timer
-           overhead dilutes the pure fetch-cost signal, but real,
-           independent, hardware-level support. See "Memory access timing"
-           in docs/hardware-notes.md and pk_timing_bench/README.md. */
+        /* The real kernel executes directly out of BIOS ROM constantly,
+           so this cost cannot be left unassigned. This emulator gives
+           BIOS the same rate as FLASH, including its ARM/Thumb split: 2
+           cycles ARM, 1 cycle Thumb, not a flat 2 cycles for both.
+
+           Reasoning from documentation: the external reference
+           data-access table groups BIOS with VIRT/PHYS/XTRA_FLASH as one
+           slow-rate entry. Its bus-width section separately states:
+           "FLASH and BIOS ROM seem to be allowed to be read only in
+           16bit and 32bit units... RAM can be freely read/written in
+           8bit, 16bit, and 32bit units". Both mentions pair BIOS with
+           FLASH's bus behavior, never WRAM's, so FLASH's full rate is
+           the reasonable choice.
+
+           Now also backed by real hardware, not just documentation
+           inference. This project's own pk_timing_bench homebrew timed
+           a real BIOS ARM helper against a WRAM-copied version: about
+           1.2x slower, consistent with BIOS paying FLASH's 2-cycle ARM
+           rate against WRAM's 1-cycle rate. It timed a real BIOS Thumb
+           helper the same way: about 1.02x, consistent with BIOS's
+           Thumb rate matching WRAM's 1-cycle rate, the same as FLASH's
+           own Thumb rate. Both results point in the same direction as
+           the documentation-based reasoning above.
+
+           This is not as strong as a direct BIOS-disassembly trace,
+           since loop and timer overhead dilutes the pure fetch-cost
+           signal. It is still real, independent, hardware-level
+           support. See "Memory access timing" in docs/hardware-notes.md
+           and pk_timing_bench/README.md. */
         return thumb ? 1u : 2u;
     }
     /* Everything else (VRAM, I/O) = 2 cycles. */
     return 2u;
 }
 
-/* Raw, uncosted 8-bit access - the actual region-routing logic. Only called
-   from within this file, by the costed psemu_bus_* functions below (which
-   add the region's wait-state cost exactly once per logical call) - never
-   call this directly, or accesses go uncounted. */
+/* Raw, uncosted 8-bit access: the actual region-routing logic. Only
+   called from within this file, by the costed psemu_bus_* functions
+   below, which add the region's wait-state cost exactly once per
+   logical call. Never call this directly. Otherwise accesses go
+   uncounted. */
 static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
     if (addr < PSEMU_RAM_SIZE) {
         return bus->ram[addr];
@@ -217,19 +228,19 @@ static void bus_write8_raw(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
     }
     if (addr >= PSEMU_IOP_BASE && addr < PSEMU_IOP_BASE + IOP_REG_SPAN) {
         iop_write8(bus->iop, addr - PSEMU_IOP_BASE, value);
-        /* Mirror the sound-enable gate into the DAC directly - both it
-           and DAC_CTRL's own enable bit must be set for audio to play
-           (confirmed against real hardware, see iop.h/dac.h). */
+        /* Mirror the sound-enable gate into the DAC directly. Both this
+           gate and DAC_CTRL's own enable bit must be set for audio to
+           play. Confirmed against real hardware, see iop.h/dac.h. */
         dac_set_iop_muted(bus->dac, !iop_sound_enabled(bus->iop));
         return;
     }
 }
 
-/* Costed public accessors below - each adds its region's wait-state cost
+/* Costed public accessors below. Each adds its region's wait-state cost
    exactly once (see psemu_region_data_cycles/psemu_region_fetch_cycles),
    regardless of access width, then defers to the raw/uncosted routing
    logic above. Fetch variants are used only by arm7tdmi_step's opcode
-   fetch; every instruction-handler data access (arm_exec.c, thumb_exec.c)
+   fetch. Every instruction-handler data access (arm_exec.c, thumb_exec.c)
    goes through the data-access variants instead. */
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {

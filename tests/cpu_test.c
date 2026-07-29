@@ -785,7 +785,7 @@ static void test_fiq_delivery_and_priority(void) {
        intc_irq_asserted. Found by tracing why a real homebrew's
        Timer2-driven (FIQ, not IRQ) confirmation beep produced silence:
        Timer2's period/enable registers were being written and INT_TIMER2
-       genuinely latched into the interrupt controller's hold register,
+       latched into the interrupt controller's hold register,
        but the CPU's mode never left USR - the interrupt sat asserted
        forever, unconsumed. */
     psemu_t *ps = make_arm_cpu();
@@ -834,7 +834,7 @@ static void test_fiq_delivery_and_priority(void) {
 
 static void test_fiq_takes_priority_over_irq(void) {
     /* Real ARM7TDMI checks FIQ before IRQ - FIQ has strictly higher
-       priority in the exception scheme. With both genuinely pending and
+       priority in the exception scheme. With both pending and
        unmasked simultaneously, the CPU must enter FIQ, not IRQ. */
     psemu_t *ps = make_arm_cpu();
 
@@ -904,17 +904,16 @@ static void test_boot_ready_stub(void) {
 }
 
 static void test_clk_mode_scales_run_speed(void) {
-    /* Real hardware genuinely runs more raw instructions per real frame
-       while CLK_MODE is elevated (confirmed via tracing a real boot+beep
-       sequence: the BIOS sets mode 7 - ~4MHz per the
-       CLK_MODE/SetCpuSpeed table, see clk.c - for
-       the whole HELLO/heart/beep window, dropping to a slower mode once
-       done). psemu_run's cycle budget is expressed at the
-       PSEMU_ASSUMED_CPU_HZ reference rate, so raising CLK_MODE to max
-       should let noticeably more raw cycles run in the same budget than
-       the low-power idle default (mode 0). Timer scales with this too
-       (see test_timer_scales_with_clk_mode) - only RTC/DAC stay pinned
-       to real time (see test_clk_mode_keeps_rtc_dac_on_real_time). */
+    /* Real hardware runs more raw instructions per real frame when
+       CLK_MODE is elevated. Confirmed by tracing a real boot+beep
+       sequence: the BIOS sets mode 7 (~4MHz, per the CLK_MODE/
+       SetCpuSpeed table in clk.c) for the whole HELLO/heart/beep
+       window, then drops to a slower mode. psemu_run's cycle budget
+       uses the PSEMU_ASSUMED_CPU_HZ reference rate. Raising CLK_MODE
+       to max runs more raw cycles in the same budget than the idle
+       default (mode 0). Timer scales with CLK_MODE too (see
+       test_timer_scales_with_clk_mode). RTC and DAC stay pinned to
+       real time (see test_clk_mode_keeps_rtc_dac_on_real_time). */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
@@ -949,12 +948,12 @@ static void test_timer_scales_with_clk_mode(void) {
        during CLK_MODE=4 - both errors matching the ratio between those
        CLK_MODEs' real Hz and the fixed reference rate almost exactly.
        Real timers are clocked by the
-       System Clock, which genuinely varies with CLK_MODE. Timer now
+       System Clock, which varies with CLK_MODE. Timer now
        tracks CLK_MODE like the outer loop's own throughput - the
-       earlier "beep too fast" complaint is believed to have actually
-       been the separate DAC output-pacing bug fixed by
-       test_clk_mode_keeps_rtc_dac_on_real_time below, not something
-       caused by Timer following CLK_MODE. */
+       earlier "beep too fast" complaint is inferred to be the
+       separate DAC output-pacing bug fixed by
+       test_clk_mode_keeps_rtc_dac_on_real_time below, not a result
+       of Timer following CLK_MODE. */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1;
@@ -1112,7 +1111,7 @@ static void test_flash_bank_val_remapping(void) {
        PHYSICAL bank (table[p]=v, deliberately the "backwards" direction
        from a typical page table, see docs/hardware-notes.md, "Flash
        memory") - FLASH1 windowing is a real, potentially-reordering
-       remapping table, not just a simple linear offset. This test exercises a genuinely non-contiguous
+       remapping table, not just a simple linear offset. This test exercises a non-contiguous
        mapping: physical blocks 2 and 5 enabled, with block 5 explicitly
        assigned to virtual bank 0 and block 2 to virtual bank 1 - the
        reverse of what a linear-offset model would produce. */
@@ -1253,14 +1252,14 @@ static void test_flash_serial_number_register_access(void) {
     assert(psemu_get_hardware_id(ps) == 0xCAFEBEEFu);
 
     /* F_CAL (+0x308) is a real, separate register in the same F_EXTRA
-       region - defaults to official documentation's documented reset value and is
+       region - defaults to the documented reset value and is
        independently read/writable. */
     assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308) == 0x001Au);
     psemu_bus_write16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308, 0x0099u);
     assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308) == 0x0099u);
 
     /* The gap between F_BANK_VAL's end (+0x140) and F_EXTRA's start
-       (+0x300) is genuinely unmapped - must stay 0, not mirror
+       (+0x300) is unmapped and must stay 0, not mirror
        last_command now that FLASH_CTRL_SPAN reaches all the way to
        F_EXTRA. */
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u); /* nonzero last_command */
@@ -1499,9 +1498,10 @@ static void test_flash_key_addresses_are_not_data_storage(void) {
 }
 
 /* Real, confirmed sequence (disassembled from a real ID-editing homebrew
-   and matching official register documentation: "[8000000h]=new F_SN_LO value [8000002h]=new
-   F_SN_HI value") - confirmed working on a real retail-BIOS unit this
-   session. See docs/hardware-notes.md, "Hardware ID (F_SN)". */
+   and matching official register documentation: "[8000000h]=new F_SN_LO
+   value [8000002h]=new F_SN_HI value") - confirmed working on a real
+   retail-BIOS unit this session. See docs/hardware-notes.md,
+   "Hardware ID (F_SN)". */
 static void flash_perform_unlock_sequence(psemu_t *ps) {
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFAAu); /* F_KEY2 */
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u); /* F_KEY1 */
@@ -1528,8 +1528,8 @@ static void test_flash_header_write_requires_unlock_first(void) {
        design: physical offset 0/2/8 is ALSO ordinary card-data storage
        (block 0's directory header, in the normal case, and - confirmed
        via the F_KEY1/F_KEY2 corruption bug above - real save-write
-       mechanisms like Chocobo World's own genuinely land writes
-       elsewhere in this same physical range). Without the real unlock
+       mechanisms, like Chocobo World's own, write elsewhere in
+       this same physical range). Without the real unlock
        sequence immediately before, a write to these offsets must behave
        as plain data, not silently redirect to F_SN/F_CAL. */
     psemu_t *ps = make_arm_cpu();

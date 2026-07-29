@@ -30,9 +30,9 @@ void dac_write8(dac_t *dac, uint32_t offset, uint8_t value) {
         dac->ctrl = (dac->ctrl & ~(0xFFu << shift)) | ((uint32_t)value << shift);
     } else if (word_index == 1u) { /* data */
         dac->data = (dac->data & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        /* Extract the signed 10-bit DACV field (bits 6-15), sign-extend
-           from bit 9, and rescale +-512 to a full int16 range (*64, so
-           -512*64 = -32768 exactly fills the negative end). */
+        /* Extract the signed 10-bit DACV field (bits 6-15) and sign-extend from bit 9.
+           Rescale the range +-512 to a full int16 range by multiplying by 64.
+           -512 * 64 = -32768, which exactly fills the negative end. */
         int32_t raw10 = (int32_t)((dac->data >> 6) & 0x3FFu);
         if (raw10 & 0x200) {
             raw10 -= 0x400;
@@ -51,8 +51,8 @@ void dac_tick(dac_t *dac, uint32_t cycles) {
             dac->sample_write_pos = (dac->sample_write_pos + 1u) % DAC_SAMPLE_BUFFER_SIZE;
             dac->sample_count++;
         }
-        /* else: buffer full - the frontend isn't draining fast enough,
-           drop the sample rather than overwrite unread ones. */
+        /* else: buffer full. The frontend is not draining fast enough.
+           Drop the sample instead of overwriting unread ones. */
     }
 }
 
