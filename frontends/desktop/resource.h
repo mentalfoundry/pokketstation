@@ -20,14 +20,17 @@
 #define IDC_SHADOW_CHOOSE 1007
 #define IDC_SHADOW_RESET 1008
 #define IDC_CAPTURE_PROMPT_TEXT 1009
-/* IDC_REMAP_LABEL_BASE and IDC_REMAP_CHANGE_BASE each reserve 6 consecutive
+/* IDC_REMAP_LABEL_BASE and IDC_REMAP_CHANGE_BASE each reserve 9 consecutive
    IDs, one per remappable action.
-   The action order is fixed: Up, Down, Left, Right, Fire, Create-Debug-Log.
+   The action order is fixed: Up, Down, Left, Right, Fire, Create-Debug-Log,
+   Reset, Quick-Save-State, Quick-Load-State.
    See button_scancodes in main.c for this order.
    IDC_REMAP_LABEL_BASE+i shows binding i's current key name.
    IDC_REMAP_CHANGE_BASE+i is that row's "Change..." button.
-   IDC_ABOUT_LINK and IDC_ABOUT_VERSION moved up from 1025/1026.
-   This move makes room for the 6th IDC_REMAP_CHANGE_BASE slot (1025). */
+   IDC_ABOUT_LINK and IDC_ABOUT_VERSION moved up from 1025/1026, originally
+   to make room for the 6th IDC_REMAP_CHANGE_BASE slot (1025).
+   +0..+8 (1020-1028) still fits below IDC_ABOUT_LINK (1030), so no further
+   renumbering was needed for the 3 additional rows. */
 #define IDC_REMAP_LABEL_BASE 1010
 #define IDC_REMAP_CHANGE_BASE 1020
 #define IDC_ABOUT_LINK 1030
@@ -50,5 +53,7 @@
 #define ID_VIEW_SHADOWS_DISABLE 1113
 #define ID_VIEW_SHADOW_COLOR 1114
 #define ID_FILE_RESET 1116
+#define ID_FILE_QUICK_SAVE 1117
+#define ID_FILE_QUICK_LOAD 1118
 
 #endif

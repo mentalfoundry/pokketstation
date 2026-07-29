@@ -33,7 +33,7 @@
    This is deliberately not wired up to git or CMake automatically.
    This string is the one spot to edit for a new release.
    A source zip build has no git available, so an automatic value could silently drift. */
-#define POKKETSTATION_VERSION "v1.5.0"
+#define POKKETSTATION_VERSION "v1.6.0"
 
 /* Returns the directory the running executable lives in.
    This derives the directory from argv[0], not an OS-specific "current module path" API.
@@ -63,6 +63,41 @@ static void join_path(char *out, size_t out_size, const char *dir, const char *n
         snprintf(out, out_size, "%s/%s", dir, name);
     }
 }
+
+static uint32_t fnv1a_hash(const uint8_t *data, size_t size) {
+    uint32_t hash = 2166136261u;
+    size_t i;
+    for (i = 0; i < size; i++) {
+        hash ^= data[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
+
+/* Quick Save/Load State target one file per loaded app/card, named from a
+   hash of its content - not its file path - so switching between apps via
+   File > Open App/Card... never collides, and each app keeps its own
+   most-recent quicksave automatically. Computed fresh on demand rather
+   than cached, since the loaded app can change mid-session. */
+static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, const uint8_t *app, size_t app_size) {
+    char name[64];
+    snprintf(name, sizeof(name), "pokketstation_quicksave_%08x.dat", (unsigned)fnv1a_hash(app, app_size));
+    join_path(out, out_size, exe_dir, name);
+}
+
+#define QUICKSAVE_MAGIC "PKQS"
+#define QUICKSAVE_VERSION 1u
+
+/* app_size/app_hash guard against loading a state saved under a different
+   app/card. The per-app filename already makes that unlikely to even be
+   attempted; this is a safety net against a hash collision or a
+   hand-edited/renamed file. */
+typedef struct {
+    char magic[4];
+    uint32_t version;
+    uint32_t app_size;
+    uint32_t app_hash;
+} quicksave_header_t;
 
 /* Writes a timestamped diagnostic report to disk, and points the user at it on stderr.
    The report has frontend context: the reason string and the frame number.
@@ -149,6 +184,11 @@ typedef struct {
     /* Not a PocketStation button. Triggers write_diagnostic_report on demand
        (see button_scancodes in main). */
     char key_debug_log[32];
+    /* Not PocketStation buttons. Trigger reset_emulation/quick_save_state/
+       quick_load_state on demand (see button_scancodes in main). */
+    char key_reset[32];
+    char key_quick_save[32];
+    char key_quick_load[32];
 } app_settings_t;
 
 /* Packs 8-bit R/G/B into the same 0xRRGGBBAA layout render_framebuffer writes
@@ -201,6 +241,9 @@ static int load_settings(app_settings_t *settings, const char *path) {
     settings->key_right[0] = '\0';
     settings->key_fire[0] = '\0';
     settings->key_debug_log[0] = '\0';
+    settings->key_reset[0] = '\0';
+    settings->key_quick_save[0] = '\0';
+    settings->key_quick_load[0] = '\0';
     settings->show_console = 0;
     settings->show_shadows = 0;
     if (f) {
@@ -231,6 +274,12 @@ static int load_settings(app_settings_t *settings, const char *path) {
                 snprintf(settings->key_fire, sizeof(settings->key_fire), "%s", line + 9);
             } else if (strncmp(line, "key_debug_log=", 14) == 0) {
                 snprintf(settings->key_debug_log, sizeof(settings->key_debug_log), "%s", line + 14);
+            } else if (strncmp(line, "key_reset=", 10) == 0) {
+                snprintf(settings->key_reset, sizeof(settings->key_reset), "%s", line + 10);
+            } else if (strncmp(line, "key_quick_save=", 15) == 0) {
+                snprintf(settings->key_quick_save, sizeof(settings->key_quick_save), "%s", line + 15);
+            } else if (strncmp(line, "key_quick_load=", 15) == 0) {
+                snprintf(settings->key_quick_load, sizeof(settings->key_quick_load), "%s", line + 15);
             } else if (strncmp(line, "show_console=", 13) == 0) {
                 settings->show_console = atoi(line + 13) != 0;
             } else if (strncmp(line, "show_shadows=", 13) == 0) {
@@ -277,6 +326,15 @@ static int load_settings(app_settings_t *settings, const char *path) {
     if (settings->key_debug_log[0] == '\0') {
         snprintf(settings->key_debug_log, sizeof(settings->key_debug_log), "%s", SDL_GetScancodeName(SDL_SCANCODE_F12));
     }
+    if (settings->key_reset[0] == '\0') {
+        snprintf(settings->key_reset, sizeof(settings->key_reset), "%s", SDL_GetScancodeName(SDL_SCANCODE_F8));
+    }
+    if (settings->key_quick_save[0] == '\0') {
+        snprintf(settings->key_quick_save, sizeof(settings->key_quick_save), "%s", SDL_GetScancodeName(SDL_SCANCODE_F5));
+    }
+    if (settings->key_quick_load[0] == '\0') {
+        snprintf(settings->key_quick_load, sizeof(settings->key_quick_load), "%s", SDL_GetScancodeName(SDL_SCANCODE_F9));
+    }
     return existed;
 }
 
@@ -297,6 +355,9 @@ static void save_settings(const app_settings_t *settings, const char *path) {
     fprintf(f, "key_right=%s\n", settings->key_right);
     fprintf(f, "key_fire=%s\n", settings->key_fire);
     fprintf(f, "key_debug_log=%s\n", settings->key_debug_log);
+    fprintf(f, "key_reset=%s\n", settings->key_reset);
+    fprintf(f, "key_quick_save=%s\n", settings->key_quick_save);
+    fprintf(f, "key_quick_load=%s\n", settings->key_quick_load);
     fprintf(f, "show_console=%d\n", settings->show_console ? 1 : 0);
     fprintf(f, "show_shadows=%d\n", settings->show_shadows ? 1 : 0);
     fclose(f);
@@ -350,12 +411,13 @@ typedef struct {
     const char *display_name;
 } button_binding_t;
 
-/* Number of rows in Tools > Remap Controls: Up, Down, Left, Right, Fire, plus
-   the non-button "Create Debug Log" hotkey.
+/* Number of rows in Tools > Remap Controls: Up, Down, Left, Right, Fire,
+   plus 4 non-button hotkeys - Create Debug Log, Reset, Quick Save State,
+   Quick Load State.
    This matches IDD_REMAP_CONTROLS' row count.
    This also matches the IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE ranges in
-   resource.h (6 consecutive IDs each). */
-#define REMAP_BINDING_COUNT 6
+   resource.h (9 consecutive IDs each). */
+#define REMAP_BINDING_COUNT 9
 
 /* This app writes this marker to a settings.cfg key_* field in place of a
    real key name, when that row was explicitly cleared because another row
@@ -401,7 +463,8 @@ static void format_key_binding_name(char *out, size_t out_size, SDL_Scancode sca
 
 /* Inverse of resolve_key_binding.
    `bindings` must hold exactly REMAP_BINDING_COUNT entries, in fixed
-   Up/Down/Left/Right/Fire/Create-Debug-Log order (see button_scancodes in main). */
+   Up/Down/Left/Right/Fire/Create-Debug-Log/Reset/Quick-Save-State/
+   Quick-Load-State order (see button_scancodes in main). */
 static void save_key_bindings(app_settings_t *settings, const button_binding_t bindings[REMAP_BINDING_COUNT]) {
     format_key_binding_name(settings->key_up, sizeof(settings->key_up), bindings[0].scancode);
     format_key_binding_name(settings->key_down, sizeof(settings->key_down), bindings[1].scancode);
@@ -409,6 +472,9 @@ static void save_key_bindings(app_settings_t *settings, const button_binding_t b
     format_key_binding_name(settings->key_right, sizeof(settings->key_right), bindings[3].scancode);
     format_key_binding_name(settings->key_fire, sizeof(settings->key_fire), bindings[4].scancode);
     format_key_binding_name(settings->key_debug_log, sizeof(settings->key_debug_log), bindings[5].scancode);
+    format_key_binding_name(settings->key_reset, sizeof(settings->key_reset), bindings[6].scancode);
+    format_key_binding_name(settings->key_quick_save, sizeof(settings->key_quick_save), bindings[7].scancode);
+    format_key_binding_name(settings->key_quick_load, sizeof(settings->key_quick_load), bindings[8].scancode);
 }
 
 static uint8_t *read_file(const char *path, size_t *out_size) {
@@ -454,9 +520,10 @@ typedef struct {
     uint32_t *bg_rgba;
     int *show_shadows;
     uint32_t *shadow_rgba;
-    button_binding_t *button_scancodes; /* fixed REMAP_BINDING_COUNT-element Up/Down/Left/Right/Fire/Debug-Log array, see main */
+    button_binding_t *button_scancodes; /* fixed REMAP_BINDING_COUNT-element Up/Down/Left/Right/Fire/Debug-Log/Reset/Quick-Save/Quick-Load array, see main */
     app_settings_t *settings;
     const char *settings_path;
+    const char *exe_dir;
 } menu_context_t;
 
 static void prompt_open_bios(menu_context_t *ctx) {
@@ -539,6 +606,77 @@ static void prompt_open_app(menu_context_t *ctx) {
    on demand instead of only after a file dialog succeeds. */
 static void reset_emulation(menu_context_t *ctx) {
     psemu_reset(ctx->ps);
+    *ctx->cpu_faulted_reported = 0;
+}
+
+static void quick_save_state(menu_context_t *ctx) {
+    char path[1024];
+    get_quicksave_path(path, sizeof(path), ctx->exe_dir, *ctx->app, *ctx->app_size);
+
+    size_t state_size = psemu_state_size(ctx->ps);
+    size_t total_size = sizeof(quicksave_header_t) + state_size;
+    uint8_t *buf = (uint8_t *)malloc(total_size);
+    if (!buf) {
+        MessageBoxA(ctx->hwnd, "Out of memory.", "pokketstation", MB_ICONERROR);
+        return;
+    }
+
+    quicksave_header_t header;
+    memcpy(header.magic, QUICKSAVE_MAGIC, 4);
+    header.version = QUICKSAVE_VERSION;
+    header.app_size = (uint32_t)*ctx->app_size;
+    header.app_hash = fnv1a_hash(*ctx->app, *ctx->app_size);
+    memcpy(buf, &header, sizeof(header));
+    psemu_save_state(ctx->ps, buf + sizeof(header), state_size);
+
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(buf, 1, total_size, f) != total_size) {
+        MessageBoxA(ctx->hwnd, "Couldn't write the quicksave file.", "pokketstation", MB_ICONERROR);
+    }
+    if (f) {
+        fclose(f);
+    }
+    free(buf);
+}
+
+static void quick_load_state(menu_context_t *ctx) {
+    char path[1024];
+    get_quicksave_path(path, sizeof(path), ctx->exe_dir, *ctx->app, *ctx->app_size);
+
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        MessageBoxA(ctx->hwnd, "No quicksave found for the currently loaded app/card.", "pokketstation",
+            MB_ICONWARNING);
+        return;
+    }
+
+    quicksave_header_t header;
+    if (fread(&header, 1, sizeof(header), f) != sizeof(header) || memcmp(header.magic, QUICKSAVE_MAGIC, 4) != 0 ||
+        header.version != QUICKSAVE_VERSION) {
+        MessageBoxA(ctx->hwnd, "Not a valid quicksave file.", "pokketstation", MB_ICONERROR);
+        fclose(f);
+        return;
+    }
+
+    uint32_t current_hash = fnv1a_hash(*ctx->app, *ctx->app_size);
+    if (header.app_size != (uint32_t)*ctx->app_size || header.app_hash != current_hash) {
+        MessageBoxA(ctx->hwnd, "This quicksave doesn't match the currently loaded app/card.", "pokketstation",
+            MB_ICONERROR);
+        fclose(f);
+        return;
+    }
+
+    size_t state_size = psemu_state_size(ctx->ps);
+    uint8_t *buf = (uint8_t *)malloc(state_size);
+    if (!buf || fread(buf, 1, state_size, f) != state_size || psemu_load_state(ctx->ps, buf, state_size) != PSEMU_OK) {
+        MessageBoxA(ctx->hwnd, "Couldn't load the quicksave (wrong build/version?).", "pokketstation", MB_ICONERROR);
+        free(buf);
+        fclose(f);
+        return;
+    }
+
+    free(buf);
+    fclose(f);
     *ctx->cpu_faulted_reported = 0;
 }
 
@@ -992,6 +1130,12 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
     case ID_FILE_RESET:
         reset_emulation(ctx);
         break;
+    case ID_FILE_QUICK_SAVE:
+        quick_save_state(ctx);
+        break;
+    case ID_FILE_QUICK_LOAD:
+        quick_load_state(ctx);
+        break;
     case ID_FILE_EXIT:
         *ctx->running = 0;
         break;
@@ -1359,16 +1503,17 @@ int main(int argc, char **argv) {
 
     /* Live key-to-PocketStation-button mapping. The main loop polls this
        mapping every frame.
-       Fixed order: Up, Down, Left, Right, Fire, Create-Debug-Log.
+       Fixed order: Up, Down, Left, Right, Fire, Create-Debug-Log, Reset,
+       Quick-Save-State, Quick-Load-State.
        This order matches IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE and
        save_key_bindings.
        Not const or static: Tools > Remap Controls... mutates entries in place
        through menu_ctx.button_scancodes, which points at this same array.
-       The trailing "Create Debug Log" entry is not a real PocketStation
-       button. Its bit is 0, so the polling loop below harmlessly ORs it into
-       nothing.
-       The SDL_KEYDOWN check further down is what actually uses its scancode.
-       That check triggers write_diagnostic_report on a real edge, once per
+       The trailing 4 entries (Create Debug Log, Reset, Quick Save State,
+       Quick Load State) are not real PocketStation buttons. Their bit is 0,
+       so the polling loop below harmlessly ORs them into nothing.
+       The SDL_KEYDOWN checks further down are what actually use their
+       scancodes. Each check triggers its action on a real edge, once per
        press, not every frame the key is held. */
     button_binding_t button_scancodes[REMAP_BINDING_COUNT] = {
         {resolve_key_binding(settings.key_up, SDL_SCANCODE_UP), PSEMU_BUTTON_UP, "Up"},
@@ -1377,6 +1522,9 @@ int main(int argc, char **argv) {
         {resolve_key_binding(settings.key_right, SDL_SCANCODE_RIGHT), PSEMU_BUTTON_RIGHT, "Right"},
         {resolve_key_binding(settings.key_fire, SDL_SCANCODE_Z), PSEMU_BUTTON_FIRE, "Fire/Action"},
         {resolve_key_binding(settings.key_debug_log, SDL_SCANCODE_F12), 0, "Create Debug Log"},
+        {resolve_key_binding(settings.key_reset, SDL_SCANCODE_F8), 0, "Reset"},
+        {resolve_key_binding(settings.key_quick_save, SDL_SCANCODE_F5), 0, "Quick Save State"},
+        {resolve_key_binding(settings.key_quick_load, SDL_SCANCODE_F9), 0, "Quick Load State"},
     };
 
     fprintf(stderr, "psemu: press %s at any time to write a diagnostic report to a pokketstation_report_*.log file\n",
@@ -1402,6 +1550,7 @@ int main(int argc, char **argv) {
     menu_ctx.shadow_rgba = &shadow_rgba;
     menu_ctx.settings = &settings;
     menu_ctx.settings_path = settings_config_path;
+    menu_ctx.exe_dir = exe_dir;
     SDL_SetWindowsMessageHook(handle_windows_message, &menu_ctx);
 
     uint32_t pixels[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
@@ -1433,6 +1582,15 @@ int main(int argc, char **argv) {
                 char reason[64];
                 snprintf(reason, sizeof(reason), "manual (%s)", SDL_GetScancodeName(button_scancodes[5].scancode));
                 write_diagnostic_report(ps, reason, frame, bios_path, app_path);
+            } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[6].scancode) {
+                /* Remappable via Tools > Remap Controls..., default F8. See button_scancodes above. */
+                reset_emulation(&menu_ctx);
+            } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[7].scancode) {
+                /* Remappable via Tools > Remap Controls..., default F5. See button_scancodes above. */
+                quick_save_state(&menu_ctx);
+            } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[8].scancode) {
+                /* Remappable via Tools > Remap Controls..., default F9. See button_scancodes above. */
+                quick_load_state(&menu_ctx);
             }
         }
 
