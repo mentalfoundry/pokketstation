@@ -106,9 +106,19 @@ void timer_tick(timer_t *timer, struct intc *intc, uint32_t cycles) {
         ticks = t->cycle_accumulator / divisor;
         t->cycle_accumulator %= divisor;
 
+        /* A timer armed with period P expires every P+1 ticks, not P: the counter runs P, P-1, ... 1, 0 and
+           only reloads on the tick AFTER it reaches zero, so zero is a state the counter actually occupies.
+
+           Confirmed by direct real-hardware measurement (pk_timing_bench screen 6, logged in
+           pk_timing_bench/VERIFICATION.md): Timer2 armed at period 1016 over 256 reloads, and at period 2032
+           over 128 reloads, both came back exactly 1 tick per reload slower than a plain P-tick period
+           predicts - the same absolute excess at both periods, which rules out a rate/divisor error and
+           pins it to a fixed per-period off-by-one.
+
+           This used to consume exactly `count` ticks per reload, making every timer fire one tick early. */
         while (ticks > 0) {
-            if (t->count <= ticks) {
-                ticks -= t->count;
+            if (ticks > t->count) {
+                ticks -= t->count + 1u;
                 t->count = t->period;
                 intc_set_line(intc, int_lines[i], 1);
             } else {

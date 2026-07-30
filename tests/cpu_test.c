@@ -746,7 +746,13 @@ static void test_timer_and_irq(void) {
     timer_tick(&ps->timer, &ps->intc, 10u);
     assert(!intc_irq_asserted(&ps->intc)); /* fewer than `period` /2-divided ticks: no expiry yet */
     timer_tick(&ps->timer, &ps->intc, 10u);
-    assert(intc_irq_asserted(&ps->intc)); /* the rest pushes it past the period value */
+    /* 10 more /2-divided ticks bring count to exactly 0 - but zero is a state the real counter actually
+       occupies, so it reloads and fires on the NEXT tick, giving a real period of P+1 rather than P.
+       Confirmed by direct real-hardware measurement; see timer.c's timer_tick and
+       pk_timing_bench/VERIFICATION.md. This assertion used to expect the IRQ one tick earlier. */
+    assert(!intc_irq_asserted(&ps->intc));
+    timer_tick(&ps->timer, &ps->intc, 2u); /* one more /2-divided tick: now it reloads and fires */
+    assert(intc_irq_asserted(&ps->intc));
 
     /* Give USR mode its own SP so we can confirm IRQ entry banks r13/r14/SPSR
        independently of it, then trigger delivery via a single step. */
@@ -800,6 +806,9 @@ static void test_fiq_delivery_and_priority(void) {
     timer_tick(&ps->timer, &ps->intc, 10u);
     assert(!intc_fiq_asserted(&ps->intc));
     timer_tick(&ps->timer, &ps->intc, 10u);
+    /* Same real P+1 period as test_timer_and_irq's IRQ case: count reaching zero is not yet an expiry. */
+    assert(!intc_fiq_asserted(&ps->intc));
+    timer_tick(&ps->timer, &ps->intc, 2u);
     assert(intc_fiq_asserted(&ps->intc));
 
     arm_set_mode(&ps->cpu, ARM_MODE_USR);
@@ -872,17 +881,22 @@ static void test_timer_clock_divisor(void) {
     /* Control bits 0-1 = 1 selects /32 - an earlier
        version of timer_tick ignored this entirely and decremented count
        by raw cycles directly, which would fire this timer 16x too often
-       relative to the /2 case. period=count=1 so a single expiry needs
-       exactly one selected timer tick, i.e. 32 raw cycles. */
+       relative to the /2 case. period=count=1, and the real period is P+1
+       selected ticks (see timer.c), so an expiry needs two /32 ticks - 64
+       raw cycles. The divisor is what this test is actually pinning down:
+       were it ignored, the timer would expire within the first couple of
+       raw cycles instead. */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 1u); /* period */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 1u); /* count */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x8, TIMER_CTRL_ENABLE | 1u); /* /32, enabled */
     ps->intc.enable |= INT_TIMER0;
 
     timer_tick(&ps->timer, &ps->intc, 31u);
-    assert(!intc_irq_asserted(&ps->intc)); /* one short of a full /32 tick: must not expire yet */
+    assert(!intc_irq_asserted(&ps->intc)); /* one short of a full /32 tick: no tick has even elapsed */
     timer_tick(&ps->timer, &ps->intc, 1u);
-    assert(intc_irq_asserted(&ps->intc)); /* the 32nd raw cycle completes the tick */
+    assert(!intc_irq_asserted(&ps->intc)); /* the 32nd raw cycle completes tick 1: count hits 0, not yet an expiry */
+    timer_tick(&ps->timer, &ps->intc, 32u);
+    assert(intc_irq_asserted(&ps->intc)); /* tick 2 reloads and fires */
 
     psemu_destroy(ps);
     printf("test_timer_clock_divisor OK\n");
