@@ -21,16 +21,24 @@ _icon_start:
     @ stopwatch design, not a real app's icon.
     .incbin "../assets/stopwatch_bitmap.bin"
 
-    @ 0x200-0x2FF (256 bytes): real, nonzero, but still UNIDENTIFIED in
-    @ every real app inspected so far (see ../README.md's "Known caveats").
-    @ Zero-filled here rather than embedding another real app's actual
-    @ bytes (this region was originally sourced verbatim from a real
-    @ reference app during development, and confirmed working on real
-    @ hardware in that form) - zero-filling instead, for a clean/shareable
-    @ build with no third-party game data baked in, has NOT itself been
-    @ re-verified on real hardware. If the browse-screen icon ever fails to
-    @ render (or renders differently) on a real unit with this exact
-    @ build, this trailer is the first thing to suspect.
+    @ 0x200-0x2FF (256 bytes): still UNIDENTIFIED, and non-zero in every real
+    @ app inspected - the nine reference dumps on hand range from 93 to 224
+    @ nonzero bytes here. What it holds differs per app, so it is not one fixed
+    @ structure: some keep structured save records here, others further
+    @ 128-byte 32x32 1bpp icon frames or frame data.
+    @
+    @ Zero-filled here rather than embedding another real app's actual bytes
+    @ (the region was originally sourced verbatim from a real reference app
+    @ during development, and confirmed working on real hardware in that form) -
+    @ zero-filling instead, for a clean/shareable build with no third-party game
+    @ data baked in.
+    @
+    @ INVESTIGATED AND RULED OUT as the cause of a real-hardware app-select
+    @ screen glitch: filling this region with two copies of this app's own icon
+    @ bitmap changed what garbage the glitched screen showed but did not fix it.
+    @ The actual cause was the block-count byte at header offset 0x03 being left
+    @ at 0 - see header.s. Kept zero-filled, since nothing now suggests the
+    @ contents matter for a single-frame icon.
     .space 0x200 - (. - _icon_start)
 
 .if (. - _icon_start) != 0x200

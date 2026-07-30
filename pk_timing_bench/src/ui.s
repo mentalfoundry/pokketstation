@@ -135,6 +135,10 @@ clr_loop:
 
     cmp r4, #5
     beq rs_diag_screen
+    cmp r4, #6
+    beq rs_timer_screen
+    cmp r4, #7
+    beq rs_irq_screen
 
     sub r5, r4, #1
     lsl r5, r5, #3
@@ -163,6 +167,40 @@ rs_exit_prompt:
     ldr r6, =WRAM_EXIT_PROMPT_SELECTION
     ldr r0, [r6]
     bl draw_selection_box
+    b rs_done
+
+rs_timer_screen:
+    @ Experiment 6: raw Timer0 stopwatch totals for a fixed number of Timer2
+    @ reloads, at two Timer2 periods. Same two-row layout as screens 1-4:
+    @ top = period 1016 x 256 reloads, bottom = period 2032 x 128 reloads.
+    ldr r5, =WRAM_TIMER_RESULT_A
+    ldr r0, [r5]
+    mov r1, #9
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r5, =WRAM_TIMER_RESULT_B
+    ldr r0, [r5]
+    mov r1, #17
+    mov r2, #0
+    bl draw_hex_u32
+    b rs_done
+
+rs_irq_screen:
+    @ Experiment 7: the same measurement loop timed with interrupts masked
+    @ (top) and with one timer interrupt live (bottom). Both read 0 when
+    @ experiment 7 was not opted into - see start.s's UP-held gate.
+    ldr r5, =WRAM_IRQ_BASELINE
+    ldr r0, [r5]
+    mov r1, #9
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r5, =WRAM_IRQ_WITH_IRQ
+    ldr r0, [r5]
+    mov r1, #17
+    mov r2, #0
+    bl draw_hex_u32
     b rs_done
 
 rs_diag_screen:
@@ -389,7 +427,7 @@ screen_next:
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
     add r1, r1, #1
-    cmp r1, #5
+    cmp r1, #7
     ble sn_store
     mov r1, #1
 sn_store:
@@ -405,7 +443,7 @@ screen_prev:
     sub r1, r1, #1
     cmp r1, #1
     bge sp_store
-    mov r1, #5
+    mov r1, #7
 sp_store:
     str r1, [r0]
     pop {r0, r1, lr}

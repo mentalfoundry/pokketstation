@@ -33,3 +33,40 @@ measure_loop_ptr_thumb:      @ r0=ptr, r1=count -> r0=delta
     lsrs r0, r0, #16
     pop {r4, r5}
     bx r6
+
+@ Registers r0 as the app's IRQ callback via SWI 1, for experiment 7. Passing 0
+@ unregisters again.
+@
+@ This is the same call a real app uses to install its own interrupt
+@ dispatcher, found by disassembling one: it fills a 16-entry handler table in
+@ RAM, then issues "movs r0,#1; ldr r1,=dispatcher; svc #1" (and separately
+@ "movs r0,#2; movs r1,#0; svc #1" to install no FIQ callback). So r0 selects
+@ which callback slot and r1 is the handler address, with 0 meaning none.
+@
+@ Deliberately Thumb, and issued as "svc #1" from Thumb, matching that app
+@ exactly - ARM and Thumb encode the SWI immediate differently, and there is no
+@ evidence about how the kernel's handler reads it, so this copies the one form
+@ known to work rather than assuming they are interchangeable.
+@
+@ SWI 1's contract here is INFERRED from that disassembly, not documented - worth
+@ knowing if experiment 7 ever misbehaves on a real unit.
+    .thumb_func
+    .global register_irq_handler
+
+register_irq_handler:        @ r0 = handler address, or 0 to unregister
+    @ The return deliberately goes through BX, not "pop {..., pc}". On ARMv4T a
+    @ Thumb POP into PC does NOT interwork - it loads the address but stays in
+    @ Thumb - so popping straight into PC returns into the ARM caller while the
+    @ CPU is still in Thumb state, and the caller's ARM instructions then decode
+    @ as garbage Thumb. That is exactly what happened the first time this was
+    @ written: an "unrecognized thumb opcode 0xEBFF" fault, 0xEB being the top
+    @ byte of the ARM BL the caller was really sitting on. measure_loop_ptr_thumb
+    @ above avoids the same trap the same way.
+    @ lr is kept on the stack rather than in a register, so it survives whatever
+    @ the kernel's SWI handler does to the scratch registers.
+    push {lr}
+    adds r1, r0, #0              @ r1 = handler address (0 = unregister)
+    movs r0, #1                  @ r0 = IRQ callback slot
+    svc #1
+    pop {r3}                     @ r3 = saved lr
+    bx r3

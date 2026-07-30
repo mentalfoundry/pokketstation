@@ -25,7 +25,7 @@
 @ CONTINUE or EXIT - enabling usrs to quit gracefully (it shows
 @ its own bespoke continue/exit choice before actually departing,
 @ rather than exiting unconditionally on a hold).
-.equ SCREEN_EXIT_PROMPT,        6
+.equ SCREEN_EXIT_PROMPT,        8
 @ 0 = CONTINUE selected, 1 = EXIT selected. Defaults to CONTINUE when the
 @ prompt first appears, matching the real reference app.
 .equ WRAM_EXIT_PROMPT_SELECTION, 0x268
@@ -40,14 +40,66 @@
 .equ WRAM_DIAG_BEFORE,        0x288
 .equ WRAM_DIAG_AFTER,         0x28C
 
+@ Screen 6 (experiment 6) results: Timer0 stopwatch ticks elapsed across a
+@ fixed number of Timer2 reloads, at two different Timer2 periods.
+.equ WRAM_TIMER_RESULT_A,     0x290
+.equ WRAM_TIMER_RESULT_B,     0x294
+
+@ Screen 7 (experiment 7) results: the same measurement loop timed twice, once
+@ with all interrupts masked and once with a single timer interrupt live.
+.equ WRAM_IRQ_BASELINE,       0x298
+.equ WRAM_IRQ_WITH_IRQ,       0x29C
+
 .equ TIMER0_BASE,   0x0A800000
 .equ TIMER0_PERIOD, TIMER0_BASE + 0x0
 .equ TIMER0_COUNT,  TIMER0_BASE + 0x4
 .equ TIMER0_CTRL,   TIMER0_BASE + 0x8
 
+@ Timer2 - the device under test for experiment 6 (see experiments.s). Timer
+@ channels are 0x10 bytes apart.
+.equ TIMER2_BASE,   TIMER0_BASE + 0x20
+.equ TIMER2_PERIOD, TIMER2_BASE + 0x0
+.equ TIMER2_COUNT,  TIMER2_BASE + 0x4
+.equ TIMER2_CTRL,   TIMER2_BASE + 0x8
+@ control value used by experiment 6: divisor bits 0 (= /2) | enable (bit 2).
+@ Deliberately the exact control value a real IR-using app programs Timer2
+@ with, so the measurement matches real usage rather than a synthetic case.
+.equ TIMER2_CTRL_DIV2_ENABLE, 0x4
+
+@ Experiment 6 periods. 1016 is not arbitrary: it is the exact period a real
+@ IR-using app arms Timer2 with while transmitting (its nominal pulse unit of
+@ 1200, minus a hardcoded 184-tick compensation it applies before arming).
+@ 2032 is that doubled, so the two results together separate an ADDITIVE
+@ per-period error (a fixed cost, e.g. latency) from a PROPORTIONAL one (a
+@ rate/divisor error): an additive error shows the same absolute excess at
+@ both periods, a proportional one shows double the excess at 2032.
+@ Reload counts are chosen so both runs span a similar total, and so the
+@ Timer0 stopwatch delta stays below its real 16-bit wrap (see README.md's
+@ "Timer0 wraps at 0x10000" finding).
+.equ EXP6_PERIOD_A,  1016
+.equ EXP6_RELOADS_A, 256
+.equ EXP6_PERIOD_B,  2032
+.equ EXP6_RELOADS_B, 128
+
 .equ INTC_BASE,   0x0A000000
 .equ INTC_STATUS, INTC_BASE + 0x4
+.equ INTC_ENABLE, INTC_BASE + 0x8
 .equ INTC_MASK,   INTC_BASE + 0xC
+
+@ Timer1 - the interrupt source experiment 7 briefly enables. Timer0 is the
+@ stopwatch and Timer2 belongs to experiment 6, so Timer1 is the only free one.
+.equ TIMER1_BASE,   TIMER0_BASE + 0x10
+.equ INT_TIMER1_BIT, 0x100
+
+@ Experiment 7 (see start.s). Timer1 at /32 with period 99 fires every
+@ (99+1)*32 = 3200 raw cycles, so a LOOP_N-iteration run (~360000 raw cycles)
+@ takes roughly 112 interrupts - enough that a few-hundred-cycle per-interrupt
+@ cost shows up as a >10% change in the loop's duration, rather than vanishing
+@ into measurement noise.
+.equ EXP7_TIMER_PERIOD, 99
+.equ EXP7_TIMER_CTRL,   0x5      @ divisor bits 1 (= /32) | enable
+@ Raw cycles between Timer1 interrupts, for the screen 7 arithmetic in README.md.
+.equ EXP7_IRQ_RAW_CYCLES, 3200
 
 .equ CLK_MODE_ADDR, 0x0B000000
 .equ LCD_MODE_ADDR, 0x0D000000

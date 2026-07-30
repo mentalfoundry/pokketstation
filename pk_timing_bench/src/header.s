@@ -17,7 +17,29 @@ _header_start:
                                  @ a real icon-embedding tool's output against
                                  @ this project's own build (this byte was
                                  @ already 0x11 in both, unchanged).
-    .byte 0                     @ 0x03: reserved
+    .byte 1                     @ 0x03: block count - how many 8KB blocks this
+                                 @ save occupies. This app is exactly one block
+                                 @ (BODY_SIZE = 0x2000, see pack.c).
+                                 @
+                                 @ NOT reserved, which is what this byte was
+                                 @ previously assumed to be and why it was left
+                                 @ at 0. Every real app on hand sets it to its
+                                 @ true block count - the reference dumps on
+                                 @ hand cover 1-, 2-, 4-, 7- and 13-block saves,
+                                 @ each declaring its own. pk_timing_bench was the
+                                 @ only file in the corpus declaring 0.
+                                 @
+                                 @ Declaring 0 blocks corrupted the real BIOS's
+                                 @ app-select screen: LEFT/RIGHT browse between
+                                 @ saves normally, but UP transitioned into a
+                                 @ glitched screen (DOWN transitioned back to the
+                                 @ correctly-rendered icon), consistent with the
+                                 @ browse UI deriving that vertical axis from this
+                                 @ count and walking off the end of a save it had
+                                 @ been told was zero blocks long. A reference
+                                 @ dump with byte-for-byte the same container shape
+                                 @ (1 block, 0x2000, chain link 0xFFFF) renders
+                                 @ cleanly, which is what isolated this field.
 
     @ 0x04-0x4F (76 bytes): title text field, 2-byte Shift-JIS. Real
     @ hardware testing showed the on-device browse screen doesn't actually
@@ -45,6 +67,20 @@ _header_start:
                                     @ execution" finding that motivated MCX1 was a synthetic-test
                                     @ artifact (injected Thumb call, artificial CPU state), not a
                                     @ real problem. See ../README.md's "Return to system" section.
+    .byte 1                       @ 0x56: 0x01 in every real app inspected - all
+                                    @ nine reference dumps on hand, regardless of
+                                    @ block count, icon style or frame count.
+                                    @ pk_timing_bench was the only file in the corpus
+                                    @ leaving it 0, because this byte fell inside the
+                                    @ zero-fill that runs from the end of the "MCX0"
+                                    @ magic up to the entry point.
+                                    @
+                                    @ Exact meaning undecoded - it is NOT a frame
+                                    @ count (it stays 1 for 1-, 2-, 3- and 4-frame
+                                    @ icons alike), so most likely a format/version
+                                    @ marker the browse UI checks. Set to 1 to match
+                                    @ every real app; see ../README.md's
+                                    @ "Real-hardware findings".
     .space 0x5C - (. - _header_start)
     .word _start                  @ 0x5C: entry point, bit0=0 (ARM state - _start is ARM code)
 

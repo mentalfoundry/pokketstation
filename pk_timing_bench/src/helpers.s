@@ -15,6 +15,8 @@
     .global measure_bios_call_loop_wram
     .global measure_bios_thumb_call_loop_real
     .global measure_bios_thumb_call_loop_wram
+    .global measure_timer_periods
+    .global irq_ack_handler
 
 memcpy_words:            @ r0=dst, r1=src, r2=count(words)
     push {r3, lr}
@@ -172,4 +174,96 @@ mbtclw_ret:
     mov r0, r0, lsr #16
     pop {r4, r5, lr}
     bx lr
+    .ltorg
+
+@ Measures how long Timer2 REALLY takes to complete r1 whole periods when
+@ armed with period r0, using Timer0 as the stopwatch. Returns the elapsed
+@ Timer0 tick count in r0, 16-bit masked (Timer0 wraps at 0x10000 on real
+@ hardware - see ../README.md).
+@
+@ No interrupts are involved anywhere here: Timer2's reloads are detected by
+@ polling its count register, so this measures the timer block's own period
+@ behavior in isolation. That is the whole point - it separates "a timer armed
+@ with period P really does take P ticks" from any cost that only appears once
+@ an interrupt is actually taken.
+@
+@ Timer2 counts DOWN and reloads to `period`, so a reload is detected as the
+@ count reading HIGHER than the previous sample. The loop samples far faster
+@ than the shortest period tested (period 1016 at /2 is ~2032 raw cycles,
+@ versus a handful of cycles per poll iteration), so no reload can be missed.
+@
+@ Timer2's original period/count/control are saved and restored, so this leaves
+@ the timer exactly as it was found - the real BIOS may still be relying on it
+@ after this app exits back to the system.
+measure_timer_periods:     @ r0=period, r1=reload count -> r0=Timer0 delta
+    push {r4, r5, r6, r7, r8, r9, r10, lr}
+    ldr r4, =TIMER2_BASE
+
+    @ save original Timer2 state
+    ldr r8, [r4]
+    ldr r9, [r4, #4]
+    ldr r10, [r4, #8]
+
+    mov r6, #0
+    str r6, [r4, #8]                  @ stop before reprogramming
+    str r0, [r4]                      @ period
+    str r0, [r4, #4]                  @ prime count to a full period
+    mov r6, #TIMER2_CTRL_DIV2_ENABLE
+    str r6, [r4, #8]
+
+    ldr r7, =TIMER0_COUNT
+
+    @ Sync to a reload edge first, so the first period counted is a whole one
+    @ rather than however much of a period happened to be left when we armed it.
+    ldr r5, [r4, #4]
+mtp_sync:
+    ldr r6, [r4, #4]
+    cmp r6, r5
+    mov r5, r6                        @ MOV without S leaves the CMP flags intact
+    bls mtp_sync
+
+    ldr r2, [r7]                      @ stopwatch: Timer0 before
+
+mtp_count:
+    ldr r6, [r4, #4]
+    cmp r6, r5
+    mov r5, r6
+    bls mtp_count
+    subs r1, r1, #1
+    bne mtp_count
+
+    ldr r3, [r7]                      @ stopwatch: Timer0 after
+    sub r0, r2, r3                    @ Timer0 counts down, so before - after
+    mov r0, r0, lsl #16
+    mov r0, r0, lsr #16
+
+    @ restore original Timer2 state
+    mov r6, #0
+    str r6, [r4, #8]
+    str r8, [r4]
+    str r9, [r4, #4]
+    str r10, [r4, #8]
+
+    pop {r4, r5, r6, r7, r8, r9, r10, lr}
+    bx lr
+    .ltorg
+
+@ Minimal IRQ handler for experiment 7. Registered via SWI 1 (see
+@ register_irq_handler below) and called by the kernel as an ordinary ARM
+@ function, matching the calling convention a real app's own dispatcher uses
+@ (push/.../pop {..., pc}).
+@
+@ It does the least possible work: acknowledge every currently-pending source
+@ and return. Experiment 7 does not care what the handler DOES - it measures
+@ how long the round trip into and out of it costs - so keeping the body
+@ trivial keeps the measurement dominated by the entry/dispatch path itself.
+@
+@ Acknowledging matters: INTC's IRQ line is level-driven off HOLD, so leaving a
+@ source pending would re-enter this handler forever and wedge the app.
+irq_ack_handler:
+    push {r0, r1, lr}
+    ldr r0, =INTC_BASE
+    ldr r1, [r0]                      @ HOLD: everything currently asserted
+    str r1, [r0, #0x10]               @ acknowledge (+0x10) clears hold+status
+    pop {r0, r1, pc}
     .ltorg
