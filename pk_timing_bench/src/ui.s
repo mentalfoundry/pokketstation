@@ -380,9 +380,13 @@ pb_prompt_confirm_exit:
     @ gesture already depends on that, since FIRE_HOLD_THRESHOLD counts 75000
     @ consecutive polls with Action held and only a live level can accumulate
     @ that. See docs/hardware-notes.md, "Buttons".
-    @ This emulator latches button STATUS on the press edge instead of tracking
-    @ the live level, so the loop falls straight through here. The fix cannot be
-    @ verified in the emulator; it only changes behavior on a real unit.
+    @
+    @ Confirmed end to end in the emulator, not only on real hardware: see
+    @ tools/pk_exit_test.c. It confirms EXIT while holding Action, and checks that
+    @ the CPU stays out of BIOS space for as long as Action stays down, then
+    @ departs into BIOS space once it is released. Removing this wait loop makes
+    @ that test fail exactly the way the real-hardware report described: it
+    @ departs into BIOS space with Action still held.
     @
     @ The wait is bounded. A stuck or failing contact would otherwise spin here
     @ forever, and recovering from that needs the physical reset button. The

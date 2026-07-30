@@ -61,10 +61,17 @@
    That order makes sense only if an acknowledge leaves the level alone.
    Otherwise the handler always reads the after-effect of its own acknowledge, which is 0, instead of the real
    signal. That is exactly what happened before this mask existed.
-   Buttons are NOT in this mask, although real INT_INPUT exposes their raw level too.
-   Confirmed real-hardware behavior already pins down their STATUS and HOLD handling.
-   See intc_clear_hold_only and psemu_set_buttons. Nothing observed needs a change there. */
-#define INT_LEVEL_MASK INT_IRDA
+   Buttons are in this mask for the same reason. docs/hardware-notes.md, "Buttons", states that `status`
+   tracks the live button level for code that polls it directly. An acknowledge used to clear that level, so
+   a button that was still physically held read back as released for as long as nothing pressed it again.
+   The confirmed real-hardware finding about buttons is about HOLD, not STATUS: HOLD is a momentary edge
+   pulse per press, which intc_clear_hold_only and psemu_set_buttons implement and
+   test_button_hold_pulses_not_sustained covers. That finding says nothing about STATUS, and this mask does
+   not change it.
+   A real app depends on the live level. pk_timing_bench holds Action to open its exit prompt, and counts
+   75000 consecutive polls of STATUS to detect the hold. Only a level that survives an acknowledge can
+   accumulate that. */
+#define INT_LEVEL_MASK     (INT_IRDA | INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP)
 
 typedef struct intc {
     uint32_t hold;

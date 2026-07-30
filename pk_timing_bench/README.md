@@ -159,7 +159,9 @@ A "confirmed equal" verdict looks like this: the two numbers sit within a few pe
 
 Fixed by waiting for the release before departing, then acknowledging the button sources so no latched HOLD survives either. `INT_INPUT` reports a live button level on real hardware, which is what lets that wait terminate; this app's own hold-to-open gesture already depends on the same property, since it counts 75000 consecutive polls with Action held. The wait is bounded so a stuck contact cannot spin forever, since recovering from that would need the physical reset button.
 
-This emulator latches button STATUS on the press edge rather than tracking a live level, so it cannot reproduce the bug or verify the fix. The validated departure sequence itself is unchanged; the wait only precedes it.
+`tools/pk_exit_test.c` confirms this end to end in the emulator: it holds Action, opens the prompt, selects EXIT, confirms while still holding Action, and checks that the CPU stays out of BIOS space until Action is released, then departs cleanly once it is. Removing the wait loop makes that same test fail exactly the way the real-hardware report described: departure into BIOS space with Action still held. The validated departure sequence itself is unchanged; the wait only precedes it.
+
+That test needed one core fix first: `core/src/intc.h`'s `INT_LEVEL_MASK` did not include the buttons, so an acknowledge could clear a held button's STATUS bit even though `docs/hardware-notes.md` documents STATUS as tracking the live level. `pk_exit_test` does not actually exercise that fix, because this app never enables or acknowledges its own button interrupts, so nothing in this specific flow ever wipes STATUS regardless. The fix is still correct on its own terms, backed by the same documented behavior and by its own unit test (`test_button_status_survives_acknowledge` in `tests/cpu_test.c`), but it is not what makes this particular exit bug reproduce or resolve in the emulator. That is entirely the wait loop above.
 
 
 **Two header bytes this app was leaving at zero, that every real app sets.** Both fell inside zero-fill regions in `header.s` and were assumed reserved:

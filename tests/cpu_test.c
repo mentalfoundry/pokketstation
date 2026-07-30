@@ -728,6 +728,48 @@ static void test_button_hold_pulses_not_sustained(void) {
     printf("test_button_hold_pulses_not_sustained OK\n");
 }
 
+static void test_button_status_survives_acknowledge(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* docs/hardware-notes.md, "Buttons": `status` tracks the live button level,
+       for code that polls it directly. An acknowledge clears a latched interrupt
+       REQUEST, so it must clear HOLD. It must not clear that live level.
+
+       This used to fail. Buttons were missing from INT_LEVEL_MASK, so any
+       acknowledge wiped their STATUS bit and a button that was still physically
+       held read back as released until something pressed it again. The real BIOS
+       acknowledges button interrupts during boot, so an app that polled STATUS
+       for a held button saw nothing.
+
+       A real app depends on this: pk_timing_bench opens its exit prompt by
+       counting 75000 consecutive polls of STATUS with Action held, and waits on
+       the same level to see the button released again before it departs. */
+    ps->intc.enable |= INT_BTN_ACTION;
+
+    psemu_set_buttons(ps, PSEMU_BUTTON_FIRE); /* press edge */
+    assert((ps->intc.hold & INT_BTN_ACTION) != 0u);
+    assert((ps->intc.status & INT_BTN_ACTION) != 0u);
+
+    psemu_bus_write32(&ps->bus, PSEMU_INTC_BASE + 0x10, INT_BTN_ACTION); /* acknowledge */
+    assert((ps->intc.hold & INT_BTN_ACTION) == 0u);   /* the request is cleared */
+    assert((ps->intc.status & INT_BTN_ACTION) != 0u); /* the live level is not */
+
+    psemu_set_buttons(ps, PSEMU_BUTTON_FIRE); /* still held, no new edge */
+    assert((ps->intc.status & INT_BTN_ACTION) != 0u);
+
+    psemu_set_buttons(ps, 0); /* release finally clears it */
+    assert((ps->intc.status & INT_BTN_ACTION) == 0u);
+
+    /* An acknowledge still clears STATUS for a latched, non-level source. */
+    intc_set_line(&ps->intc, INT_RTC, 1);
+    assert((ps->intc.status & INT_RTC) != 0u);
+    psemu_bus_write32(&ps->bus, PSEMU_INTC_BASE + 0x10, INT_RTC);
+    assert((ps->intc.status & INT_RTC) == 0u);
+
+    psemu_destroy(ps);
+    printf("test_button_status_survives_acknowledge OK\n");
+}
+
 static void test_timer_and_irq(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -1824,6 +1866,7 @@ int main(void) {
     test_crash_report_contents();
     test_intc_status_sources_also_latch_hold();
     test_button_hold_pulses_not_sustained();
+    test_button_status_survives_acknowledge();
     test_timer_and_irq();
     test_fiq_delivery_and_priority();
     test_fiq_takes_priority_over_irq();
