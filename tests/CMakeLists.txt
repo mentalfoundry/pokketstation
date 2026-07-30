@@ -6,3 +6,8 @@ add_executable(psemu_cpu_test cpu_test.c)
 target_include_directories(psemu_cpu_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(psemu_cpu_test PRIVATE psemu)
 add_test(NAME cpu_test COMMAND psemu_cpu_test)
+
+add_executable(psemu_ir_test ir_test.c)
+target_include_directories(psemu_ir_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(psemu_ir_test PRIVATE psemu)
+add_test(NAME ir_test COMMAND psemu_ir_test)

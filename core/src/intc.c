@@ -95,11 +95,13 @@ void intc_write8(intc_t *intc, uint32_t offset, uint8_t value) {
             intc->mask = intc->mask_write_scratch;
         }
         break;
-    default: /* acknowledge (+0x10): clears matching bits from hold and status */
+    default: /* acknowledge (+0x10): clears matching bits from hold, and from status except live-level bits */
         accumulate_byte(&intc->ack_write_scratch, shift, value);
         if (shift == 24u) {
             intc->hold &= ~intc->ack_write_scratch;
-            intc->status &= ~intc->ack_write_scratch;
+            /* INT_LEVEL_MASK bits are a continuously-driven signal level, not a latched request, so
+               acknowledging must not wipe them - see INT_LEVEL_MASK's comment in intc.h. */
+            intc->status &= ~(intc->ack_write_scratch & ~INT_LEVEL_MASK);
         }
         break;
     }
@@ -149,6 +151,19 @@ uint32_t intc_get_line(intc_t *intc, uint32_t line) {
 
 void intc_clear_hold_only(intc_t *intc, uint32_t line) {
     intc->hold &= ~line;
+}
+
+void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level) {
+    if (line == 0) {
+        return;
+    }
+    /* Every edge latches an interrupt request, in both directions - see this function's comment in intc.h. */
+    intc->hold |= line;
+    if (level) {
+        intc->status |= line & INT_STATUS_MASK;
+    } else {
+        intc->status &= ~line;
+    }
 }
 
 int intc_irq_asserted(intc_t *intc) {

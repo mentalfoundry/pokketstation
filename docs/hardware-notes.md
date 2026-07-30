@@ -46,7 +46,7 @@ The CPU clock speed is variable, controlled via `CLK_MODE`. See "CLK_MODE" below
 | `0x0A800000`+ | 0x30 | 3 timers, 0x10 bytes apart: period(+0x0), count(+0x4), control(+0x8, bits0-1 = clock divisor, bit2 = enable). |
 | `0x0B000000`+ | 0x8 | `CLK_MODE` - CPU/timer clock speed control. |
 | `0x0B800000` | 0x10 | RTC: mode(+0x0), control/adjust(+0x4), time(+0x8, R), date(+0xC, R). |
-| `0x0C800000`+ | — | IR registers (protocol/send-receive mode at `+0`, beam on/off at `+4`). Register bit-layout only - see "Known open questions". |
+| `0x0C800000`+ | 0x8 | IR: `IRDA_MODE`(+0x0, protocol/send-receive mode), `IRDA_DATA`(+0x4, beam on/off). See "IR / IR Link". |
 | `0x0D000000` | 0x8 | `LCD_MODE`: bit6 `DISON` (display on/off), bit7 `ROT` (rotate 180°). |
 | `0x0D000100` | 128B | LCD VRAM. |
 | `0x0D800000` | 0x10 | IOP power control: IOP_CTRL(+0x0, unmodeled, no known effect), IOP_STOP/IOP_STAT(+0x4, W/R, sets bits), IOP_START(+0x8, W, clears bits), IOP_DATA(+0xC, unused by the real BIOS). Bit5 = Sound Enable. |
@@ -147,6 +147,12 @@ Timer1 drives the BIOS's audio-generation loop, and also drives general GUI tick
 
 Timer `count` follows raw, `CLK_MODE`-scaled cycles. Real timers are clocked by the System Clock, tied directly to the CPU's variable clock (see "CLK_MODE" below). RTC and DAC are not tied to this clock.
 
+**Confirmed: a timer armed with period P expires every P+1 ticks, not P.** The counter runs P, P-1, … 1, 0 and reloads on the tick *after* it reaches zero, so zero is a state the counter actually occupies.
+
+Measured directly on real hardware via `pk_timing_bench` screen 6 (raw values logged in `pk_timing_bench/VERIFICATION.md`), by polling Timer2's reloads with Timer0 as a stopwatch and taking no interrupts at all. Timer2 at period 1016 across 256 reloads, and at period 2032 across 128 reloads, each came back **exactly 1 tick per reload** slower than a plain P-tick period predicts. The same absolute excess at both periods rules out a rate/divisor error and pins it to a fixed per-period off-by-one.
+
+`core/src/timer.c` previously consumed exactly `count` ticks per reload, so every timer fired one tick early. This is now fixed; three timer expectations in `tests/cpu_test.c` had encoded the old behavior and were corrected with it.
+
 **Inferred: Timer0's `count` register is effectively 16-bit, not the full 32-bit free-running counter this emulator models.** This emulator's `timer->timers[i].count` and `period` fields (`core/src/timer.c`) are plain `uint32_t`.
 
 Found via `pk_timing_bench` (this project's homebrew timing-benchmark app):
@@ -174,6 +180,24 @@ Real hardware power-on-reset values: `RTCClock = 0x04000000` (day-of-week BCD 4,
 RTC ticks at a fixed 1Hz in Run mode, regardless of `CLK_MODE`. It runs from a separate oscillator, independent of the CPU clock.
 
 The BIOS resets the clock to Jan 1 1999 in a documented condition Sony calls "The RTC Problem", a software workaround for inaccurate clock hardware. This reset is a software action, performed via the normal `RTC_ADJUST` mechanism. This emulator's own reset state does not build in this behavior.
+
+## IR / IR Link
+
+`0x0C800000`: `IRDA_MODE` (`+0x0`) bit0 `IFMODE` (0=Receive, 1=Transmit), bit1 `STDBY` (0=Active, 1=Stand-by), bit2 `BGEN` (0=Enable 40kHz carrier generator, 1=Disable), bit3 `BFLT` (0=Enable filter, 1=Disable). `IRDA_DATA` (`+0x4`) bit0 `LED`: in transmit, the value software bit-bangs (0=off, 1=on); in receive, this emulator's own read-back of the current demodulated level (see below - this receive-side semantic is inferred, not confirmed).
+
+This emulator models IR as an **asynchronous edge relay between two independently-clocked instances**, not a lockstep timing simulation. This matches the real hardware directly: two separate PocketStations, two separate oscillators, linked only by an optical signal, with no shared clock. `core/src/ir.c`/`ir.h` implement the state machine:
+
+- Writes to `IRDA_DATA`'s LED bit, while actually in an emitting state (`IFMODE`=transmit, `STDBY`=active, `BGEN`=carrier enabled), enqueue a timestamped edge (level + this `ir_t`'s own local monotonic clock) onto a TX queue. Leaving the emitting state (standby, receive, or carrier disabled) forces one final "LED off" edge, so the LED can never appear stuck on to whatever is downstream.
+- `ir_tick` (called once per CPU step from `psemu_run`, alongside `timer_tick`/`rtc_tick`/`dac_tick`) advances that local clock and resolves any RX-queue edges now due, applying a `BFLT` glitch-filter debounce and calling `intc_set_line(intc, INT_IRDA, 1)` on a qualifying edge while actively receiving (`IFMODE`=receive, `STDBY`=active) - dropped otherwise, the same way a real half-duplex transceiver simply doesn't see a pulse while transmitting.
+- `psemu_ir_pop_tx_edge`/`psemu_ir_push_rx_edge`/`psemu_ir_get_clock_us` (`psemu.h`) expose this as a pull/push edge queue, the same shape `psemu_get_audio_samples` already uses to let a frontend drive real I/O without core knowing about that I/O's transport. Core has no networking code and never will; timestamps only cross this API boundary in real microseconds (converted from the internal cycle-unit clock), everywhere else core stays in the same reference-rate cycle units every other peripheral already ticks in.
+
+**Unconfirmed/inferred, flagged in `ir.h`'s own comments the same way as every other unconfirmed fact in this document:**
+
+- The `BFLT` debounce window (~2 carrier periods, ~50us) - nothing in this project's traced corpus (over 200 million instructions) has ever touched these registers, so there is no real-hardware measurement to check this against.
+- `IRDA_DATA` reflecting the live demodulated level on read while in receive mode. The documentation only describes the transmit-side ("LED") meaning of this bit.
+- Real IR pulse-length measurement (reading Timer2's live counter, reload `0xFFFFh`, from the `INT_IRDA` handler) is a real BIOS/software technique this emulator does not need to special-case: Timer2 already ticks independently every step regardless of IR state, so a real ISR reading it during an `INT_IRDA` handler already sees a plausible value with no extra coupling required between `ir.c` and `timer.c`.
+
+**IR Link** (`frontends/desktop/ir_link.h`/`.c`, Windows only) is the two-*process* half of this: it relays edges between two independent `pokketstation.exe` instances over a local named pipe (`IR Link` menu: Host Session / Connect / Disconnect). Since the two processes' IR clocks are never synchronized with each other, edges are relayed as absolute host wall-clock microseconds (`GetSystemTimePreciseAsFileTime`) rather than raw cycle counts - both processes run on the same machine and can independently read that same wall clock with zero coordination, converting to/from each instance's own local IR timeline only at the point an edge crosses the pipe. `psemu_reset`/`psemu_load_state` both wipe `ir_t`'s clock and any queued edges (like every other peripheral, on a full reset), so an active link is explicitly dropped any time either happens, to avoid a silent desync between the two instances.
 
 ## CLK_MODE
 
@@ -330,7 +354,14 @@ A real ID-editing homebrew never calls `SWI 0Fh` anywhere in its code. Confirmed
 
   If revisited: watch RAM `0x332` for writes across a fresh `button_sim=6` run in `tools/inspect.c`. Check whether increments are tied to button input (supports the hypothesis) or to a timer/frame tick (would instead point to a timing-accuracy bug in this emulator).
 - **Unconfirmed: whether Chocobo World has in-game sound beyond a single ~17ms launch chime.** Over 200 million instructions of generic automated exploration, no DAC activity appeared after that one chime. This emulator's generic button-mashing exploration may not reach the gameplay states that gate further sound. Confirming this either way needs real interactive play, focused on deeper gameplay.
-- **IR (`0x0C800000`+)** only stores `IRDA_MODE`/`IRDA_DATA` under their documented bit layout. This emulator does not model pulse-level timing, does not fire `INT_IRDA`, and does not transport data between two emulator instances. Left unimplemented: no trace in this project's test corpus (over 200 million instructions) has ever touched these registers, and there is no second real PocketStation available to validate a modeled protocol against.
+- **IR (`0x0C800000`+)**: see "IR / IR Link" above for the full model. The `BFLT` debounce window and the receive-side meaning of `IRDA_DATA` bit0 are both inferred, not confirmed: no trace in this project's test corpus (over 200 million instructions) has ever touched these registers, and there is no second real PocketStation available to validate a modeled protocol against.
+- **Unresolved: a real IR-using app's transmitted pulses come out ~1% too short in this emulator, and it is not yet known why.** The app arms Timer2 with its nominal pulse unit minus a hardcoded 184 (1200 − 184 = 1016), and its receive handler accepts a sync pulse only within `4×unit ± unit/2`, i.e. `[4200, 5400]` Timer2 ticks. This emulator produces 4162 — short by 38, just outside the window, so no transfer ever decodes.
+
+  Two candidate explanations have been measured on real hardware via `pk_timing_bench` and **both are ruled out**:
+  - *Timer period semantics* (screen 6): real hardware takes P+1 ticks per period, not P. Real, now fixed in `timer.c` — but worth only 1 tick of the shortfall.
+  - *Interrupt entry/dispatch cost* (screen 7): measured at ~98 raw cycles on real hardware versus ~96 in this emulator, a 2.2% difference. The 184-tick compensation would have required ~368. This was the leading hypothesis and it is wrong.
+
+  So the remaining ~1% is somewhere else. What is *not* in doubt: bulk instruction timing (screens 1-4 match hardware to ±1 tick), timer periods, and interrupt cost. Whatever is missing is specific to the path between a Timer2 expiry and the resulting `IRDA_DATA` write.
 - **`F_BANK_VAL` mapping multiple physical blocks to the same virtual slot** has explicitly undocumented real hardware behavior (the documentation itself says "maybe the data becomes ANDed together"). `flash_resolve_physical_bank` returns the lowest-indexed matching physical block in this case. This is a reasonable choice among the documented unknowns, but not a confirmed-correct model.
 - **`FLASH_CTRL+0`'s "always read back bit 0 = 1" behavior** is necessary in practice: it unblocks a real BIOS busy-wait. It does not cleanly correspond to the official `REGRemap` register's documented `GENREM`/`FLASHVIR` bit semantics. Do not assume this behavior is spec-accurate.
 - **The real BIOS-mirrored-at-address-0 plus `GENREM` remap sequence** (BIOS ROM aliased to `0x00000000` until the kernel remaps RAM in) is not modeled. `psemu_reset` starts the CPU directly at `PSEMU_BIOS_BASE`, skipping the pre-remap phase entirely. This is a deliberate simplification, not an oversight; it has shown no behavioral cost across 150 million traced instructions.

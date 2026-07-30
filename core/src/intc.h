@@ -42,7 +42,26 @@
 #define INT_TIMER2 0x00002000u
 #define INT_IRQ_MASK 0x00001FBFu
 #define INT_FIQ_MASK 0x00002040u
-#define INT_STATUS_MASK 0x0000021Fu
+/* Sources whose live signal level is visible in STATUS (the register real documentation calls INT_INPUT,
+   "Raw Interrupt Signal Levels", at 0x0A000004 - see docs/hardware-notes.md, "Buttons").
+   Buttons (bits 0-4) and RTC (bit 9) were confirmed here first.
+   INT_IRDA (bit 12) was added after disassembling a real app's IR receive handler: its very first action,
+   after acknowledging the interrupt, is to read STATUS, isolate bit 12, and compare that live level against
+   the level it was expecting - bailing out immediately on a mismatch. With bit 12 missing from this mask,
+   STATUS bit 12 always read back 0, so that comparison could never succeed and no IR transfer could ever
+   decode. See core/src/ir.c's apply_rx_level and docs/hardware-notes.md, "IR / IR Link". */
+#define INT_STATUS_MASK 0x0000121Fu
+
+/* Sources whose STATUS bit is a continuously-driven signal level rather than a latched request, and so is
+   NOT cleared by an acknowledge write.
+   Confirmed for IR by disassembling a real app's INT_IRDA handler: it acknowledges INT_IRDA and only then
+   reads STATUS back to sample the live line level. That order is only meaningful if acknowledging leaves the
+   level alone - otherwise the handler would be guaranteed to read its own acknowledge's after-effect (0)
+   instead of the real signal, which is exactly what happened before this mask existed.
+   Buttons are deliberately NOT included here, even though real INT_INPUT exposes their raw level too: their
+   STATUS/HOLD handling is already pinned down by confirmed real-hardware behavior (see intc_clear_hold_only
+   and psemu_set_buttons), and nothing observed needs changing there. */
+#define INT_LEVEL_MASK INT_IRDA
 
 typedef struct intc {
     uint32_t hold;
@@ -84,6 +103,14 @@ uint32_t intc_get_line(intc_t *intc, uint32_t line);
    the callback. A continuously-set hold bit would block RTC-driven redraws for as long as the button stays held.
    Real hardware instead keeps redrawing normally, and only acts on release. */
 void intc_clear_hold_only(intc_t *intc, uint32_t line);
+
+/* Tracks `line`'s live signal level in STATUS, while latching an interrupt request in HOLD on every call
+   regardless of which direction the level just moved.
+   IR receive needs exactly this split, and intc_set_line cannot express it: the handler must be entered on
+   both edges of a pulse (that is how it measures the pulse's width), but STATUS has to keep reporting the
+   real current line level for the handler's own level check to work. Passing state=0 to intc_set_line would
+   instead clear HOLD and skip the interrupt entirely. */
+void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level);
 
 int intc_irq_asserted(intc_t *intc);
 int intc_fiq_asserted(intc_t *intc);

@@ -281,6 +281,7 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
         timer_tick(&ps->timer, &ps->intc, step_cycles);
         rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
         dac_tick(&ps->dac, real_time_cycles);
+        ir_tick(&ps->ir, &ps->intc, real_time_cycles);
         ran += step_cycles;
     }
     return ran;
@@ -288,6 +289,29 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
 
 const uint8_t *psemu_get_framebuffer(const psemu_t *ps) {
     return ps->lcd.presented;
+}
+
+/* Converts between ir_t's internal reference-rate cycle clock and real microseconds, using the same
+   PSEMU_ASSUMED_CPU_HZ reference rate psemu_run already converts against for RTC/DAC. This conversion only
+   happens at this public-API boundary; core's own ir_t stays in cycle units throughout, like every other
+   peripheral's ticking. */
+int psemu_ir_pop_tx_edge(psemu_t *ps, psemu_ir_edge_t *out_edge) {
+    ir_edge_t edge;
+    if (!ir_pop_tx_edge(&ps->ir, &edge)) {
+        return 0;
+    }
+    out_edge->timestamp_us = (edge.timestamp_cycles * 1000000ull) / PSEMU_ASSUMED_CPU_HZ;
+    out_edge->level = edge.level;
+    return 1;
+}
+
+void psemu_ir_push_rx_edge(psemu_t *ps, uint64_t local_timestamp_us, int level) {
+    uint64_t cycles = (local_timestamp_us * (uint64_t)PSEMU_ASSUMED_CPU_HZ) / 1000000ull;
+    ir_push_rx_edge(&ps->ir, cycles, level);
+}
+
+uint64_t psemu_ir_get_clock_us(const psemu_t *ps) {
+    return (ir_get_clock_cycles(&ps->ir) * 1000000ull) / PSEMU_ASSUMED_CPU_HZ;
 }
 
 int psemu_cpu_faulted(const psemu_t *ps) {
