@@ -154,38 +154,42 @@ int psemu_framebuffer_dirty(psemu_t *ps);
    Feed the result to a real audio output API. */
 uint32_t psemu_get_audio_samples(psemu_t *ps, int16_t *buf, uint32_t max_samples);
 
-/* IR link: exposes core's IR peripheral as an edge queue, the same pull/push shape
-   psemu_get_audio_samples already uses to let a frontend drive real I/O without core knowing
-   about that I/O's transport. Core models IR as an asynchronous edge relay between two
-   independently-clocked instances - real IR hardware is two separate devices with no shared
-   clock - so there is no lockstep timing assumption here, only each instance's own local clock.
+/* IR link. This exposes core's IR peripheral as an edge queue.
+   psemu_get_audio_samples already uses the same pull/push shape. It lets a frontend drive real I/O, and core
+   knows nothing about that I/O's transport.
+   Core models IR as an asynchronous edge relay between two independently-clocked instances.
+   Real IR hardware is two separate devices, and they share no clock.
+   There is therefore no lockstep timing assumption here. Each instance uses only its own local clock.
 
-   An "edge" is a transition of the demodulated IR signal: level 1 = carrier/LED just turned on,
-   level 0 = just turned off. See core/src/ir.h for the full model (carrier gating, RX debounce,
-   INT_IRDA delivery).
+   An "edge" is a transition of the demodulated IR signal.
+   Level 1 means the carrier/LED turned on. Level 0 means it turned off.
+   See core/src/ir.h for the full model, which covers carrier gating, RX debounce, and INT_IRDA delivery.
 
    Typical use, once per rendered frame, after psemu_run:
-   - Drain psemu_ir_pop_tx_edge in a loop and relay each edge onward (for example, over a local
-     transport to another running instance).
-   - For each edge received from that other instance, convert its timestamp into this instance's
-     own timeline and call psemu_ir_push_rx_edge. */
+   - Drain psemu_ir_pop_tx_edge in a loop, and relay each edge onward. One example is a local transport to
+     another running instance.
+   - For each edge that arrives from that other instance, convert its timestamp into this instance's own
+     timeline. Then call psemu_ir_push_rx_edge. */
 typedef struct {
-    uint64_t timestamp_us; /* in this instance's own IR clock, see psemu_ir_get_clock_us */
+    uint64_t timestamp_us; /* in this instance's own IR clock. See psemu_ir_get_clock_us. */
     int level;
 } psemu_ir_edge_t;
 
-/* Pulls the next locally-produced TX edge, if any. Returns 1 and fills *out_edge, or 0 if none
-   are pending. */
+/* Pulls the next locally-produced TX edge.
+   It returns 1 and fills *out_edge. It returns 0 if none are pending. */
 int psemu_ir_pop_tx_edge(psemu_t *ps, psemu_ir_edge_t *out_edge);
 
-/* Queues an externally-sourced RX edge, scheduled for delivery at `local_timestamp_us` on this
-   instance's own IR clock. A caller relaying edges from another instance must first convert that
-   edge's timestamp into this instance's timeline (for example, via a shared wall-clock reference
-   both instances can read, since IR clocks are not synchronized with each other). */
+/* Queues an RX edge from an external source.
+   It delivers the edge at `local_timestamp_us` on this instance's own IR clock.
+   A caller that relays edges from another instance must first convert that edge's timestamp into this
+   instance's timeline.
+   The two IR clocks are not synchronized with each other. One way to convert is a shared wall-clock
+   reference that both instances can read. */
 void psemu_ir_push_rx_edge(psemu_t *ps, uint64_t local_timestamp_us, int level);
 
-/* This instance's own local IR clock, in microseconds. Never resynchronized to anything else;
-   only useful as one half of a timestamp conversion (see psemu_ir_push_rx_edge). */
+/* This instance's own local IR clock, in microseconds.
+   Nothing ever resynchronizes it to another clock.
+   It is useful only as one half of a timestamp conversion. See psemu_ir_push_rx_edge. */
 uint64_t psemu_ir_get_clock_us(const psemu_t *ps);
 
 /* Returns nonzero if the CPU has executed an opcode this emulator does not recognize.

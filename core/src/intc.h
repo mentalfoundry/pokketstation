@@ -42,25 +42,28 @@
 #define INT_TIMER2 0x00002000u
 #define INT_IRQ_MASK 0x00001FBFu
 #define INT_FIQ_MASK 0x00002040u
-/* Sources whose live signal level is visible in STATUS (the register real documentation calls INT_INPUT,
-   "Raw Interrupt Signal Levels", at 0x0A000004 - see docs/hardware-notes.md, "Buttons").
+/* Sources whose live signal level is visible in STATUS.
+   Real documentation calls that register INT_INPUT, "Raw Interrupt Signal Levels", at 0x0A000004.
+   See docs/hardware-notes.md, "Buttons".
    Buttons (bits 0-4) and RTC (bit 9) were confirmed here first.
-   INT_IRDA (bit 12) was added after disassembling a real app's IR receive handler: its very first action,
-   after acknowledging the interrupt, is to read STATUS, isolate bit 12, and compare that live level against
-   the level it was expecting - bailing out immediately on a mismatch. With bit 12 missing from this mask,
-   STATUS bit 12 always read back 0, so that comparison could never succeed and no IR transfer could ever
-   decode. See core/src/ir.c's apply_rx_level and docs/hardware-notes.md, "IR / IR Link". */
+   INT_IRDA (bit 12) came later, from a disassembly of a real app's IR receive handler.
+   That handler acknowledges the interrupt. It then reads STATUS, isolates bit 12, and compares that live
+   level against the level it expected. It bails out at once on a mismatch.
+   While bit 12 was missing from this mask, STATUS bit 12 always read back 0.
+   That comparison could therefore never succeed, and no IR transfer could ever decode.
+   See core/src/ir.c's apply_rx_level, and docs/hardware-notes.md, "IR / IR Link". */
 #define INT_STATUS_MASK 0x0000121Fu
 
-/* Sources whose STATUS bit is a continuously-driven signal level rather than a latched request, and so is
-   NOT cleared by an acknowledge write.
-   Confirmed for IR by disassembling a real app's INT_IRDA handler: it acknowledges INT_IRDA and only then
-   reads STATUS back to sample the live line level. That order is only meaningful if acknowledging leaves the
-   level alone - otherwise the handler would be guaranteed to read its own acknowledge's after-effect (0)
-   instead of the real signal, which is exactly what happened before this mask existed.
-   Buttons are deliberately NOT included here, even though real INT_INPUT exposes their raw level too: their
-   STATUS/HOLD handling is already pinned down by confirmed real-hardware behavior (see intc_clear_hold_only
-   and psemu_set_buttons), and nothing observed needs changing there. */
+/* Sources whose STATUS bit is a continuously-driven signal level, not a latched request.
+   An acknowledge write does NOT clear these bits.
+   A disassembly of a real app's INT_IRDA handler confirms this for IR.
+   That handler acknowledges INT_IRDA, and only then reads STATUS back to sample the live line level.
+   That order makes sense only if an acknowledge leaves the level alone.
+   Otherwise the handler always reads the after-effect of its own acknowledge, which is 0, instead of the real
+   signal. That is exactly what happened before this mask existed.
+   Buttons are NOT in this mask, although real INT_INPUT exposes their raw level too.
+   Confirmed real-hardware behavior already pins down their STATUS and HOLD handling.
+   See intc_clear_hold_only and psemu_set_buttons. Nothing observed needs a change there. */
 #define INT_LEVEL_MASK INT_IRDA
 
 typedef struct intc {
@@ -104,12 +107,12 @@ uint32_t intc_get_line(intc_t *intc, uint32_t line);
    Real hardware instead keeps redrawing normally, and only acts on release. */
 void intc_clear_hold_only(intc_t *intc, uint32_t line);
 
-/* Tracks `line`'s live signal level in STATUS, while latching an interrupt request in HOLD on every call
-   regardless of which direction the level just moved.
-   IR receive needs exactly this split, and intc_set_line cannot express it: the handler must be entered on
-   both edges of a pulse (that is how it measures the pulse's width), but STATUS has to keep reporting the
-   real current line level for the handler's own level check to work. Passing state=0 to intc_set_line would
-   instead clear HOLD and skip the interrupt entirely. */
+/* Tracks `line`'s live signal level in STATUS.
+   It also latches an interrupt request in HOLD on every call, in both level directions.
+   IR receive needs exactly this split, and intc_set_line cannot express it.
+   The handler must run on both edges of a pulse, because that is how it measures the pulse width.
+   STATUS must keep reporting the real current line level, because the handler checks that level itself.
+   A call to intc_set_line with state=0 would instead clear HOLD and skip the interrupt. */
 void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level);
 
 int intc_irq_asserted(intc_t *intc);

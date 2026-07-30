@@ -291,10 +291,10 @@ const uint8_t *psemu_get_framebuffer(const psemu_t *ps) {
     return ps->lcd.presented;
 }
 
-/* Converts between ir_t's internal reference-rate cycle clock and real microseconds, using the same
-   PSEMU_ASSUMED_CPU_HZ reference rate psemu_run already converts against for RTC/DAC. This conversion only
-   happens at this public-API boundary; core's own ir_t stays in cycle units throughout, like every other
-   peripheral's ticking. */
+/* Converts between ir_t's internal reference-rate cycle clock and real microseconds.
+   It uses the same PSEMU_ASSUMED_CPU_HZ reference rate psemu_run already uses for RTC and DAC.
+   This conversion happens only at this public-API boundary.
+   Core's own ir_t stays in cycle units throughout, like every other peripheral. */
 int psemu_ir_pop_tx_edge(psemu_t *ps, psemu_ir_edge_t *out_edge) {
     ir_edge_t edge;
     if (!ir_pop_tx_edge(&ps->ir, &edge)) {

@@ -105,12 +105,13 @@ void flash_set_serial(flash_t *flash, uint32_t serial);
 
 void flash_init(flash_t *flash);
 
-/* Resets only the volatile FLASH_CTRL register state (bank_mask,
-   last_command, bank_val[], unlock_step) to power-on defaults. Deliberately
-   preserves data[] (loaded card/app content) and f_sn_lo/f_sn_hi/f_cal
-   (hardware ID and LCD calibration) - these are flash-backed content, not
-   volatile registers, and must survive a reset the same way real flash
-   content and a factory-programmed serial would. Used by psemu_reset. */
+/* Resets only the volatile FLASH_CTRL register state to power-on defaults.
+   That state is bank_mask, last_command, bank_val[], and unlock_step.
+   It preserves data[], which holds loaded card/app content.
+   It also preserves f_sn_lo, f_sn_hi, and f_cal, which hold the hardware ID and the LCD calibration.
+   Those fields are flash-backed content, not volatile registers.
+   They must survive a reset, the same way real flash content and a factory-programmed serial do.
+   psemu_reset uses this. */
 void flash_reset_registers(flash_t *flash);
 
 /* Validates a PSX Title Sector app image. Loads it into a synthesized

@@ -93,8 +93,8 @@
 
 @ Experiment 7 (see start.s). Timer1 at /32 with period 99 fires every
 @ (99+1)*32 = 3200 raw cycles, so a LOOP_N-iteration run (~360000 raw cycles)
-@ takes roughly 112 interrupts - enough that a few-hundred-cycle per-interrupt
-@ cost shows up as a >10% change in the loop's duration, rather than vanishing
+@ takes roughly 112 interrupts. A per-interrupt cost of a few hundred cycles
+@ then changes the loop's duration by more than 10%, instead of disappearing
 @ into measurement noise.
 .equ EXP7_TIMER_PERIOD, 99
 .equ EXP7_TIMER_CTRL,   0x5      @ divisor bits 1 (= /32) | enable

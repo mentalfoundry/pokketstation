@@ -22,10 +22,10 @@ _icon_start:
     .incbin "../assets/stopwatch_bitmap.bin"
 
     @ 0x200-0x2FF (256 bytes): still UNIDENTIFIED, and non-zero in every real
-    @ app inspected - the nine reference dumps on hand range from 93 to 224
-    @ nonzero bytes here. What it holds differs per app, so it is not one fixed
-    @ structure: some keep structured save records here, others further
-    @ 128-byte 32x32 1bpp icon frames or frame data.
+    @ app inspected. The nine reference dumps on hand hold between 93 and 224
+    @ nonzero bytes here. The contents differ per app, so this is not one fixed
+    @ structure. Some hold structured save records. Others hold further
+    @ 128-byte 32x32 1bpp icon frames, or frame data.
     @
     @ Zero-filled here rather than embedding another real app's actual bytes
     @ (the region was originally sourced verbatim from a real reference app

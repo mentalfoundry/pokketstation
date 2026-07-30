@@ -178,23 +178,23 @@ mbtclw_ret:
 
 @ Measures how long Timer2 REALLY takes to complete r1 whole periods when
 @ armed with period r0, using Timer0 as the stopwatch. Returns the elapsed
-@ Timer0 tick count in r0, 16-bit masked (Timer0 wraps at 0x10000 on real
-@ hardware - see ../README.md).
+@ Timer0 tick count in r0, 16-bit masked. Timer0 wraps at 0x10000 on real
+@ hardware. See ../README.md.
 @
 @ No interrupts are involved anywhere here: Timer2's reloads are detected by
 @ polling its count register, so this measures the timer block's own period
-@ behavior in isolation. That is the whole point - it separates "a timer armed
-@ with period P really does take P ticks" from any cost that only appears once
-@ an interrupt is actually taken.
+@ behavior in isolation. That is the whole point.
+@ It separates "a timer armed with period P really does take P ticks" from any
+@ cost that appears only once an interrupt is actually taken.
 @
 @ Timer2 counts DOWN and reloads to `period`, so a reload is detected as the
 @ count reading HIGHER than the previous sample. The loop samples far faster
 @ than the shortest period tested (period 1016 at /2 is ~2032 raw cycles,
 @ versus a handful of cycles per poll iteration), so no reload can be missed.
 @
-@ Timer2's original period/count/control are saved and restored, so this leaves
-@ the timer exactly as it was found - the real BIOS may still be relying on it
-@ after this app exits back to the system.
+@ This saves and restores Timer2's original period, count, and control, so it
+@ leaves the timer exactly as it found it.
+@ The real BIOS may still rely on that timer after this app exits to the system.
 measure_timer_periods:     @ r0=period, r1=reload count -> r0=Timer0 delta
     push {r4, r5, r6, r7, r8, r9, r10, lr}
     ldr r4, =TIMER2_BASE
@@ -233,7 +233,7 @@ mtp_count:
     bne mtp_count
 
     ldr r3, [r7]                      @ stopwatch: Timer0 after
-    sub r0, r2, r3                    @ Timer0 counts down, so before - after
+    sub r0, r2, r3                    @ Timer0 counts down, so subtract after from before
     mov r0, r0, lsl #16
     mov r0, r0, lsr #16
 
@@ -255,8 +255,9 @@ mtp_count:
 @
 @ It does the least possible work: acknowledge every currently-pending source
 @ and return. Experiment 7 does not care what the handler DOES - it measures
-@ how long the round trip into and out of it costs - so keeping the body
-@ trivial keeps the measurement dominated by the entry/dispatch path itself.
+@ how long the round trip into and out of it costs.
+@ A trivial body therefore keeps the entry and dispatch path dominant in the
+@ measurement.
 @
 @ Acknowledging matters: INTC's IRQ line is level-driven off HOLD, so leaving a
 @ source pending would re-enter this handler forever and wedge the app.

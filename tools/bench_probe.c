@@ -92,10 +92,11 @@ int main(int argc, char **argv) {
     psemu_reset(ps);
 
     for (f = 0; f < frames; f++) {
-        /* Same repeating Down / Action / Right / Action power-on sequence tools/inspect.c's button_sim=3
-           uses, which is confirmed end-to-end against real hardware - expressed in frames here rather than
-           raw instruction counts. It deliberately repeats: if one cycle's press lands too early for whatever
-           stage the BIOS animation is on, a later cycle still lands correctly. */
+        /* The same repeating Down, Action, Right, Action power-on sequence that tools/inspect.c's
+           button_sim=3 uses. Real hardware confirms that sequence end to end.
+           This expresses it in frames rather than in raw instruction counts.
+           It repeats on purpose. If one cycle's press lands too early for the stage the BIOS animation has
+           reached, a later cycle still lands correctly. */
         uint32_t buttons = 0;
         if (f < nav_frames) {
             long phase = f % 240;

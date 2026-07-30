@@ -125,7 +125,7 @@ static psemu_t *make_instance(const uint8_t *bios, size_t bios_size, const uint8
     psemu_reset(ps);
     if (state) {
         if (state_size != psemu_state_size(ps)) {
-            fprintf(stderr, "%s: quicksave state is %zu bytes, this build expects %zu - rebuild mismatch\n", label,
+            fprintf(stderr, "%s: quicksave state is %zu bytes, this build expects %zu. Rebuild mismatch.\n", label,
                 state_size, psemu_state_size(ps));
             exit(1);
         }
@@ -138,10 +138,11 @@ static psemu_t *make_instance(const uint8_t *bios, size_t bios_size, const uint8
 }
 
 /* Moves every pending TX edge from `from` into `to`'s RX queue.
-   Both instances are stepped in lockstep here, with identical cycle budgets, so their IR clocks track each
-   other almost exactly - an edge's timestamp is relayed as-is, with no wall-clock conversion and no playout
-   delay. That is deliberately the most favorable possible case: perfect clock alignment and minimum latency.
-   If a transfer still fails under these conditions, no amount of transport tuning in the frontend will fix it. */
+   Both instances step in lockstep here, with identical cycle budgets. Their IR clocks therefore track each
+   other almost exactly.
+   An edge's timestamp relays as-is, with no wall-clock conversion and no playout delay.
+   That is the most favorable case possible: perfect clock alignment and minimum latency.
+   If a transfer still fails under those conditions, no transport tuning in the frontend will fix it. */
 static int relay_edges(psemu_t *from, psemu_t *to, const char *direction, int verbose) {
     ir_edge_t edge;
     int relayed = 0;
@@ -239,8 +240,8 @@ int main(int argc, char **argv) {
             if (slice == 0u || slice > FRAME_CYCLES - cycles_this_frame) {
                 slice = FRAME_CYCLES - cycles_this_frame;
             }
-            /* The trace flag is global, so it is toggled around each instance's own psemu_run - that is what
-               attributes each logged register access to the instance that actually made it. */
+            /* The trace flag is global. This toggles it around each instance's own psemu_run.
+               That is what attributes each logged register access to the instance that made it. */
             psemu_ir_trace_enabled = (trace & 1) != 0;
             psemu_run(a, slice);
             psemu_ir_trace_enabled = (trace & 2) != 0;

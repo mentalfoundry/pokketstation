@@ -189,7 +189,7 @@ rs_timer_screen:
 rs_irq_screen:
     @ Experiment 7: the same measurement loop timed with interrupts masked
     @ (top) and with one timer interrupt live (bottom). Both read 0 when
-    @ experiment 7 was not opted into - see start.s's UP-held gate.
+    @ experiment 7 did not run. See start.s.
     ldr r5, =WRAM_IRQ_BASELINE
     ldr r0, [r5]
     mov r1, #9

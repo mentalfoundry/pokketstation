@@ -1,9 +1,11 @@
-/* Ad-hoc, manually-run verification tool for ir_link.c's actual Windows named-pipe transport - not part of the
-   automated CTest suite (see tests/ir_test.c for that; it covers core/src/ir.c's state machine without any
-   transport at all). This drives two ir_link_t endpoints, host and client, over a real named pipe within one
-   process, and confirms an edge written on one psemu_t's IR TX registers ends up asserting INT_IRDA on a
-   completely separate psemu_t after relaying through the pipe - the same path two real pokketstation.exe
-   instances would use, minus the two-process split itself. */
+/* Verification tool for ir_link.c's real Windows named-pipe transport. Run it by hand.
+   It is not part of the automated CTest suite.
+   tests/ir_test.c covers core/src/ir.c's state machine instead, with no transport at all.
+
+   This drives two ir_link_t endpoints, a host and a client, over a real named pipe inside one process.
+   It writes an edge on one psemu_t's IR TX registers.
+   It then confirms that the edge asserts INT_IRDA on a completely separate psemu_t, after the pipe relays it.
+   Two real pokketstation.exe instances use that same path, without the two-process split. */
 #include <assert.h>
 #include <stdio.h>
 
@@ -75,11 +77,12 @@ int main(void) {
     {
         int i;
         int seen = 0;
-        /* ir_link.c now deliberately schedules an incoming edge IR_LINK_PLAYOUT_DELAY_US into the receiver's
-           own future (a jitter buffer - see ir_link.h), so ps_rx's IR clock actually has to advance that far
-           before the edge becomes due. Nothing else in this test calls psemu_run, so it has to be advanced by
-           hand here; ~1056 cycles per loop iteration matches the real ~1ms this loop already sleeps per
-           iteration (PSEMU_ASSUMED_CPU_HZ / 1000). */
+        /* ir_link.c schedules an incoming edge IR_LINK_PLAYOUT_DELAY_US into the receiver's own future.
+           That is the jitter buffer. See ir_link.h.
+           ps_rx's IR clock must therefore advance that far before the edge becomes due.
+           Nothing else in this test calls psemu_run, so this advances the clock by hand.
+           1056 cycles per loop iteration matches the 1ms this loop already sleeps each iteration.
+           That figure is PSEMU_ASSUMED_CPU_HZ divided by 1000. */
         for (i = 0; i < 3000 && !seen; i++) {
             ir_link_pump(&host_link, ps_tx);
             ir_link_pump(&client_link, ps_rx);
@@ -88,7 +91,7 @@ int main(void) {
             Sleep(1);
         }
         if (!seen) {
-            fprintf(stderr, "INT_IRDA never asserted on the receiving instance - transport did not relay the edge\n");
+            fprintf(stderr, "INT_IRDA never asserted on the receiving instance. The transport did not relay the edge.\n");
             return 1;
         }
     }

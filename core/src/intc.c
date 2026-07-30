@@ -99,8 +99,8 @@ void intc_write8(intc_t *intc, uint32_t offset, uint8_t value) {
         accumulate_byte(&intc->ack_write_scratch, shift, value);
         if (shift == 24u) {
             intc->hold &= ~intc->ack_write_scratch;
-            /* INT_LEVEL_MASK bits are a continuously-driven signal level, not a latched request, so
-               acknowledging must not wipe them - see INT_LEVEL_MASK's comment in intc.h. */
+            /* INT_LEVEL_MASK bits are a continuously-driven signal level, not a latched request.
+               An acknowledge must not wipe them. See INT_LEVEL_MASK's comment in intc.h. */
             intc->status &= ~(intc->ack_write_scratch & ~INT_LEVEL_MASK);
         }
         break;
@@ -157,7 +157,8 @@ void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level) {
     if (line == 0) {
         return;
     }
-    /* Every edge latches an interrupt request, in both directions - see this function's comment in intc.h. */
+    /* Every edge latches an interrupt request, in both directions.
+       See this function's comment in intc.h. */
     intc->hold |= line;
     if (level) {
         intc->status |= line & INT_STATUS_MASK;

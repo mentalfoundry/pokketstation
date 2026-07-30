@@ -75,11 +75,11 @@ static uint32_t fnv1a_hash(const uint8_t *data, size_t size) {
     return hash;
 }
 
-/* Quick Save/Load State target one file per loaded app/card, named from a
-   hash of its content - not its file path - so switching between apps via
-   File > Open App/Card... never collides, and each app keeps its own
-   most-recent quicksave automatically. Computed fresh on demand rather
-   than cached, since the loaded app can change mid-session. */
+/* Quick Save/Load State use one file per loaded app/card.
+   The file name comes from a hash of the app's content, not from its file path.
+   Switching between apps through File > Open App/Card... therefore never collides.
+   Each app also keeps its own most-recent quicksave automatically.
+   This computes the name on demand rather than caching it, because the loaded app can change mid-session. */
 static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, const uint8_t *app, size_t app_size) {
     char name[64];
     snprintf(name, sizeof(name), "pokketstation_quicksave_%08x.dat", (unsigned)fnv1a_hash(app, app_size));
@@ -153,12 +153,12 @@ static void write_diagnostic_report(
        Real hardware confirms there is no "first digit must be a letter" restriction:
        a real unit accepts and persists "EEEEEEEE".
        An empty value means "use the default".
-     - Whether to show a console window (show_console). There is no in-app
-       toggle for this; it is only ever set by hand-editing settings.cfg.
-       --console/--no-console override it for a single run, same as any other
-       CLI flag, but deliberately do not write back to settings.cfg - a one-off
-       flag on the command line is not the same thing as a persisted
-       preference, and must not silently overwrite one.
+     - Whether to show a console window (show_console). This app has no in-app
+       toggle for it. Only a hand edit of settings.cfg sets it.
+       --console and --no-console override it for a single run, the same as any
+       other CLI flag. They do not write back to settings.cfg.
+       A one-off flag on the command line is not the same thing as a persisted
+       preference, and must not overwrite one.
 
    This app saves settings.cfg immediately at the point each value actually
    changes: BIOS loaded via a CLI arg or File > Open, hardware ID edited via
@@ -532,10 +532,12 @@ typedef struct {
     ir_link_t *ir_link;
 } menu_context_t;
 
-/* Shows IR Link's live status as a window-title suffix (e.g. "pokketstation - IR Link: Connected"), or just the
-   plain title while idle. Called after every action that can change ir_link's state - host/connect/disconnect
-   from the menu, and once per frame in main's loop, since a hosting/connecting link's status can also change on
-   its own (a peer connects, or the link errors out) with no menu click involved. */
+/* Shows IR Link's live status as a window-title suffix, for example "pokketstation - IR Link: Connected".
+   It shows the plain title while the link is idle.
+   Every action that can change ir_link's state calls this. Those actions are Host, Connect, and Disconnect
+   from the menu.
+   main's loop also calls it once per frame. A hosting or connecting link can change status on its own, with no
+   menu click: a peer connects, or the link fails. */
 static void ir_link_refresh_title(menu_context_t *ctx) {
     char title[192];
     if (ir_link_is_active(ctx->ir_link)) {
@@ -633,10 +635,10 @@ static void prompt_open_app(menu_context_t *ctx) {
     *ctx->cpu_faulted_reported = 0;
 }
 
-/* Restarts the currently loaded BIOS and app/card from a clean state,
-   without reloading either file - the same reset psemu_reset already
-   performs after a fresh load (see its comment in psemu.c), triggered
-   on demand instead of only after a file dialog succeeds. */
+/* Restarts the currently loaded BIOS and app/card from a clean state.
+   It reloads neither file.
+   psemu_reset already performs this same reset after a fresh load. See its comment in psemu.c.
+   This triggers it on demand, instead of only after a file dialog succeeds. */
 static void reset_emulation(menu_context_t *ctx) {
     psemu_reset(ctx->ps);
     drop_ir_link_if_active(ctx);
@@ -1143,9 +1145,10 @@ static void show_about(menu_context_t *ctx) {
     DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_ABOUT), ctx->hwnd, about_dialog_proc, 0);
 }
 
-/* IR Link > Host Session/Connect/Disconnect. A fixed well-known pipe name (IR_LINK_DEFAULT_PIPE_NAME) is used
-   for v1 instead of a dialog prompting for one - simplest thing that works for two instances on one machine.
-   See ir_link.h for the actual transport. */
+/* Handlers for IR Link > Host Session, Connect, and Disconnect.
+   These use one fixed well-known pipe name, IR_LINK_DEFAULT_PIPE_NAME, rather than a dialog that asks for one.
+   That is the simplest thing that works for two instances on one machine.
+   See ir_link.h for the transport itself. */
 static void ir_link_host_from_menu(menu_context_t *ctx) {
     ir_link_host(ctx->ir_link, IR_LINK_DEFAULT_PIPE_NAME);
     ir_link_refresh_title(ctx);
@@ -1714,11 +1717,13 @@ int main(int argc, char **argv) {
             write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame, bios_path, app_path);
         }
 
-        /* Drains this frame's freshly-produced TX edges onto the pipe, and pushes any RX edges that arrived
-           from the other instance since last frame - in time for next frame's psemu_run to process them via
-           ir_tick. Same one-frame (~31ms) granularity every other input path (buttons) already accepts. See
-           ir_link.h. ir_link's own status can change here with no menu action involved (a peer connects, or
-           the link errors out), so the title is refreshed whenever the status text actually changes. */
+        /* Drains this frame's new TX edges onto the pipe.
+           It also pushes in every RX edge that arrived from the other instance since the last frame.
+           Those edges arrive in time for the next frame's psemu_run to process them through ir_tick.
+           This is the same one-frame granularity, about 31ms, that every other input path already accepts.
+           Buttons are one example. See ir_link.h.
+           ir_link's own status can change here with no menu action: a peer connects, or the link fails.
+           The title therefore refreshes whenever the status text changes. */
         {
             const char *status_before = ir_link_status_text(&ir_link);
             char status_before_copy[sizeof(((ir_link_t *)0)->status)];
@@ -1758,7 +1763,7 @@ int main(int argc, char **argv) {
     /* No settings save here.
        bios_path and hardware_id are each already persisted immediately at the
        point they last changed (see the settings-file comment above).
-       show_console is never written by this app at all - see the same comment.
+       This app never writes show_console at all. See the same comment.
        Nothing is left to flush on exit. */
     psemu_destroy(ps);
     free(bios);

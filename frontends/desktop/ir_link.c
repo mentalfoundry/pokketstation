@@ -6,9 +6,9 @@
 static uint64_t host_wall_us_now(void) {
     FILETIME ft;
     ULARGE_INTEGER uli;
-    /* Precise (sub-millisecond) and, critically, directly comparable across any two processes on this same
-       machine with zero coordination - unlike QueryPerformanceCounter, which is only meaningful within one
-       process's own timeline on some hardware. */
+    /* This clock is precise to below a millisecond.
+       More importantly, any two processes on this same machine can compare it with no coordination.
+       QueryPerformanceCounter cannot do that. On some hardware it is meaningful only within one process. */
     GetSystemTimePreciseAsFileTime(&ft);
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
@@ -36,10 +36,12 @@ void ir_link_init(ir_link_t *link) {
     ZeroMemory(link, sizeof(*link));
     link->pipe = INVALID_HANDLE_VALUE;
     link->state = IR_LINK_IDLE;
-    /* Manual-reset events, one per outstanding operation. GetOverlappedResult is only polled with bWait=FALSE
-       here, but a NULL hEvent would make the OVERLAPPED use the pipe *handle itself* as its signal object -
-       unsafe once a read and a write can be simultaneously outstanding on that same handle (see MSDN's
-       ReadFile/WriteFile remarks). Each op gets its own event instead. */
+    /* Manual-reset events, one for each outstanding operation.
+       This only polls GetOverlappedResult with bWait=FALSE.
+       Even so, a NULL hEvent makes the OVERLAPPED use the pipe handle itself as its signal object.
+       That is unsafe once a read and a write are outstanding on that same handle at the same time.
+       See the ReadFile and WriteFile remarks in the platform documentation.
+       Each operation therefore gets its own event. */
     link->ev_connect = CreateEventA(NULL, TRUE, FALSE, NULL);
     link->ev_read = CreateEventA(NULL, TRUE, FALSE, NULL);
     link->ev_write = CreateEventA(NULL, TRUE, FALSE, NULL);

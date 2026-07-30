@@ -12,8 +12,8 @@ static psemu_t *make_ps(void) {
     return ps;
 }
 
-/* IFMODE=1 (transmit), STDBY=0 (active), BGEN=0 (carrier enabled - inverted logic), BFLT=1 (filter disabled,
-   irrelevant on TX). */
+/* IFMODE=1 selects transmit. STDBY=0 keeps it active. BGEN=0 enables the carrier, because BGEN uses inverted
+   logic. BFLT=1 disables the filter, which does not matter while transmitting. */
 #define TX_ACTIVE_MODE (IR_MODE_IFMODE | IR_MODE_BFLT)
 /* IFMODE=0 (receive), STDBY=0, BFLT bit set per test as needed. */
 #define RX_ACTIVE_MODE 0u

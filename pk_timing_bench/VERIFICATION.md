@@ -10,7 +10,7 @@ Each entry below is one full run. Each entry lists the build state tested, the e
 
 ## 2026-07-30 (later) — retail PocketStation unit (adds screen 7)
 
-**Build tested:** the current committed `pk_timing_bench.mcs` — adds experiment 7 (interrupt cost), the header fixes at `0x03`/`0x56`, and the emulator-side timer off-by-one fix that the earlier screen 6 run motivated.
+**Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 7 (interrupt cost), the header fixes at `0x03` and `0x56`, and the emulator-side timer off-by-one fix that the earlier screen 6 run motivated.
 
 | Screen | Test (top) | Control (bottom) |
 |---|---|---|
@@ -29,8 +29,8 @@ Screen 5 (raw Timer0 diagnostic, not deltas):
 
 **Interpretation:**
 
-- Screen 5 sanity check: `(0x6269 − 0xE23C) mod 65536 = 0x802D`, matching screen 3's test value exactly — internally consistent, as in both previous runs.
-- **Screen 6 confirms the timer fix.** Before the P+1 correction this emulator returned `0x3F80`/`0x3F80` against hardware's `0x3F90`/`0x3F88` — 16 and 8 ticks low. It now returns `0x3F91`/`0x3F88` against this run's `0x3F90`/`0x3F87`, i.e. within +1 on both, the same ±1 jitter the hardware shows against itself between runs.
+- Screen 5 sanity check: `(0x6269 − 0xE23C) mod 65536 = 0x802D`, matching screen 3's test value exactly. The raw counter data is internally consistent, as in both previous runs.
+- **Screen 6 confirms the timer fix.** Before the P+1 correction this emulator returned `0x3F80`/`0x3F80` against hardware's `0x3F90`/`0x3F88`, which is 16 and 8 ticks low. It now returns `0x3F91`/`0x3F88` against this run's `0x3F90`/`0x3F87`, i.e. within +1 on both, the same ±1 jitter the hardware shows against itself between runs.
 - **Screen 7 measures the per-interrupt cost as ~98 raw cycles**, via `3200 × (1 − top/bottom)`. This emulator returns `0x2BF2`/`0x2D4E` → ~96 raw cycles, a 2.2% difference.
 - **This refutes the interrupt-latency hypothesis.** Screen 7 was built to test whether the ~183 ticks left unaccounted for after screen 6 were being spent in the interrupt path. If the per-interrupt cost were the 368 raw cycles implied by a real IR-using app's own 184-tick pacing compensation, screen 7's bottom row would have read ≈ `0x31A8`. It reads `0x2D56`. The emulator's interrupt entry/dispatch/return cost is essentially correct, and is **not** where the missing IR time goes.
 - Net effect across screens 1-4: every value within ±1 of hardware, unchanged by any of this work.
@@ -61,13 +61,13 @@ Screen 5 (raw Timer0 diagnostic, not deltas):
 
 - Screens 1-4 all land within ±1 of the 2026-07-28 run on the same unit, so ±1 is this measurement's real run-to-run jitter, not a build difference. Screen 2 again shows test exactly equal to control, re-confirming `FLASH_CTRL`'s fast data rate.
 - Screen 5 sanity check: `(0x6269 − 0xE23C) mod 65536 = 0x802D`, which matches screen 3's test value exactly. The raw counter data is internally consistent, as in the previous run.
-- **Screen 6 — a timer armed with period P expires every P+1 ticks, not P.** This is a new confirmed real-hardware fact, and it is unusually clean:
+- **Screen 6: a timer armed with period P expires every P+1 ticks, not P.** This is a new confirmed real-hardware fact, and it is unusually clean:
   - Top (period 1016 × 256 reloads): `0x3F90` = 16272 Timer0 ticks, versus 16256 for an exact P-tick period. Excess 16 Timer0 ticks = 256 Timer2 ticks over 256 reloads = **exactly 1 tick per reload**.
   - Bottom (period 2032 × 128 reloads): `0x3F88` = 16264, versus the same 16256. Excess 8 Timer0 ticks = 128 Timer2 ticks over 128 reloads = **exactly 1 tick per reload**.
   - The same absolute excess at both periods rules out a rate/divisor error and pins it to a fixed per-period off-by-one: the counter runs P, P-1, … 1, 0 and reloads on the tick *after* zero, so zero is a state it actually occupies.
   - `core/src/timer.c` previously consumed exactly `count` ticks per reload, firing every timer one tick early. Fixed, and `tests/cpu_test.c`'s three timer expectations were corrected to match (they had encoded the old off-by-one).
-  - After the fix this emulator returns `0x3F91` / `0x3F88` for screen 6 — bottom exact, top within the ±1 jitter above.
-- **What screen 6 rules out.** It was built to locate ~184 missing ticks in a real IR-using app's transmit path (see README.md's "Screen 6"). It found only 1 of them in the timer block, so the remaining ~183 are *not* timer behavior: they must be spent after expiry, in the interrupt path (exception entry, BIOS/kernel dispatch, and the app's own handler prologue). That path is still unmeasured — the bench masks all interrupts.
+  - After the fix this emulator returns `0x3F91` / `0x3F88` for screen 6. The bottom row is exact, and the top row is within the ±1 jitter above.
+- **What screen 6 rules out.** It was built to locate ~184 missing ticks in a real IR-using app's transmit path (see README.md's "Screen 6"). It found only 1 of them in the timer block, so the remaining ~183 are *not* timer behavior: they must be spent after expiry, in the interrupt path (exception entry, BIOS/kernel dispatch, and the app's own handler prologue). That path is still unmeasured, because the bench masks all interrupts.
 
 This run had no crashes, no hangs, and no other anomalies.
 

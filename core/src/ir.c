@@ -9,8 +9,8 @@
 /* See ir.h. Off by default; tools/ir_probe.c turns it on. */
 int psemu_ir_trace_enabled = 0;
 
-/* Approximately 2 carrier periods, expressed in PSEMU_ASSUMED_CPU_HZ reference-rate cycles.
-   See ir.h's top comment: this is an inferred debounce window, not a confirmed hardware measurement. */
+/* Approximately 2 carrier periods, in PSEMU_ASSUMED_CPU_HZ reference-rate cycles.
+   This is an inferred debounce window, not a confirmed hardware measurement. See ir.h's top comment. */
 #define IR_BFLT_DEBOUNCE_CYCLES ((2ull * PSEMU_ASSUMED_CPU_HZ) / IR_CARRIER_HZ)
 
 void ir_init(ir_t *ir) {
@@ -75,9 +75,10 @@ static const ir_edge_t *queue_peek(const ir_edge_queue_t *q) {
     return q->count ? &q->entries[q->head] : (void *)0;
 }
 
-/* Transmit is only actually observable while IFMODE=transmit, not in standby, and the carrier generator is
-   enabled (BGEN uses inverted logic: 0=enabled). Writes to IRDA_DATA outside this condition move the register
-   value, exactly like real hardware, but produce no edge - there is no carrier for them to modulate. */
+/* Transmit is observable only under three conditions. IFMODE selects transmit, STDBY is clear, and the
+   carrier generator is enabled. BGEN uses inverted logic, so 0 enables it.
+   A write to IRDA_DATA outside those conditions still moves the register value, exactly like real hardware.
+   It produces no edge, because there is no carrier for it to modulate. */
 static int tx_emit_active(const ir_t *ir) {
     return (ir->mode & IR_MODE_IFMODE) != 0u && (ir->mode & IR_MODE_STDBY) == 0u &&
            (ir->mode & IR_MODE_BGEN) == 0u;
@@ -88,8 +89,9 @@ static void enqueue_tx_edge(ir_t *ir, int level) {
 }
 
 static void handle_mode_write(ir_t *ir) {
-    /* Leaving the transmit-emit condition (standby, RX, or carrier disabled) immediately extinguishes the LED,
-       the same way cutting power to a real IR LED would - software does not get to leave it stuck on. */
+    /* The LED goes off as soon as the transmit-emit condition ends. Standby, receive mode, or a disabled
+       carrier all end it.
+       A real IR LED behaves the same way when it loses power. Software cannot leave it stuck on. */
     if (!tx_emit_active(ir) && ir->tx_led_state != 0) {
         enqueue_tx_edge(ir, 0);
         ir->tx_led_state = 0;
@@ -129,9 +131,10 @@ void ir_write(ir_t *ir, uint32_t offset, uint32_t value) {
     }
 }
 
-/* Applies a debounce-accepted level to rx_level, and fires INT_IRDA if currently in active receive mode
-   (IFMODE=0, STDBY=0). An edge that arrives while not listening (transmitting, or in standby) is dropped here,
-   matching a real half-duplex transceiver that simply does not see it. */
+/* Applies a level that passed the debounce filter to rx_level.
+   It asserts INT_IRDA if receive mode is active (IFMODE=0, STDBY=0).
+   It drops an edge that arrives while this is not listening, that is, while transmitting or in standby.
+   A real half-duplex transceiver does not see that edge either. */
 static void apply_rx_level(ir_t *ir, struct intc *intc, int level) {
     int listening;
     if (level == ir->rx_level) {
@@ -144,17 +147,20 @@ static void apply_rx_level(ir_t *ir, struct intc *intc, int level) {
             listening ? "-> INT_IRDA asserted" : "DROPPED (not listening)", ir->mode);
     }
     if (listening) {
-        /* Not a plain intc_set_line: the receive handler reads the live line level back out of STATUS bit 12
-           and compares it against the level it expected, so STATUS has to follow the real level while HOLD
-           still latches an interrupt on both edges. Confirmed by disassembling a real app's INT_IRDA handler;
-           see intc.h's INT_STATUS_MASK comment. */
+        /* This is not a plain intc_set_line.
+           The receive handler reads the live line level back out of STATUS bit 12.
+           It then compares that level against the level it expected.
+           STATUS must therefore follow the real level, while HOLD still latches an interrupt on both edges.
+           A disassembly of a real app's INT_IRDA handler confirms this.
+           See intc.h's INT_STATUS_MASK comment. */
         intc_set_level_and_pulse(intc, INT_IRDA, level);
     }
 }
 
-/* BFLT (bit3, inverted: 0=enabled) rejects a transition that does not persist for IR_BFLT_DEBOUNCE_CYCLES
-   before a contradicting edge arrives. A raw edge starts (or restarts) a pending candidate; ir_tick's
-   resolve_pending confirms it once enough local time has passed with no contradicting edge in between. */
+/* BFLT is bit 3, and it uses inverted logic, so 0 enables the filter.
+   The filter rejects a transition that does not last IR_BFLT_DEBOUNCE_CYCLES before an opposite edge arrives.
+   A raw edge starts a pending candidate, or restarts one.
+   ir_tick's resolve_pending accepts that candidate once enough local time passes with no opposite edge. */
 static void debounce_edge(ir_t *ir, struct intc *intc, int level, uint64_t at_cycles) {
     int filter_enabled = (ir->mode & IR_MODE_BFLT) == 0u;
     if (!filter_enabled) {

@@ -48,17 +48,18 @@ measure_loop_ptr_thumb:      @ r0=ptr, r1=count -> r0=delta
 @ evidence about how the kernel's handler reads it, so this copies the one form
 @ known to work rather than assuming they are interchangeable.
 @
-@ SWI 1's contract here is INFERRED from that disassembly, not documented - worth
-@ knowing if experiment 7 ever misbehaves on a real unit.
+@ SWI 1's contract here is INFERRED from that disassembly, not documented.
+@ That is worth knowing if experiment 7 ever misbehaves on a real unit.
     .thumb_func
     .global register_irq_handler
 
 register_irq_handler:        @ r0 = handler address, or 0 to unregister
     @ The return deliberately goes through BX, not "pop {..., pc}". On ARMv4T a
-    @ Thumb POP into PC does NOT interwork - it loads the address but stays in
-    @ Thumb - so popping straight into PC returns into the ARM caller while the
-    @ CPU is still in Thumb state, and the caller's ARM instructions then decode
-    @ as garbage Thumb. That is exactly what happened the first time this was
+    @ Thumb POP into PC does NOT interwork. It loads the address, but the CPU
+    @ stays in Thumb state.
+    @ A pop straight into PC therefore returns into the ARM caller while the CPU
+    @ is still in Thumb state, and the caller's ARM instructions then decode as
+    @ garbage Thumb. That is exactly what happened the first time this was
     @ written: an "unrecognized thumb opcode 0xEBFF" fault, 0xEB being the top
     @ byte of the ARM BL the caller was really sitting on. measure_loop_ptr_thumb
     @ above avoids the same trap the same way.

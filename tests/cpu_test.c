@@ -1752,7 +1752,7 @@ static void test_psemu_reset_restores_defaults_and_preserves_content(void) {
     /* psemu_reset must be a true hardware-level reset: every peripheral
        register returns to its power-on default, but loaded content
        (flash data, the hardware ID, RAM aside) is not content at all and
-       must survive - see psemu_reset's comment in psemu.c. Without this,
+       must survive. See psemu_reset's comment in psemu.c. Without this,
        reloading a different BIOS/app mid-session left stale peripheral
        state from the previous session in place, which is what caused
        reload glitches. */

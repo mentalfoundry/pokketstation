@@ -21,7 +21,7 @@ make
 
 `make` writes `pk_timing_bench.mcs` into this directory. The file is 8320 bytes: a real PS1 single-save directory frame, plus one 8KB PSX Title Sector app block. Load it with any of this project's frontends, via `psemu_load_content`. You can also load it with a real PocketStation's own memory-card-loading pipeline.
 
-**Link the objects in the Makefile's exact `$(OBJS)` order** (`header icon mirrors font thumb_loop start helpers experiments ui`). If you drive the toolchain by hand rather than via `make`, do not pass `src/*.o` - the shell expands that alphabetically, which links `experiments.o` first and pushes `_start` hundreds of bytes further into `.text`. The fixed-offset sections in [`link.ld`](link.ld) still land correctly and the entry-point word at body `0x5C` still points at the real `_start`, so it builds and runs - but the resulting image is laid out quite differently from what `make` produces, which makes it useless for byte-comparing against a known-good build. `_start` should come out immediately after `.thumb_loop`.
+**Link the objects in the Makefile's exact `$(OBJS)` order** (`header icon mirrors font thumb_loop start helpers experiments ui`). If you drive the toolchain by hand rather than through `make`, do not pass `src/*.o`. The shell expands that alphabetically. It then links `experiments.o` first, and pushes `_start` hundreds of bytes further into `.text`. The fixed-offset sections in [`link.ld`](link.ld) still land correctly and the entry-point word at body `0x5C` still points at the real `_start`, so it builds and runs. The resulting image is laid out quite differently from what `make` produces, which makes it useless for byte-comparing against a known-good build. `_start` should come out immediately after `.thumb_loop`.
 
 This build needs no Python, and no assembler-specific scripting. The real ARM/Thumb source lives in [`src/`](src/), as editable GNU-syntax assembly. [`link.ld`](link.ld) places every piece at the exact body offset the runtime logic needs. [`pack.c`](pack.c) is the only non-assembly code; it wraps the assembled and linked binary in the PS1 directory-frame header. If your toolchain binaries are not on `PATH`, override `AS`, `LD`, `OBJCOPY`, or `CC` on the `make` command line.
 
@@ -79,23 +79,23 @@ If screen 1 comes back close to 1:1, or some other unexpected ratio, do not trus
 
 **Screen 5 - raw Timer0 diagnostic.** This project added screen 5 after a real-hardware anomaly; see "Real-hardware findings". Screen 5 shows four rows of raw Timer0 snapshots, not deltas: before and after a single isolated real BIOS call, then before and after the full 30000-iteration measurement that screen 3 already runs.
 
-**Screen 6 - does a timer armed with period P really take P ticks?** Unlike screens 1-4, both rows here are raw Timer0 stopwatch totals, not a test/control pair. Top is Timer2 armed with **period 1016**, measured across **256** reloads. Bottom is **period 2032** across **128** reloads. Both use Timer2's `/2` divisor and take **no interrupts at all** — reloads are detected by polling Timer2's count register (see `measure_timer_periods` in [`src/helpers.s`](src/helpers.s)).
+**Screen 6: does a timer armed with period P really take P ticks?** Both rows here are raw Timer0 stopwatch totals, not a test/control pair as on screens 1-4. Top is Timer2 armed with **period 1016**, measured across **256** reloads. Bottom is **period 2032** across **128** reloads. Both use Timer2's `/2` divisor and take **no interrupts at all**. Polling Timer2's count register detects the reloads. See `measure_timer_periods` in [`src/helpers.s`](src/helpers.s).
 
-Why 1016: that is the exact period a real IR-using app arms Timer2 with while transmitting. Its nominal IR pulse unit is 1200, and it subtracts a hardcoded 184 before arming — clearly expecting the resulting pulse to land at the full 1200. This emulator produces only ~1041, ~13% short, which is why IR transfers fail in it. Screen 6 exists to find out where those ~184 ticks actually come from.
+Why 1016: that is the exact period a real IR-using app arms Timer2 with while transmitting. Its nominal IR pulse unit is 1200, and it subtracts a hardcoded 184 before arming. It clearly expects the resulting pulse to land at the full 1200. This emulator produces only ~1041, ~13% short, which is why IR transfers fail in it. Screen 6 exists to find out where those ~184 ticks actually come from.
 
 Because both rows measure the same total number of Timer2 ticks (1016×256 = 2032×128), a correct timer makes **both rows read the same value**. That is what makes the two rows a discriminator:
 
 | Screen 6 result | What it means |
 |---|---|
 | Both rows `0x3F80` | The timer is exact: period P really does take P ticks. The missing ~184 must be spent *after* expiry, in the interrupt path (exception entry + BIOS/kernel dispatch + the app's handler prologue). |
-| Top `0x4B00`, bottom `0x4540` | A fixed **additive** cost per period — the timer block itself takes P + ~184 ticks. An emulator timer-model bug, and a much easier fix. |
-| Both rows `0x4B00` | A **proportional** rate error — the `/2` divisor (or the clock feeding it) is wrong, not a fixed cost. |
+| Top `0x4B00`, bottom `0x4540` | A fixed **additive** cost per period. The timer block itself takes P + ~184 ticks. That is an emulator timer-model bug, and a much easier fix. |
+| Both rows `0x4B00` | A **proportional** rate error. The `/2` divisor, or the clock feeding it, is wrong. It is not a fixed cost. |
 
 `0x3F80` (16256) is what this emulator currently produces for both rows, so any deviation on real hardware is a real, measured emulator inaccuracy. See [VERIFICATION.md](VERIFICATION.md) for logged runs.
 
-**Screen 7 - what does taking an interrupt actually cost?** This is the last unmeasured piece of the ~184 ticks a real IR-using app compensates for. Screen 6 proved only 1 of them is timer behavior, so the rest has to be interrupt entry, kernel dispatch and handler prologue.
+**Screen 7: what does taking an interrupt actually cost?** This is the last unmeasured piece of the ~184 ticks a real IR-using app compensates for. Screen 6 proved only 1 of them is timer behavior, so the rest has to be interrupt entry, kernel dispatch and handler prologue.
 
-Method: time the exact same measurement loop twice - once with every interrupt masked (top row), once with a single timer interrupt live at a known fixed rate (bottom row). Each interrupt steals its full cost from the loop, so the two totals together give the per-interrupt cost. Timer1 is armed at period 99 with the `/32` divisor, firing every `(99+1)*32 = 3200` raw cycles.
+Method: time the exact same measurement loop twice. The first run masks every interrupt, and gives the top row. The second run keeps a single timer interrupt live at a known fixed rate, and gives the bottom row. Each interrupt steals its full cost from the loop, so the two totals together give the per-interrupt cost. Timer1 is armed at period 99 with the `/32` divisor, firing every `(99+1)*32 = 3200` raw cycles.
 
 **Reading it.** With `B` = top row and `W` = bottom row, both in Timer0 ticks:
 
@@ -114,12 +114,12 @@ So if real hardware comes back near `0x31A8`, the emulator's interrupt path is r
 
 **Two bugs were hit building this, both caught in this project's emulator before any hardware run** - either would have wedged a real unit for no measurement:
 
-1. Enabling a timer interrupt with no app IRQ callback registered visibly corrupts the app. The kernel expects one installed first, so experiment 7 registers a handler (via `SWI 1`, the call a real app demonstrably uses - found by disassembling its interrupt setup) before un-masking anything.
+1. Enabling a timer interrupt with no app IRQ callback registered visibly corrupts the app. The kernel expects one installed first. Experiment 7 therefore registers a handler before it un-masks anything. It registers through `SWI 1`, the call a real app demonstrably uses, found by disassembling that app's interrupt setup.
 2. The registration helper first returned with `pop {..., pc}`. On ARMv4T a Thumb POP into PC does not interwork, so it returned into ARM caller code while still in Thumb state and faulted on `unrecognized thumb opcode 0xEBFF` - `0xEB` being the top byte of the ARM `BL` it landed on. It returns via `BX` now, the same way `measure_loop_ptr_thumb` always has.
 
-`SWI 1`'s contract (`r0` = callback slot, `r1` = handler address, 0 to unregister) is inferred from that disassembly, not documented - worth knowing if screen 7 ever misbehaves on a unit. Experiment 7 re-masks every interrupt source and restores Timer1 before returning, so nothing after it runs with an interrupt still live.
+`SWI 1`'s contract is inferred from that disassembly, not documented: `r0` is the callback slot, `r1` is the handler address, and 0 unregisters. That is worth knowing if screen 7 ever misbehaves on a unit. Experiment 7 re-masks every interrupt source and restores Timer1 before returning, so nothing after it runs with an interrupt still live.
 
-An earlier version gated this behind holding UP at power-on, as a hedge against it hanging a unit. That was removed: the gate depended on reading a live button *level* out of `INTC_STATUS` at startup, which real hardware does but this emulator only approximates, so it behaved differently in the two - and holding a direction button through launch perturbs the BIOS's own menu navigation. With both failure modes above actually fixed rather than hidden behind a switch, the hedge bought nothing.
+An earlier version gated this behind holding UP at power-on, as a hedge against it hanging a unit. That was removed. The gate depended on reading a live button *level* out of `INTC_STATUS` at startup. Real hardware does that, but this emulator only approximates it, so the gate behaved differently in the two. Holding a direction button through launch also disturbs the BIOS's own menu navigation. With both failure modes above actually fixed rather than hidden behind a switch, the hedge bought nothing.
 
 ### Reading the hex digits
 
@@ -133,14 +133,14 @@ A "confirmed equal" verdict looks like this: the two numbers sit within a few pe
 
 **Two header bytes this app was leaving at zero, that every real app sets.** Both fell inside zero-fill regions in `header.s` and were assumed reserved:
 
-- **`0x03` is the block count** - how many 8KB blocks the save occupies. Every real app checked sets it correctly - the reference dumps on hand cover 1-, 2-, 4-, 7- and 13-block saves, each declaring its own true count. This app declared 0.
-- **`0x56` is `0x01` in all nine real apps inspected**, regardless of block count, icon style or frame count - so it is not a frame count, most likely a format/version marker. This app declared 0, the only file in the corpus doing so.
+- **`0x03` is the block count.** It holds how many 8KB blocks the save occupies. Every real app checked sets it correctly. The reference dumps on hand cover 1-, 2-, 4-, 7- and 13-block saves, and each one declares its own true count. This app declared 0.
+- **`0x56` is `0x01` in all nine real apps inspected**, regardless of block count, icon style or frame count. It is therefore not a frame count. It is most likely a format or version marker. This app declared 0, the only file in the corpus doing so.
 
 Between them these corrupted the real BIOS's own app-select screen. LEFT/RIGHT browse between saves normally (horizontal transition), but this app also had a vertical axis on UP/DOWN: pressing UP transitioned down into a glitched screen, every further UP press reproduced the identical glitch, and DOWN transitioned back up to the correctly-rendered icon.
 
 The glitched screen renders whatever is at body `0x200-0x2FF` - deliberately editing that region changed which garbage appeared, which is how it was confirmed as the read target rather than the cause.
 
-One reference dump is what isolated this: byte-for-byte the same container shape as this app (one block, `0x2000` body, chain link `0xFFFF`), and it renders cleanly - which ruled out the container itself and left the declared header fields. With both bytes corrected, this app's header now matches a known-good multi-block dump in every field except block count, which legitimately differs.
+One reference dump is what isolated this. It has byte-for-byte the same container shape as this app: one block, a `0x2000` body, and chain link `0xFFFF`. It renders cleanly, which ruled out the container itself and left the declared header fields. With both bytes corrected, this app's header now matches a known-good multi-block dump in every field except block count, which legitimately differs.
 
 Two suspects were ruled out along the way: the unidentified `0x200-0x2FF` icon trailer (filling it with this app's own bitmap changed the glitch but did not fix it, and was reverted), and the object link order used when building by hand (see "Building").
 

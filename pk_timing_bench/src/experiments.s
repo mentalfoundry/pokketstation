@@ -92,8 +92,8 @@ run_experiment_4_bios_thumb:
 @ i.e. ~159 ticks short, which is exactly why IR transfers fail in it. That
 @ shortfall has two candidate causes, and they need very different fixes:
 @
-@   (a) the timer block itself is slower than modeled - a timer armed with
-@       period P actually takes P + ~184 ticks on real hardware; or
+@   (a) the timer block itself is slower than modeled. A timer armed with
+@       period P then takes P + ~184 ticks on real hardware. Or:
 @   (b) the timer is exact, and the missing time is spent AFTER expiry, in
 @       the interrupt path (exception entry, BIOS/kernel dispatch, and the
 @       app's own handler prologue) before the IR LED is finally toggled.
@@ -105,8 +105,8 @@ run_experiment_4_bios_thumb:
 @ fixed per-period cost from a proportional rate error.
 @
 @ Screen 6 shows the raw Timer0 stopwatch totals. Do the arithmetic against
-@ them rather than trusting a pre-computed delta - see ../README.md's
-@ "Screen 6" section for the expected values and how to read them.
+@ them rather than trusting a pre-computed delta. See ../README.md's
+@ "Screen 6" section for the expected values, and for how to read them.
 run_experiment_6_timer_period:
     push {lr}
     ldr r0, =EXP6_PERIOD_A
@@ -128,9 +128,10 @@ run_experiment_6_timer_period:
 @
 @ Screen 6 established that the timer block is exact to within 1 tick per
 @ period, which means the ~184 ticks a real IR-using app compensates for are
-@ NOT timer behavior - they are spent after expiry, somewhere in the interrupt
-@ path (exception entry, the BIOS/kernel dispatcher, and the app's own handler
-@ prologue) before the IR LED finally toggles. This measures that path.
+@ NOT timer behavior. They are spent after expiry, somewhere in the interrupt
+@ path, before the IR LED finally toggles. That path covers exception entry, the
+@ BIOS/kernel dispatcher, and the app's own handler prologue.
+@ This measures that path.
 @
 @ Method: time the exact same measurement loop twice. First with every
 @ interrupt masked, exactly as the rest of this app runs. Then again with a
@@ -138,14 +139,14 @@ run_experiment_6_timer_period:
 @ steals its full entry+dispatch+return cost from the loop, so the difference
 @ between the two totals, divided by the number of interrupts that fired, is
 @ the per-interrupt cost. No interrupt handler of our own is needed or
-@ installed - whatever the BIOS already does on a timer interrupt IS the thing
-@ being measured, and it is the same path a real app's handler sits at the end
-@ of.
+@ installed. Whatever the BIOS already does on a timer interrupt IS the thing
+@ this measures. A real app's handler sits at the end of that same path.
 @
 @ This is the one measurement in this app that un-masks an interrupt, which is
-@ exactly what start.s's safety net otherwise exists to prevent - so it registers
-@ a handler first, and re-masks every source and restores Timer1 before
-@ returning, leaving nothing live behind it. See ../README.md.
+@ exactly what start.s's safety net otherwise exists to prevent.
+@ It therefore registers a handler first. It then re-masks every source and
+@ restores Timer1 before it returns, so it leaves nothing live behind it.
+@ See ../README.md.
 @
 @ Timer1's original state is saved and restored, since the real BIOS uses it
 @ (docs/hardware-notes.md: Timer1 drives its audio and GUI ticks).
@@ -177,9 +178,9 @@ run_experiment_7_irq_latency:
 
     @ --- install an interrupt handler BEFORE un-masking anything. Without this
     @ the kernel has no app callback registered, and the first interrupt taken
-    @ corrupts the app - reproduced directly in this project's emulator, which
+    @ corrupts the app. This project's emulator reproduced that directly, which
     @ is what stopped this experiment from ever reaching real hardware in that
-    @ state. See register_irq_handler/irq_ack_handler in helpers.s. ---
+    @ state. See register_irq_handler and irq_ack_handler in helpers.s. ---
     ldr r0, =irq_ack_handler
     adr lr, exp7_reg_ret
     ldr r1, =register_irq_handler

@@ -117,8 +117,8 @@ clk_wait:
     mov r1, #0
     bl draw_pixel
 
-    @ Experiment 6 (screen 6): Timer2 period semantics, polled - no interrupts
-    @ taken. See experiments.s for what this is separating and why.
+    @ Experiment 6 (screen 6): Timer2 period semantics. It polls, and takes no
+    @ interrupts. See experiments.s for what it separates, and why.
     bl run_experiment_6_timer_period
     mov r0, #8
     mov r1, #0
@@ -127,12 +127,13 @@ clk_wait:
 
     @ Experiment 7 (screen 7): what taking an interrupt actually costs. This is
     @ the only experiment here that un-masks an interrupt, so it registers a
-    @ handler first, then re-masks everything and restores Timer1 before
-    @ returning - see run_experiment_7_irq_latency in experiments.s.
+    @ handler first. It then re-masks everything and restores Timer1 before it
+    @ returns. See run_experiment_7_irq_latency in experiments.s.
     @
-    @ Two failure modes were hit getting it working, both caught in this
-    @ project's own emulator before any hardware run - recorded here because
-    @ either would have corrupted or wedged a real unit for no measurement:
+    @ Two failure modes came up while getting it working. This project's own
+    @ emulator caught both of them before any hardware run. They are recorded
+    @ here because either one would have corrupted or wedged a real unit, and
+    @ returned no measurement:
     @
     @   1. Enabling a timer interrupt with NO app IRQ callback registered visibly
     @      corrupts the app. The kernel expects an app to have installed one
@@ -149,10 +150,10 @@ clk_wait:
     @ depended on reading a live button LEVEL out of INTC_STATUS at startup,
     @ which real hardware does but this emulator only approximates (it latches
     @ button state on the press edge, and the BIOS's own boot-time interrupt
-    @ acknowledges clear it again), so the gate behaved differently in the
-    @ emulator than on hardware - and holding a direction button through launch
-    @ perturbs the BIOS's own menu navigation too. With both failure modes above
-    @ actually fixed rather than hidden behind a switch, the hedge bought nothing.
+    @ acknowledges clear it again). The gate therefore behaved differently in
+    @ the emulator than on hardware. Holding a direction button through launch
+    @ also disturbs the BIOS's own menu navigation. Both failure modes above are
+    @ now fixed rather than hidden behind a switch, so the hedge bought nothing.
     bl run_experiment_7_irq_latency
     mov r0, #9
     mov r1, #0

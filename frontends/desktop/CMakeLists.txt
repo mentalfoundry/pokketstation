@@ -33,10 +33,10 @@ target_link_libraries(pokketstation_desktop PRIVATE psemu SDL2::SDL2 SDL2::SDL2m
 # produced binary's filename changes, to plain pokketstation.exe.
 set_target_properties(pokketstation_desktop PROPERTIES OUTPUT_NAME "pokketstation")
 
-# Manually-run verification tool for ir_link.c's actual named-pipe transport - see ir_link_selftest.c's top
-# comment. Deliberately not wired into CTest: it exercises real OS-level IPC timing (connect retries, overlapped
-# I/O completion), which is exactly the kind of thing that turns into a flaky/slow automated test; run it by
-# hand after touching ir_link.c.
+# Manually-run verification tool for ir_link.c's real named-pipe transport. See ir_link_selftest.c's top
+# comment. It is not wired into CTest. It exercises real OS-level IPC timing, such as connect retries and
+# overlapped I/O completion. That kind of test turns flaky and slow when it runs automatically.
+# Run it by hand after a change to ir_link.c.
 add_executable(ir_link_selftest ir_link_selftest.c ir_link.c)
 target_include_directories(ir_link_selftest PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(ir_link_selftest PRIVATE psemu)
