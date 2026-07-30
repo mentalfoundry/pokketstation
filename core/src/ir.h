@@ -5,23 +5,50 @@
 
 struct intc;
 
-#define IR_REG_SPAN 0x8u
+#define IR_REG_SPAN 0x10u
 
-/* IRDA_MODE (offset 0) bits and IRDA_DATA (offset 4) bit 0, per the documented `PMIrMode`-style register layout:
+/* IRDA_MODE (offset 0) bits, IRDA_DATA (offset 4) bit 0, and IRDA_MISC (offset 0xC):
      IRDA_MODE bit0 IFMODE  0=Receive, 1=Transmit
      IRDA_MODE bit1 STDBY   0=Active, 1=Stand-by
      IRDA_MODE bit2 BGEN    0=Enable 40KHz carrier generator, 1=Disable
      IRDA_MODE bit3 BFLT    0=Enable filter, 1=Disable
      IRDA_DATA bit0 LED     Transmit: 0=LED off, 1=LED on. Receive: the demodulated carrier level.
+     IRDA_MISC              Unknown/reserved. See ir_write's handling of it below.
 
-   The receive meaning of IRDA_DATA bit 0 is this emulator's own inference.
-   It is undocumented, and unconfirmed against real hardware.
-   Nothing in this project's traced corpus has ever touched these registers.
+   This layout matches psx-spx (the community-maintained PlayStation hardware reference, formerly Martin
+   Korth's "nocash psx-spx", now at psx-spx.consoledev.net), which documents these three registers together at
+   0x0C800000-0x0C80000F.
+   psx-spx itself is community reverse-engineering, not a leaked Sony devkit spec, and it says so: it flags
+   IRDA_MISC as unknown, and marks several details "reportedly" or with a question mark. Two mirrors of it
+   disagree with each other on what MODE bits 1-3 mean.
+   psx-spx.consoledev.net gives STDBY/BGEN/BFLT as above. The older problemkaputt.de mirror instead guesses a
+   plain "disable" bit plus two "IR_SEND_READY"/"IR_RECV_READY" bits, and calls that guess uncertain outright.
+   STDBY/BGEN/BFLT is what this file already modeled, from disassembling a real app rather than from either
+   mirror. A real app's actual behavior is exactly what settles a disagreement between two secondary sources.
+   Treat the STDBY/BGEN/BFLT names as confirmed by that disassembly, with the psx-spx match as independent
+   corroboration, not the reverse.
+
+   The receive meaning of IRDA_DATA bit 0 is not in psx-spx at all. It is this emulator's own inference,
+   undocumented and unconfirmed against real hardware.
+
+   psx-spx gives no numeric timing anywhere: no microsecond pulse widths, no carrier-to-pulse ratio beyond
+   "long is usually twice as long as short", nothing resembling the 184-tick transmit-timing gap this project's
+   own hardware testing is chasing (see docs/hardware-notes.md, "IR / IR Link"). That gap is not something a
+   register reference can answer; only measurement on real hardware can.
 
    Real pulses are long or short ON periods, separated by short OFF gaps. A long pulse is approximately 2x a
-   short pulse.
+   short pulse. psx-spx explains why pulses alternate ON/OFF instead of one sustained ON period: real IR
+   receiver hardware adapts to ambient light, and a long steady signal risks being read as the new ambient
+   level rather than as data. This project's own trace of a real app's transmitted signal already shows exactly
+   this alternating shape (see tools/ir_probe.c's transmit-side analysis).
    The real RX-IRQ handler (INT_IRDA, see intc.h) measures an incoming pulse's length.
-   It does this by reading Timer 2's live counter (reload 0xFFFFh) at the interrupt.
+   It does this by reading Timer 2's live counter (reload 0xFFFFh) at the interrupt. psx-spx confirms this is
+   the usual technique, without confirming this specific app uses it.
+
+   psx-spx also states the real BIOS "doesn't contain any IR functions, aside from some basic initialization
+   and power-down stuff". That matches what this project's own disassembly already found: a real app drives
+   IRDA_MODE/IRDA_DATA directly from its own code, with its own hand-rolled interrupt handler, not through any
+   documented BIOS SWI. There is no undiscovered BIOS-level IR API to go looking for.
 
    This models IR as an asynchronous edge relay between two independently-clocked instances.
    Real IR hardware works the same way: two separate devices, two separate oscillators, and an optical signal

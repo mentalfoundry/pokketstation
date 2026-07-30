@@ -191,6 +191,26 @@ static void test_full_loopback_tx_to_rx_across_two_instances(void) {
     printf("test_full_loopback_tx_to_rx_across_two_instances OK\n");
 }
 
+static void test_irda_misc_is_a_reserved_stub(void) {
+    /* IRDA_MISC (+0xC) is unknown/reserved in psx-spx, with no documented reset value or behavior. This
+       emulator has no basis to invent register state for it: reads return 0, and writes have no effect on it
+       or on anything else (mode/data stay exactly as they were). See ir.h's top comment. */
+    psemu_t *ps = make_ps();
+
+    psemu_bus_write32(&ps->bus, IRDA_MODE, TX_ACTIVE_MODE);
+    psemu_bus_write32(&ps->bus, PSEMU_IR_BASE + 0xCu, 0xFFFFFFFFu);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_IR_BASE + 0xCu) == 0u);
+    assert(ps->ir.mode == TX_ACTIVE_MODE); /* the write above did not disturb mode */
+
+    /* The gap at +0x8, between IRDA_DATA and IRDA_MISC, gets the same stub treatment: nothing distinguishes
+       it from IRDA_MISC itself in psx-spx or in this emulator. */
+    psemu_bus_write32(&ps->bus, PSEMU_IR_BASE + 0x8u, 0xFFFFFFFFu);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_IR_BASE + 0x8u) == 0u);
+
+    psemu_destroy(ps);
+    printf("test_irda_misc_is_a_reserved_stub OK\n");
+}
+
 int main(void) {
     test_tx_write_with_carrier_enabled_enqueues_edges();
     test_tx_write_without_carrier_produces_no_edge();
@@ -201,6 +221,7 @@ int main(void) {
     test_bflt_enabled_rejects_short_glitch();
     test_bflt_enabled_confirms_sustained_edge();
     test_full_loopback_tx_to_rx_across_two_instances();
+    test_irda_misc_is_a_reserved_stub();
     printf("All IR tests passed.\n");
     return 0;
 }

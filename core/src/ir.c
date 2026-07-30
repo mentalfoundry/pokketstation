@@ -28,8 +28,22 @@ void ir_init(ir_t *ir) {
     ir->rx_pending_since_cycles = 0;
 }
 
+/* Names offsets 0/4/8/0xC for trace output. Offset 8 has no named register in psx-spx at all (a gap between
+   IRDA_DATA and IRDA_MISC); this reports it as part of IRDA_MISC's reserved span rather than inventing a name
+   for it, since nothing distinguishes the two as far as this emulator (or psx-spx) knows. */
+static const char *ir_reg_name(uint32_t word_index) {
+    switch (word_index) {
+    case 0:
+        return "IRDA_MODE";
+    case 1:
+        return "IRDA_DATA";
+    default:
+        return "IRDA_MISC";
+    }
+}
+
 uint32_t ir_read(ir_t *ir, uint32_t offset) {
-    uint32_t word_index = (offset / 4u) % 2u;
+    uint32_t word_index = (offset / 4u) % 4u;
     uint32_t shift = (offset % 4u) * 8u;
     uint32_t value;
 
@@ -38,13 +52,19 @@ uint32_t ir_read(ir_t *ir, uint32_t offset) {
            there (software has no reason to be writing it while receiving anyway). See ir.h's top comment
            on this being an inferred, unconfirmed read-back semantic. */
         value = ir->rx_level ? IR_DATA_LED : 0u;
+    } else if (word_index >= 2u) {
+        /* IRDA_MISC (+0xC) and the gap before it (+0x8): psx-spx marks IRDA_MISC unknown/reserved, with no
+           documented reset value or behavior. This emulator has no basis to invent register state for it, so
+           it reads back 0 and writes have no effect, the same stub treatment this project already gives
+           BATT_CTRL (see docs/hardware-notes.md, "Known open questions"). */
+        value = 0u;
     } else {
         value = (word_index == 0u) ? ir->mode : ir->data;
     }
     if (psemu_ir_trace_enabled) {
         printf("[ir trace] t=%llu pc=0x%08X READ %s (+0x%X) = 0x%02X (full=0x%08X)\n",
-            (unsigned long long)ir->clock_cycles, psemu_debug_current_pc, word_index == 0u ? "IRDA_MODE" : "IRDA_DATA",
-            (unsigned)offset, (unsigned)((value >> shift) & 0xFFu), value);
+            (unsigned long long)ir->clock_cycles, psemu_debug_current_pc, ir_reg_name(word_index), (unsigned)offset,
+            (unsigned)((value >> shift) & 0xFFu), value);
     }
     return (value >> shift) & 0xFFu;
 }
@@ -111,17 +131,28 @@ static void handle_data_write(ir_t *ir) {
 }
 
 void ir_write(ir_t *ir, uint32_t offset, uint32_t value) {
-    uint32_t word_index = (offset / 4u) % 2u;
+    uint32_t word_index = (offset / 4u) % 4u;
     uint32_t shift = (offset % 4u) * 8u;
     uint32_t byte = value & 0xFFu;
-    uint32_t *reg = (word_index == 0u) ? &ir->mode : &ir->data;
+    uint32_t *reg;
 
+    if (word_index >= 2u) {
+        /* IRDA_MISC and the gap before it: a no-op write. See ir_read's comment on the same span. */
+        if (psemu_ir_trace_enabled) {
+            printf("[ir trace] t=%llu pc=0x%08X WRITE %s (+0x%X) = 0x%02X (ignored, reserved)\n",
+                (unsigned long long)ir->clock_cycles, psemu_debug_current_pc, ir_reg_name(word_index),
+                (unsigned)offset, (unsigned)byte);
+        }
+        return;
+    }
+
+    reg = (word_index == 0u) ? &ir->mode : &ir->data;
     *reg = (*reg & ~(0xFFu << shift)) | (byte << shift);
 
     if (psemu_ir_trace_enabled) {
         printf("[ir trace] t=%llu pc=0x%08X WRITE %s (+0x%X) = 0x%02X (full=0x%08X)\n",
-            (unsigned long long)ir->clock_cycles, psemu_debug_current_pc, word_index == 0u ? "IRDA_MODE" : "IRDA_DATA",
-            (unsigned)offset, (unsigned)byte, *reg);
+            (unsigned long long)ir->clock_cycles, psemu_debug_current_pc, ir_reg_name(word_index), (unsigned)offset,
+            (unsigned)byte, *reg);
     }
 
     if (word_index == 0u) {
