@@ -25,6 +25,7 @@
 
 #include "psemu/psemu.h"
 #include "resource.h"
+#include "ir_link.h"
 
 #define SCALE 8
 
@@ -152,14 +153,18 @@ static void write_diagnostic_report(
        Real hardware confirms there is no "first digit must be a letter" restriction:
        a real unit accepts and persists "EEEEEEEE".
        An empty value means "use the default".
-     - The --console/--no-console choice.
+     - Whether to show a console window (show_console). There is no in-app
+       toggle for this; it is only ever set by hand-editing settings.cfg.
+       --console/--no-console override it for a single run, same as any other
+       CLI flag, but deliberately do not write back to settings.cfg - a one-off
+       flag on the command line is not the same thing as a persisted
+       preference, and must not silently overwrite one.
 
-   This app saves settings.cfg immediately at the point each value actually changes:
-   BIOS loaded via a CLI arg or File > Open, hardware ID edited via Tools > Edit
-   Hardware ID, or an explicit --console/--no-console flag.
-   This app does not batch changes for a single write at exit.
-   A force-kill or crash mid-session would otherwise silently lose whatever changed
-   since launch. */
+   This app saves settings.cfg immediately at the point each value actually
+   changes: BIOS loaded via a CLI arg or File > Open, hardware ID edited via
+   Tools > Edit Hardware ID. This app does not batch changes for a single
+   write at exit. A force-kill or crash mid-session would otherwise silently
+   lose whatever changed since launch. */
 #define SETTINGS_CONFIG_NAME "settings.cfg"
 
 typedef struct {
@@ -524,7 +529,33 @@ typedef struct {
     app_settings_t *settings;
     const char *settings_path;
     const char *exe_dir;
+    ir_link_t *ir_link;
 } menu_context_t;
+
+/* Shows IR Link's live status as a window-title suffix (e.g. "pokketstation - IR Link: Connected"), or just the
+   plain title while idle. Called after every action that can change ir_link's state - host/connect/disconnect
+   from the menu, and once per frame in main's loop, since a hosting/connecting link's status can also change on
+   its own (a peer connects, or the link errors out) with no menu click involved. */
+static void ir_link_refresh_title(menu_context_t *ctx) {
+    char title[192];
+    if (ir_link_is_active(ctx->ir_link)) {
+        snprintf(title, sizeof(title), "pokketstation - IR Link: %s", ir_link_status_text(ctx->ir_link));
+    } else {
+        snprintf(title, sizeof(title), "pokketstation");
+    }
+    SetWindowTextA(ctx->hwnd, title);
+}
+
+/* Core wipes ir_t's clock and any queued edges on both psemu_reset and psemu_load_state (see ir_link.h's
+   comment on ir_link_disconnect). A link left connected across either would silently desync: this instance's
+   IR clock jumps back to zero while the peer's does not, so every subsequently-relayed timestamp would be
+   wrong. Every call site that resets or loads state calls this first. */
+static void drop_ir_link_if_active(menu_context_t *ctx) {
+    if (ir_link_is_active(ctx->ir_link)) {
+        ir_link_disconnect(ctx->ir_link);
+        ir_link_refresh_title(ctx);
+    }
+}
 
 static void prompt_open_bios(menu_context_t *ctx) {
     char path[1024] = {0};
@@ -558,6 +589,7 @@ static void prompt_open_bios(menu_context_t *ctx) {
     *ctx->bios_size = new_size;
     snprintf(ctx->bios_path, ctx->bios_path_cap, "%s", path);
     psemu_reset(ctx->ps);
+    drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 
     snprintf(ctx->settings->bios_path, sizeof(ctx->settings->bios_path), "%s", path);
@@ -597,6 +629,7 @@ static void prompt_open_app(menu_context_t *ctx) {
     *ctx->app_size = new_size;
     snprintf(ctx->app_path, ctx->app_path_cap, "%s", path);
     psemu_reset(ctx->ps);
+    drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 }
 
@@ -606,6 +639,7 @@ static void prompt_open_app(menu_context_t *ctx) {
    on demand instead of only after a file dialog succeeds. */
 static void reset_emulation(menu_context_t *ctx) {
     psemu_reset(ctx->ps);
+    drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 }
 
@@ -677,6 +711,7 @@ static void quick_load_state(menu_context_t *ctx) {
 
     free(buf);
     fclose(f);
+    drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 }
 
@@ -1108,6 +1143,24 @@ static void show_about(menu_context_t *ctx) {
     DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_ABOUT), ctx->hwnd, about_dialog_proc, 0);
 }
 
+/* IR Link > Host Session/Connect/Disconnect. A fixed well-known pipe name (IR_LINK_DEFAULT_PIPE_NAME) is used
+   for v1 instead of a dialog prompting for one - simplest thing that works for two instances on one machine.
+   See ir_link.h for the actual transport. */
+static void ir_link_host_from_menu(menu_context_t *ctx) {
+    ir_link_host(ctx->ir_link, IR_LINK_DEFAULT_PIPE_NAME);
+    ir_link_refresh_title(ctx);
+}
+
+static void ir_link_connect_from_menu(menu_context_t *ctx) {
+    ir_link_connect(ctx->ir_link, IR_LINK_DEFAULT_PIPE_NAME);
+    ir_link_refresh_title(ctx);
+}
+
+static void ir_link_disconnect_from_menu(menu_context_t *ctx) {
+    ir_link_disconnect(ctx->ir_link);
+    ir_link_refresh_title(ctx);
+}
+
 /* Installed via SDL_SetWindowsMessageHook.
    Fires synchronously from within SDL_PollEvent's own message pump, on
    the same thread, so no locking is needed.
@@ -1174,6 +1227,15 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         break;
     case ID_HELP_ABOUT:
         show_about(ctx);
+        break;
+    case ID_IR_HOST:
+        ir_link_host_from_menu(ctx);
+        break;
+    case ID_IR_CONNECT:
+        ir_link_connect_from_menu(ctx);
+        break;
+    case ID_IR_DISCONNECT:
+        ir_link_disconnect_from_menu(ctx);
         break;
     }
 }
@@ -1278,17 +1340,15 @@ int main(int argc, char **argv) {
             positional[npositional++] = argv[i];
         }
     }
-    /* An explicit flag always wins for this run.
+    /* An explicit flag always wins, but only for this run.
        Absent either flag, this falls back to the persisted preference from
        settings.cfg (0 if there is no settings file yet).
-       This persists the value only when a flag actually changed it.
-       Otherwise, this run's resolved value already matches what is on disk,
-       and there is nothing to update. */
+       A one-off --console/--no-console must not silently rewrite settings.cfg:
+       that file only reflects a choice the user made to persist, not whatever
+       flag happened to be on the command line this time. There is currently no
+       in-app toggle for this value; changing it for good means editing
+       settings.cfg's show_console line directly. */
     show_console = saw_console_flag ? 1 : (saw_no_console_flag ? 0 : settings.show_console);
-    if (saw_console_flag || saw_no_console_flag) {
-        settings.show_console = show_console;
-        save_settings(&settings, settings_config_path);
-    }
 
     if (show_console) {
         /* This app is built as a GUI-subsystem executable (see CMakeLists.txt's
@@ -1451,6 +1511,9 @@ int main(int argc, char **argv) {
     int running = 1;
     int cpu_faulted_reported = 0;
 
+    ir_link_t ir_link;
+    ir_link_init(&ir_link);
+
     SDL_SysWMinfo wm_info;
     SDL_VERSION(&wm_info.version);
     if (!SDL_GetWindowWMInfo(window, &wm_info)) {
@@ -1551,6 +1614,7 @@ int main(int argc, char **argv) {
     menu_ctx.settings = &settings;
     menu_ctx.settings_path = settings_config_path;
     menu_ctx.exe_dir = exe_dir;
+    menu_ctx.ir_link = &ir_link;
     SDL_SetWindowsMessageHook(handle_windows_message, &menu_ctx);
 
     uint32_t pixels[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
@@ -1650,6 +1714,21 @@ int main(int argc, char **argv) {
             write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame, bios_path, app_path);
         }
 
+        /* Drains this frame's freshly-produced TX edges onto the pipe, and pushes any RX edges that arrived
+           from the other instance since last frame - in time for next frame's psemu_run to process them via
+           ir_tick. Same one-frame (~31ms) granularity every other input path (buttons) already accepts. See
+           ir_link.h. ir_link's own status can change here with no menu action involved (a peer connects, or
+           the link errors out), so the title is refreshed whenever the status text actually changes. */
+        {
+            const char *status_before = ir_link_status_text(&ir_link);
+            char status_before_copy[sizeof(((ir_link_t *)0)->status)];
+            snprintf(status_before_copy, sizeof(status_before_copy), "%s", status_before);
+            ir_link_pump(&ir_link, ps);
+            if (strcmp(status_before_copy, ir_link_status_text(&ir_link)) != 0) {
+                ir_link_refresh_title(&menu_ctx);
+            }
+        }
+
         if (audio_dev != 0) {
             uint32_t n = psemu_get_audio_samples(ps, audio_buf, sizeof(audio_buf) / sizeof(audio_buf[0]));
             if (n > 0) {
@@ -1666,6 +1745,8 @@ int main(int argc, char **argv) {
         frame++;
     }
 
+    ir_link_disconnect(&ir_link);
+
     if (audio_dev != 0) {
         SDL_CloseAudioDevice(audio_dev);
     }
@@ -1675,9 +1756,9 @@ int main(int argc, char **argv) {
     SDL_Quit();
 
     /* No settings save here.
-       bios_path, hardware_id, and show_console are each already persisted
-       immediately at the point they last changed (see the settings-file
-       comment above).
+       bios_path and hardware_id are each already persisted immediately at the
+       point they last changed (see the settings-file comment above).
+       show_console is never written by this app at all - see the same comment.
        Nothing is left to flush on exit. */
     psemu_destroy(ps);
     free(bios);

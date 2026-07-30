@@ -26,8 +26,26 @@ pokketstation.exe .\bios.bin .\samplememcard.mcr
 - Press **F12** at any time to write a diagnostic report to a log file. See [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
 - The PocketStation's hardware ID (`F_SN`, which sets Final Fantasy VIII Chocobo World's rank) defaults to the best rank. View or edit it from **Tools > Edit Hardware ID...**; see [hardware-notes.md](hardware-notes.md) for the format. This setting, and every other setting above (remembered BIOS path, hardware ID, color scheme, sprite-shadow state, key bindings, `--console`/`--no-console` preference), persists across relaunches in `settings.cfg` next to the executable. Each setting is written the moment it changes.
 - **Help > About pokketstation...** shows the running version and a link back to this repo.
+- **IR Link** connects two running copies of this app over IR, the same way two physical PocketStations would be held up to each other for local multiplayer. See [IR Link](#ir-link) below.
 
 Single-app loads (`.pss`/`.mcs`) boot through the real BIOS menu the same way a full memory card does. See [Reaching a single loaded app](../README.md#reaching-a-single-loaded-app) in the main README for the button sequence.
+
+## IR Link
+
+Two separate running instances of `pokketstation.exe`, **on the same Windows machine**, can exchange real IR signals with each other - each instance is a completely independent emulator (its own window, its own loaded BIOS/app, its own save state), linked only over IR, the same way two real PocketStation units would be.
+
+**To connect two instances:**
+1. Launch `pokketstation.exe` twice (for example, run it once, then double-click it again, or launch a second copy from a terminal). You now have two separate windows.
+2. In one window: **IR Link > Host Session**. The title bar shows "IR Link: Waiting for peer...".
+3. In the other window: **IR Link > Connect**. Once the two find each other (usually instant), both title bars show "IR Link: Connected".
+4. Use each instance normally from there - whatever the loaded app does with its IR port now reaches the other instance.
+5. **IR Link > Disconnect** ends the session from either side at any time.
+
+**Things to know:**
+- There is no prompt for a pipe/session name in this version - Host/Connect always use the same well-known local connection, so only one linked pair can be active on a given machine at a time.
+- This only works between two instances on **one machine**. There is no network/remote play support.
+- Loading a different BIOS or app/card, pressing **Reset**, or using **Quick Load State** all drop an active IR Link automatically (each of those already resets the emulator's own IR state, so a link left connected across one would silently fall out of sync with the other instance). Reconnect via **IR Link > Connect**/**Host Session** afterward if you still need it.
+- IR timing (particularly how aggressively this emulator filters a noisy/glitchy signal, and exactly what a receiving app reads back mid-transfer) is inferred, not confirmed against real hardware - there is no known app in this project's own test corpus that has been traced actually using IR. An app that behaves differently over IR Link than it does on real hardware is worth reporting. See [hardware-notes.md](hardware-notes.md#ir--ir-link) for the technical detail.
 
 ## Building
 

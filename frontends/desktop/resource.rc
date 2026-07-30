@@ -25,6 +25,12 @@ BEGIN
         MENUITEM "Edit &Hardware ID...", ID_TOOLS_EDIT_HWID
         MENUITEM "&Remap Controls...", ID_TOOLS_REMAP_CONTROLS
     END
+    POPUP "&IR Link"
+    BEGIN
+        MENUITEM "&Host Session", ID_IR_HOST
+        MENUITEM "&Connect", ID_IR_CONNECT
+        MENUITEM "&Disconnect", ID_IR_DISCONNECT
+    END
     POPUP "&View"
     BEGIN
         MENUITEM "&Native Size (1x)", ID_VIEW_NATIVE_SIZE
