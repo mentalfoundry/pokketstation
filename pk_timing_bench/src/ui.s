@@ -139,6 +139,8 @@ clr_loop:
     beq rs_timer_screen
     cmp r4, #7
     beq rs_irq_screen
+    cmp r4, #8
+    beq rs_rearm_screen
 
     sub r5, r4, #1
     lsl r5, r5, #3
@@ -198,6 +200,21 @@ rs_irq_screen:
 
     ldr r5, =WRAM_IRQ_WITH_IRQ
     ldr r0, [r5]
+    mov r1, #17
+    mov r2, #0
+    bl draw_hex_u32
+    b rs_done
+
+rs_rearm_screen:
+    @ Experiment 8: Timer0 stopwatch ticks across EXP8_INTERRUPTS re-armed
+    @ Timer1 periods (top), and the period each one was armed with (bottom).
+    ldr r5, =WRAM_REARM_DELTA
+    ldr r0, [r5]
+    mov r1, #9
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r0, =EXP8_TIMER_PERIOD
     mov r1, #17
     mov r2, #0
     bl draw_hex_u32
@@ -427,7 +444,7 @@ screen_next:
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
     add r1, r1, #1
-    cmp r1, #7
+    cmp r1, #8
     ble sn_store
     mov r1, #1
 sn_store:
@@ -443,7 +460,7 @@ screen_prev:
     sub r1, r1, #1
     cmp r1, #1
     bge sp_store
-    mov r1, #7
+    mov r1, #8
 sp_store:
     str r1, [r0]
     pop {r0, r1, lr}

@@ -175,6 +175,16 @@ int main(int argc, char **argv) {
     int last_rx_level = -1;
     uint32_t prev_t2 = 0;
     int have_prev_t2 = 0;
+    /* Transmit-side analysis. Each time A's IRDA_DATA changes, this records the state of all three of A's
+       timers, plus the emulated real time since the previous change. That identifies which timer actually
+       paces the transmit callback, and what its effective period is, rather than assuming it. */
+#define TX_MAX 14
+    struct {
+        uint64_t at_ref;
+        uint32_t period[3], count[3], control[3];
+    } tx_ev[TX_MAX];
+    int tx_n = 0;
+    uint32_t last_a_data = 0xFFFFFFFFu;
 #define MEAS_MAX 24
     uint32_t meas[MEAS_MAX];
     int meas_n = 0;
@@ -247,6 +257,30 @@ int main(int argc, char **argv) {
             psemu_ir_trace_enabled = (trace & 2) != 0;
             psemu_run(b, slice);
             psemu_ir_trace_enabled = 0;
+            if (a->ir.data != last_a_data) {
+                if (tx_n < TX_MAX) {
+                    int t;
+                    tx_ev[tx_n].at_ref = a->ir.clock_cycles;
+                    for (t = 0; t < 3; t++) {
+                        tx_ev[tx_n].period[t] = a->timer.timers[t].period;
+                        tx_ev[tx_n].count[t] = a->timer.timers[t].count;
+                        tx_ev[tx_n].control[t] = a->timer.timers[t].control;
+                    }
+                    tx_n++;
+                    /* Dump A's recent PC trace right after a mid-burst transmit write. Counting the
+                       instructions back to the exception vector gives the instruction count for the
+                       expiry-to-LED-write span, which is what turns a cycle shortfall into a
+                       cycles-per-instruction figure. */
+                    if (tx_n == 8) {
+                        FILE *tr = fopen("ir_probe_A_tx_trace.log", "w");
+                        if (tr) {
+                            psemu_write_crash_report(a, tr);
+                            fclose(tr);
+                        }
+                    }
+                }
+                last_a_data = a->ir.data;
+            }
             if (b->ir.rx_level != last_rx_level) {
                 uint32_t t2 = b->timer.timers[2].count;
                 if (have_prev_t2 && meas_n < MEAS_MAX) {
@@ -311,7 +345,7 @@ int main(int argc, char **argv) {
         FILE *dump = fopen("ir_code_dump.bin", "wb");
         if (dump) {
             uint32_t addr;
-            for (addr = 0x02004000u; addr < 0x0200E800u; addr++) {
+            for (addr = 0x02000000u; addr < 0x0200E800u; addr++) {
                 uint8_t byte = psemu_bus_read8(&b->bus, addr);
                 fwrite(&byte, 1, 1, dump);
             }
@@ -319,6 +353,21 @@ int main(int argc, char **argv) {
             printf("wrote ir_code_dump.bin (0x02004000-0x0200E800)\n");
         }
     }
+    {
+        int k, t;
+        printf("\nA transmit-side timer state at each IRDA_DATA change:\n");
+        printf("  %-10s %-8s   %-22s %-22s %-22s\n", "t(ref)", "d(ref)", "timer0 per/cnt/ctl",
+            "timer1 per/cnt/ctl", "timer2 per/cnt/ctl");
+        for (k = 0; k < tx_n; k++) {
+            printf("  %-10llu %-8lld", (unsigned long long)tx_ev[k].at_ref,
+                k ? (long long)(tx_ev[k].at_ref - tx_ev[k - 1].at_ref) : 0);
+            for (t = 0; t < 3; t++) {
+                printf("   %6u/%6u/%X", tx_ev[k].period[t], tx_ev[k].count[t], tx_ev[k].control[t]);
+            }
+            printf("\n");
+        }
+    }
+
     printf("\nA clk=%u Hz  B clk=%u Hz  (PSEMU_ASSUMED_CPU_HZ reference = %u)\n", clk_current_hz(&a->clk),
         clk_current_hz(&b->clk), (unsigned)PSEMU_ASSUMED_CPU_HZ);
     {

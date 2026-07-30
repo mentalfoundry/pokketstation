@@ -158,6 +158,17 @@ int main(int argc, char **argv) {
     printf("screen7 irq results @0x298:\n");
     printf("  baseline (interrupts masked) 0x%08X\n", psemu_bus_read32(&ps->bus, 0x298u));
     printf("  with one timer IRQ live      0x%08X\n", psemu_bus_read32(&ps->bus, 0x29Cu));
+    /* Experiment 8 (screen 8): Timer0 ticks across 64 re-armed Timer1 periods. */
+    {
+        uint32_t delta = psemu_bus_read32(&ps->bus, 0x2A0u);
+        printf("screen8 re-arm latency @0x2A0:\n");
+        printf("  Timer0 delta over 64 periods 0x%08X\n", delta);
+        if (delta) {
+            double ticks = (double)delta * 32.0 / 64.0 / 2.0;
+            printf("  -> effective period %.1f Timer1 ticks (armed 1016, so 1017 without latency)\n", ticks);
+            printf("  -> expiry-to-re-arm latency %.1f ticks\n", ticks - 1017.0);
+        }
+    }
     printf("screen:\n");
     print_framebuffer(ps);
 

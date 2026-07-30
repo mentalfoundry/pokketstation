@@ -12,6 +12,7 @@
     .global run_experiment_4_bios_thumb
     .global run_experiment_6_timer_period
     .global run_experiment_7_irq_latency
+    .global run_experiment_8_rearm_latency
 
 @ Experiment 1: sanity check - ARM vs Thumb opcode-fetch cost (~2:1 expected)
 run_experiment_1_sanity:
@@ -222,6 +223,105 @@ exp7_unreg_ret:
 
     ldr r1, =WRAM_IRQ_WITH_IRQ
     str r8, [r1]
+
+    pop {r4, r5, r6, r7, r8, lr}
+    bx lr
+    .ltorg
+
+@ Experiment 8: how long does a timer expiry take to reach its handler's re-arm?
+@
+@ Screens 6 and 7 each ruled out a candidate for the ~184 ticks a real IR-using
+@ app compensates for. Screen 6 showed the timer block itself is exact to within
+@ 1 tick per period. Screen 7 showed a bare interrupt round trip costs about the
+@ same on hardware as in this emulator. Neither explained the shortfall.
+@
+@ Tracing that app showed why: its transmit handler RE-ARMS the timer on every
+@ interrupt instead of letting it free-run. That changes what latency does. A
+@ free-running timer keeps its period no matter how late the handler runs, so
+@ latency cancels. A re-armed timer does not start its next period until the
+@ handler reaches the re-arm, so latency is added to every single period.
+@
+@ This measures that directly. Timer1 is armed with the same 1016 and /2 divisor
+@ the real app uses, its handler re-arms it with the same value, and Timer0 times
+@ how long 64 of those periods really take.
+@
+@   effective period = Timer0 delta * 32 / 64 raw cycles, then / 2 for Timer1 ticks
+@   latency          = effective period - (1016 + 1)
+@
+@ This emulator produces about 26 ticks of latency. The real app's own arithmetic
+@ implies about 184. See ../README.md's "Screen 8".
+run_experiment_8_rearm_latency:
+    push {r4, r5, r6, r7, r8, lr}
+
+    ldr r0, =WRAM_REARM_COUNTER        @ counter starts at zero
+    mov r1, #0
+    str r1, [r0]
+
+    ldr r4, =TIMER1_BASE               @ save Timer1 before borrowing it
+    ldr r5, [r4]
+    ldr r6, [r4, #4]
+    ldr r7, [r4, #8]
+
+    ldr r0, =irq_rearm_handler         @ install the handler before un-masking
+    adr lr, exp8_reg_ret
+    ldr r1, =register_irq_handler
+    bx r1
+exp8_reg_ret:
+
+    mov r0, #0                         @ arm Timer1 exactly as the real app does
+    str r0, [r4, #8]
+    ldr r0, =EXP8_TIMER_PERIOD
+    str r0, [r4]
+    str r0, [r4, #4]
+    mov r0, #EXP8_TIMER_CTRL
+    str r0, [r4, #8]
+
+    ldr r0, =INTC_ENABLE               @ un-mask only Timer1
+    mov r1, #INT_TIMER1_BIT
+    str r1, [r0]
+
+    ldr r8, =WRAM_REARM_COUNTER
+exp8_sync:                             @ start on an interrupt boundary
+    ldr r0, [r8]
+    cmp r0, #0
+    beq exp8_sync
+
+    mov r0, #0                         @ restart the count, then take the stopwatch
+    str r0, [r8]
+    ldr r2, =TIMER0_COUNT
+    ldr r3, [r2]
+
+exp8_wait:
+    ldr r0, [r8]
+    cmp r0, #EXP8_INTERRUPTS
+    blo exp8_wait
+    ldr r0, [r2]
+    sub r0, r3, r0                     @ Timer0 counts down, so before minus after
+    mov r0, r0, lsl #16                @ 16-bit mask; Timer0 wraps at 0x10000
+    mov r0, r0, lsr #16
+
+    @ Store the result NOW, before anything else runs. register_irq_handler
+    @ returns through "pop {r3}; bx r3", so it clobbers r3 - stashing the delta
+    @ in a scratch register across the unregister call below silently replaced
+    @ it with a return address the first time this was written.
+    ldr r1, =WRAM_REARM_DELTA
+    str r0, [r1]
+
+    ldr r0, =INTC_MASK                 @ re-mask every source at once
+    mvn r1, #0
+    str r1, [r0]
+
+    mov r0, #0                         @ unregister our handler again
+    adr lr, exp8_unreg_ret
+    ldr r1, =register_irq_handler
+    bx r1
+exp8_unreg_ret:
+
+    mov r0, #0                         @ restore Timer1 as it was found
+    str r0, [r4, #8]
+    str r5, [r4]
+    str r6, [r4, #4]
+    str r7, [r4, #8]
 
     pop {r4, r5, r6, r7, r8, lr}
     bx lr

@@ -44,11 +44,11 @@ To change the icon: edit or replace `assets/card_icon.bmp`, then rebuild. The fi
 
 ## Controls
 
-This app runs all seven measurements once, at startup. After that, you page through seven result screens by hand:
+This app runs all eight measurements once, at startup. After that, you page through eight result screens by hand:
 
 - **RIGHT**: next screen
 - **LEFT**: previous screen
-- Screens wrap around (7 → RIGHT → 1, 1 → LEFT → 7)
+- Screens wrap around (8 → RIGHT → 1, 1 → LEFT → 8)
 - This app does not use ACTION, UP, or DOWN.
 
 ## What each screen shows
@@ -120,6 +120,30 @@ So if real hardware comes back near `0x31A8`, the emulator's interrupt path is r
 `SWI 1`'s contract is inferred from that disassembly, not documented: `r0` is the callback slot, `r1` is the handler address, and 0 unregisters. That is worth knowing if screen 7 ever misbehaves on a unit. Experiment 7 re-masks every interrupt source and restores Timer1 before returning, so nothing after it runs with an interrupt still live.
 
 An earlier version gated this behind holding UP at power-on, as a hedge against it hanging a unit. That was removed. The gate depended on reading a live button *level* out of `INTC_STATUS` at startup. Real hardware does that, but this emulator only approximates it, so the gate behaved differently in the two. Holding a direction button through launch also disturbs the BIOS's own menu navigation. With both failure modes above actually fixed rather than hidden behind a switch, the hedge bought nothing.
+
+**Screen 8: how long does a timer expiry take to reach its handler's re-arm?** Top is the Timer0 stopwatch total across **64** Timer1 periods. Bottom is the period each one was armed with, `0x3F8` = 1016.
+
+Screens 6 and 7 each removed a candidate for the ~184 ticks a real IR-using app compensates for, and neither explained it. Tracing that app showed what the earlier screens missed: its transmit handler **re-arms the timer on every interrupt** rather than letting it free-run.
+
+That distinction is the whole point of this screen. A free-running timer keeps its period however late the handler runs, so interrupt latency cancels out and never shows up in the pulse. A re-armed timer does not begin its next period until the handler reaches the re-arm, so the latency is added to *every* period. That is why the app arms 1016 and expects 1200: it budgets 184 ticks for the trip from expiry to re-arm.
+
+Timer1 is armed here with the same 1016 and the same `/2` divisor the real app uses, and its handler re-arms it with the same value.
+
+**Reading it.** With `D` = the top row:
+
+```
+effective period (Timer1 ticks) = D * 32 / 64 / 2
+expiry-to-re-arm latency        = effective period - 1017
+```
+
+(1017, not 1016, because a timer armed with P runs P+1 ticks. See screen 6.)
+
+| | top row | effective period | latency |
+|---|---|---|---|
+| This emulator | `0x1060` | 1048 | 31 ticks |
+| Real hardware, IF the app's own 184-tick budget is this latency | ~`0x12C4` | ~1201 | ~184 ticks |
+
+A result near `0x12C4` confirms the emulator's interrupt path reaches the handler far too quickly, and would account for the whole remaining IR shortfall. A result near `0x1060` means the latency is not where the missing time goes either, and the 184 is something else again.
 
 ### Reading the hex digits
 

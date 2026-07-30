@@ -25,7 +25,7 @@
 @ CONTINUE or EXIT - enabling usrs to quit gracefully (it shows
 @ its own bespoke continue/exit choice before actually departing,
 @ rather than exiting unconditionally on a hold).
-.equ SCREEN_EXIT_PROMPT,        8
+.equ SCREEN_EXIT_PROMPT,        9
 @ 0 = CONTINUE selected, 1 = EXIT selected. Defaults to CONTINUE when the
 @ prompt first appears, matching the real reference app.
 .equ WRAM_EXIT_PROMPT_SELECTION, 0x268
@@ -49,6 +49,10 @@
 @ with all interrupts masked and once with a single timer interrupt live.
 .equ WRAM_IRQ_BASELINE,       0x298
 .equ WRAM_IRQ_WITH_IRQ,       0x29C
+
+@ Screen 8 (experiment 8) results, and the counter its handler increments.
+.equ WRAM_REARM_DELTA,        0x2A0
+.equ WRAM_REARM_COUNTER,      0x2A4
 
 .equ TIMER0_BASE,   0x0A800000
 .equ TIMER0_PERIOD, TIMER0_BASE + 0x0
@@ -100,6 +104,19 @@
 .equ EXP7_TIMER_CTRL,   0x5      @ divisor bits 1 (= /32) | enable
 @ Raw cycles between Timer1 interrupts, for the screen 7 arithmetic in README.md.
 .equ EXP7_IRQ_RAW_CYCLES, 3200
+
+@ Experiment 8: how long from a timer expiring to its handler re-arming it.
+@ 1016 and the /2 divisor are not arbitrary. They are exactly what a real
+@ IR-using app arms Timer2 with while transmitting, and that app re-arms the
+@ timer inside the handler on every interrupt rather than letting it free-run.
+@ A re-armed timer does NOT hide interrupt latency the way a free-running one
+@ does: with a free-running timer the latency is the same on every period and
+@ cancels out, but re-arming adds it to every period. The app's own nominal
+@ unit is 1200 ticks and it arms 1016, so it expects 184 ticks of latency.
+@ 64 interrupts keeps the Timer0 stopwatch delta below its 16-bit wrap.
+.equ EXP8_TIMER_PERIOD, 1016
+.equ EXP8_TIMER_CTRL,   0x4      @ divisor bits 0 (= /2) | enable
+.equ EXP8_INTERRUPTS,   64
 
 .equ CLK_MODE_ADDR, 0x0B000000
 .equ LCD_MODE_ADDR, 0x0D000000

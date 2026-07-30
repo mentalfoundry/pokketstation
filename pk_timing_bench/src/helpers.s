@@ -17,6 +17,7 @@
     .global measure_bios_thumb_call_loop_wram
     .global measure_timer_periods
     .global irq_ack_handler
+    .global irq_rearm_handler
 
 memcpy_words:            @ r0=dst, r1=src, r2=count(words)
     push {r3, lr}
@@ -266,5 +267,31 @@ irq_ack_handler:
     ldr r0, =INTC_BASE
     ldr r1, [r0]                      @ HOLD: everything currently asserted
     str r1, [r0, #0x10]               @ acknowledge (+0x10) clears hold+status
+    pop {r0, r1, pc}
+    .ltorg
+
+@ IRQ handler for experiment 8. It re-arms Timer1 with the same period it was
+@ given, then counts the interrupt.
+@
+@ Re-arming inside the handler is the whole point. It copies what a real
+@ IR-using app does on every one of its transmit interrupts, and it is what
+@ makes the expiry-to-re-arm latency observable: the next period does not start
+@ until this handler reaches the re-arm, so any latency before that point adds
+@ to the measured period instead of cancelling out.
+irq_rearm_handler:
+    push {r0, r1, lr}
+    ldr r0, =INTC_BASE
+    ldr r1, [r0]
+    str r1, [r0, #0x10]               @ acknowledge everything pending
+
+    ldr r0, =TIMER1_BASE              @ re-arm with the same period
+    ldr r1, =EXP8_TIMER_PERIOD
+    str r1, [r0]
+    str r1, [r0, #4]
+
+    ldr r0, =WRAM_REARM_COUNTER
+    ldr r1, [r0]
+    add r1, r1, #1
+    str r1, [r0]
     pop {r0, r1, pc}
     .ltorg

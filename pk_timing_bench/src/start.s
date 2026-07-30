@@ -160,6 +160,15 @@ clk_wait:
     bl draw_pixel
     .ltorg
 
+    @ Experiment 8 (screen 8): expiry-to-re-arm latency. Like experiment 7 it
+    @ un-masks one timer interrupt, registers a handler first, and re-masks
+    @ everything and restores Timer1 before it returns. See experiments.s.
+    bl run_experiment_8_rearm_latency
+    mov r0, #10
+    mov r1, #0
+    bl draw_pixel
+    .ltorg
+
     @ --- init UI state ---
     ldr r0, =WRAM_SCREEN_INDEX
     mov r1, #1
