@@ -9,3 +9,11 @@ target_link_libraries(frame_audio_probe PRIVATE psemu)
 add_executable(date_screen_probe date_screen_probe.c)
 target_include_directories(date_screen_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(date_screen_probe PRIVATE psemu)
+
+add_executable(ir_probe ir_probe.c)
+target_include_directories(ir_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(ir_probe PRIVATE psemu)
+
+add_executable(bench_probe bench_probe.c)
+target_include_directories(bench_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(bench_probe PRIVATE psemu)
