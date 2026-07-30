@@ -18,6 +18,11 @@
 @ a real reference app's own real-hardware feel closely enough.
 @ Not exact - adjust if it feels too short/long in real interactive use.
 .equ FIRE_HOLD_THRESHOLD,     75000
+@ Upper bound on the wait for Action to be released before this app departs
+@ back to the system (see ui.s's pb_prompt_confirm_exit). A real release ends
+@ that wait long before this, so this only exists so a stuck contact cannot
+@ spin forever - recovering from that would need the physical reset button.
+.equ EXIT_RELEASE_TIMEOUT,    2000000
 @ Screen index used for the continue/exit prompt (see ui.s's poll_buttons
 @ and redraw_screen) - distinct from the 5 normal result screens and the
 @ screen 5 diagnostic screen. Reaching FIRE_HOLD_THRESHOLD switches to

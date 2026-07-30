@@ -155,6 +155,13 @@ A "confirmed equal" verdict looks like this: the two numbers sit within a few pe
 
 ## Real-hardware findings
 
+**Departing with Action still held relaunched the app.** Holding Action opens this app's continue/exit prompt, and EXIT is confirmed on the Action *press* edge. The departure sequence then ran while the button was still physically down. A press lasts far longer than the departure takes, so control returned to the system with Action held, the system's own browse screen read that as a fresh press, and it launched this app again immediately.
+
+Fixed by waiting for the release before departing, then acknowledging the button sources so no latched HOLD survives either. `INT_INPUT` reports a live button level on real hardware, which is what lets that wait terminate; this app's own hold-to-open gesture already depends on the same property, since it counts 75000 consecutive polls with Action held. The wait is bounded so a stuck contact cannot spin forever, since recovering from that would need the physical reset button.
+
+This emulator latches button STATUS on the press edge rather than tracking a live level, so it cannot reproduce the bug or verify the fix. The validated departure sequence itself is unchanged; the wait only precedes it.
+
+
 **Two header bytes this app was leaving at zero, that every real app sets.** Both fell inside zero-fill regions in `header.s` and were assumed reserved:
 
 - **`0x03` is the block count.** It holds how many 8KB blocks the save occupies. Every real app checked sets it correctly. The reference dumps on hand cover 1-, 2-, 4-, 7- and 13-block saves, and each one declares its own true count. This app declared 0.

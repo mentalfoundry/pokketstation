@@ -370,7 +370,42 @@ pb_prompt_check_action:
     mov r1, #1
     b pb_store
 pb_prompt_confirm_exit:
-    @ EXIT confirmed. First, restore the stack to where real dispatch left
+    @ EXIT is confirmed on the Action PRESS edge, so at this point the button is
+    @ still physically held down. Departing immediately hands control back to the
+    @ system with a held Action, and the system's own browse screen reads that as
+    @ a fresh press and relaunches this app at once.
+    @
+    @ Wait for the release first. INT_INPUT reports a live button level on real
+    @ hardware, which is what makes this terminate: this app's own hold-to-open
+    @ gesture already depends on that, since FIRE_HOLD_THRESHOLD counts 75000
+    @ consecutive polls with Action held and only a live level can accumulate
+    @ that. See docs/hardware-notes.md, "Buttons".
+    @ This emulator latches button STATUS on the press edge instead of tracking
+    @ the live level, so the loop falls straight through here. The fix cannot be
+    @ verified in the emulator; it only changes behavior on a real unit.
+    @
+    @ The wait is bounded. A stuck or failing contact would otherwise spin here
+    @ forever, and recovering from that needs the physical reset button. The
+    @ bound is generous enough that no human press reaches it, so a normal
+    @ release always wins the race and the timeout never fires in practice.
+    ldr r6, =INTC_STATUS
+    ldr r5, =EXIT_RELEASE_TIMEOUT
+pb_exit_wait_release:
+    ldr r4, [r6]
+    tst r4, #0x01
+    beq pb_exit_released
+    subs r5, r5, #1
+    bne pb_exit_wait_release
+pb_exit_released:
+
+    @ Then clear every latched button source, so no HOLD bit left over from this
+    @ press or from the earlier hold survives into the system's own browse screen.
+    @ Acknowledge (+0x10) clears both HOLD and STATUS for the bits written.
+    ldr r6, =INTC_BASE
+    mov r4, #0x1F                @ buttons are INTC bits 0-4
+    str r4, [r6, #0x10]
+
+    @ Now restore the stack to where real dispatch left
     @ it (User SP=0x800, per docs/app-notes.md) before departing - this
     @ poll_buttons call pushed {r4,r5,r6,lr} on entry and was never going
     @ to pop them (SVC #9 doesn't return), leaving SP at 0x7F0 instead of
