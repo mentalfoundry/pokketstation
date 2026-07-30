@@ -427,7 +427,7 @@ void flash_ctrl_write8(flash_t *flash, uint32_t offset, uint8_t value) {
         return;
     }
     if (offset >= FLASH_EXTRA_OFFSET && offset < FLASH_EXTRA_OFFSET + FLASH_EXTRA_SPAN) {
-        return; /* unknown/reserved F_EXTRA byte - ignored */
+        return; /* unknown/reserved F_EXTRA byte */
     }
     if (offset >= 0x140u) {
         return; /* gap between F_BANK_VAL and F_EXTRA - unmapped */
