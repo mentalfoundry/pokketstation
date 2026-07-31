@@ -6,7 +6,7 @@ This is an open-source Sony PocketStation emulator core, written in portable C. 
 
 This project is stable, broadly tested by the community, and as cycle-accurate as possible. If you have requests for missing features, please [raise an issue](https://github.com/mentalfoundry/pokketstation/issues).
 
-IR now works locally! Be sure to set the recieving side into recieving mode first within your apps. The send side does not appear to be very forgiving (like in the real world). Tested against my favorite app - you're mileage may vary.
+IR now works locally! Be sure to set the recieving side into recieving mode first within your apps. The send side does not appear to be very forgiving (like in the real world). Tested against my favorite app - your mileage may vary.
 
 Do not rely on save state compatibility between versions just yet. Apologies but there are still likely a few more iterations of the internal registries to go.
 
