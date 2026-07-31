@@ -34,7 +34,7 @@
    This is deliberately not wired up to git or CMake automatically.
    This string is the one spot to edit for a new release.
    A source zip build has no git available, so an automatic value could silently drift. */
-#define POKKETSTATION_VERSION "v1.6.0"
+#define POKKETSTATION_VERSION "v1.7.0"
 
 /* Returns the directory the running executable lives in.
    This derives the directory from argv[0], not an OS-specific "current module path" API.
@@ -75,14 +75,25 @@ static uint32_t fnv1a_hash(const uint8_t *data, size_t size) {
     return hash;
 }
 
-/* Quick Save/Load State use one file per loaded app/card.
-   The file name comes from a hash of the app's content, not from its file path.
-   Switching between apps through File > Open App/Card... therefore never collides.
-   Each app also keeps its own most-recent quicksave automatically.
-   This computes the name on demand rather than caching it, because the loaded app can change mid-session. */
-static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, const uint8_t *app, size_t app_size) {
-    char name[64];
-    snprintf(name, sizeof(name), "pokketstation_quicksave_%08x.dat", (unsigned)fnv1a_hash(app, app_size));
+/* Save State/Load State use one file per loaded app/card.
+   The file name is the app/card's own file name plus extension, so a user
+   browsing the exe's folder can tell at a glance which quicksave goes with
+   which app/card. It is derived from app_path rather than cached, because
+   the loaded app can change mid-session.
+   Two different apps/cards that happen to share a file name (e.g. loaded
+   from different folders) will share a quicksave file; the app_size/app_hash
+   check in the header (below) still refuses to load a mismatched one, so this
+   can only cost you a quicksave, never load the wrong state. */
+static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, const char *app_path) {
+    const char *base = app_path;
+    const char *slash;
+    char name[1024];
+    for (slash = app_path; *slash != '\0'; slash++) {
+        if (*slash == '/' || *slash == '\\') {
+            base = slash + 1;
+        }
+    }
+    snprintf(name, sizeof(name), "%s.sav", base);
     join_path(out, out_size, exe_dir, name);
 }
 
@@ -433,8 +444,8 @@ typedef struct {
 } button_binding_t;
 
 /* Number of rows in Tools > Remap Controls: Up, Down, Left, Right, Fire,
-   plus 4 non-button hotkeys - Create Debug Log, Reset, Quick Save State,
-   Quick Load State.
+   plus 4 non-button hotkeys - Create Debug Log, Reset, Save State,
+   Load State.
    This matches IDD_REMAP_CONTROLS' row count.
    This also matches the IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE ranges in
    resource.h (9 consecutive IDs each). */
@@ -484,8 +495,8 @@ static void format_key_binding_name(char *out, size_t out_size, SDL_Scancode sca
 
 /* Inverse of resolve_key_binding.
    `bindings` must hold exactly REMAP_BINDING_COUNT entries, in fixed
-   Up/Down/Left/Right/Fire/Create-Debug-Log/Reset/Quick-Save-State/
-   Quick-Load-State order (see button_scancodes in main). */
+   Up/Down/Left/Right/Fire/Create-Debug-Log/Reset/Save-State/
+   Load-State order (see button_scancodes in main). */
 static void save_key_bindings(app_settings_t *settings, const button_binding_t bindings[REMAP_BINDING_COUNT]) {
     format_key_binding_name(settings->key_up, sizeof(settings->key_up), bindings[0].scancode);
     format_key_binding_name(settings->key_down, sizeof(settings->key_down), bindings[1].scancode);
@@ -541,25 +552,35 @@ typedef struct {
     uint32_t *bg_rgba;
     int *show_shadows;
     uint32_t *shadow_rgba;
-    button_binding_t *button_scancodes; /* fixed REMAP_BINDING_COUNT-element Up/Down/Left/Right/Fire/Debug-Log/Reset/Quick-Save/Quick-Load array, see main */
+    button_binding_t *button_scancodes; /* fixed REMAP_BINDING_COUNT-element Up/Down/Left/Right/Fire/Debug-Log/Reset/Save-State/Load-State array, see main */
     app_settings_t *settings;
     const char *settings_path;
     const char *exe_dir;
     ir_link_t *ir_link;
 } menu_context_t;
 
-/* Shows IR Link's live status as a window-title suffix, for example "pokketstation - IR Link: Connected".
-   It shows the plain title while the link is idle.
+/* Shows IR Link's live status as the entire window title, e.g. "IR - Connected", replacing the plain
+   "pokketstation" title while the link is active. Kept intentionally short: the default window is small
+   enough that a longer title just gets clipped by Windows, and the status is the one thing worth seeing
+   at a glance.
+   Hosting and connecting get their own fixed short strings rather than ir_link_status_text's wording
+   verbatim, since that text is shared with ir_link_selftest.c/ir_probe's console output and can carry
+   more detail than fits here. Connected and error states pass status_text through as-is: "Connected" is
+   already short (plus live counters if ir_link_diagnostics is on), and an error's detail is worth keeping.
    Every action that can change ir_link's state calls this. Those actions are Host, Connect, and Disconnect
    from the menu.
    main's loop also calls it once per frame. A hosting or connecting link can change status on its own, with no
    menu click: a peer connects, or the link fails. */
 static void ir_link_refresh_title(menu_context_t *ctx) {
     char title[192];
-    if (ir_link_is_active(ctx->ir_link)) {
-        snprintf(title, sizeof(title), "pokketstation - IR Link: %s", ir_link_status_text(ctx->ir_link));
-    } else {
+    if (!ir_link_is_active(ctx->ir_link)) {
         snprintf(title, sizeof(title), "pokketstation");
+    } else if (ctx->ir_link->state == IR_LINK_HOSTING) {
+        snprintf(title, sizeof(title), "IR - Waiting...");
+    } else if (ctx->ir_link->state == IR_LINK_CONNECTING) {
+        snprintf(title, sizeof(title), "IR - Connecting...");
+    } else {
+        snprintf(title, sizeof(title), "IR - %s", ir_link_status_text(ctx->ir_link));
     }
     SetWindowTextA(ctx->hwnd, title);
 }
@@ -663,7 +684,7 @@ static void reset_emulation(menu_context_t *ctx) {
 
 static void quick_save_state(menu_context_t *ctx) {
     char path[1024];
-    get_quicksave_path(path, sizeof(path), ctx->exe_dir, *ctx->app, *ctx->app_size);
+    get_quicksave_path(path, sizeof(path), ctx->exe_dir, ctx->app_path);
 
     size_t state_size = psemu_state_size(ctx->ps);
     size_t total_size = sizeof(quicksave_header_t) + state_size;
@@ -693,7 +714,7 @@ static void quick_save_state(menu_context_t *ctx) {
 
 static void quick_load_state(menu_context_t *ctx) {
     char path[1024];
-    get_quicksave_path(path, sizeof(path), ctx->exe_dir, *ctx->app, *ctx->app_size);
+    get_quicksave_path(path, sizeof(path), ctx->exe_dir, ctx->app_path);
 
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -1593,8 +1614,8 @@ int main(int argc, char **argv) {
        save_key_bindings.
        Not const or static: Tools > Remap Controls... mutates entries in place
        through menu_ctx.button_scancodes, which points at this same array.
-       The trailing 4 entries (Create Debug Log, Reset, Quick Save State,
-       Quick Load State) are not real PocketStation buttons. Their bit is 0,
+       The trailing 4 entries (Create Debug Log, Reset, Save State,
+       Load State) are not real PocketStation buttons. Their bit is 0,
        so the polling loop below harmlessly ORs them into nothing.
        The SDL_KEYDOWN checks further down are what actually use their
        scancodes. Each check triggers its action on a real edge, once per
@@ -1607,8 +1628,8 @@ int main(int argc, char **argv) {
         {resolve_key_binding(settings.key_fire, SDL_SCANCODE_Z), PSEMU_BUTTON_FIRE, "Fire/Action"},
         {resolve_key_binding(settings.key_debug_log, SDL_SCANCODE_F12), 0, "Create Debug Log"},
         {resolve_key_binding(settings.key_reset, SDL_SCANCODE_F8), 0, "Reset"},
-        {resolve_key_binding(settings.key_quick_save, SDL_SCANCODE_F5), 0, "Quick Save State"},
-        {resolve_key_binding(settings.key_quick_load, SDL_SCANCODE_F9), 0, "Quick Load State"},
+        {resolve_key_binding(settings.key_quick_save, SDL_SCANCODE_F5), 0, "Save State"},
+        {resolve_key_binding(settings.key_quick_load, SDL_SCANCODE_F9), 0, "Load State"},
     };
 
     fprintf(stderr, "psemu: press %s at any time to write a diagnostic report to a pokketstation_report_*.log file\n",

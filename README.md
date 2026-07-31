@@ -6,10 +6,14 @@ This is an open-source Sony PocketStation emulator core, written in portable C. 
 
 This project is stable, broadly tested by the community, and as cycle-accurate as possible. If you have requests for missing features, please [raise an issue](https://github.com/mentalfoundry/pokketstation/issues).
 
+IR now works locally! Be sure to set the recieving side into recieving mode first within your apps. The send side does not appear to be very forgiving (like in the real world). Tested against my favorite app - you're mileage may vary.
+
+Do not rely on save state compatibility between versions just yet. Apologies but there are still likely a few more iterations of the internal registries to go.
+
 See [docs/hardware-notes.md](docs/hardware-notes.md) for the technical details.
 
 **Known gaps:**
-- IR communication timing is unverified.
+- IR communication timing is unverified - I only have 1 pocketstation device so this is as good as I can make it without another one. The core is hardware tested behavior while the desktop emulator does the heavy lifting. I will try to procure a second device once the opportunity arises.
 - Per-instruction cycle timing follows the documented memory-access-time table, with one assumed default where the documentation itself gives no answer (see "Memory access timing" in `docs/hardware-notes.md`).
 - A handful of edge cases are deliberately simplified: low-battery detection, `F_BANK_VAL` entries that map multiple physical blocks to the same virtual slot, and the BIOS's pre-remap boot phase.
 

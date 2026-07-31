@@ -36,15 +36,15 @@ Two separate running instances of `pokketstation.exe`, **on the same Windows mac
 
 **To connect two instances:**
 1. Launch `pokketstation.exe` twice (for example, run it once, then double-click it again, or launch a second copy from a terminal). You now have two separate windows.
-2. In one window: **IR Link > Host Session**. The title bar shows "IR Link: Waiting for peer...".
-3. In the other window: **IR Link > Connect**. Once the two find each other (usually instant), both title bars show "IR Link: Connected".
+2. In one window: **IR Link > Host Session**. The title bar shows "IR - Waiting...".
+3. In the other window: **IR Link > Connect**. The title bar shows "IR - Connecting..." until the two find each other (usually instant), then both title bars show "IR - Connected".
 4. Use each instance normally from there. Whatever the loaded app does with its IR port now reaches the other instance.
 5. **IR Link > Disconnect** ends the session from either side at any time.
 
 **Things to know:**
 - This version does not prompt for a pipe or session name. Host and Connect always use the same well-known local connection. Only one linked pair can be active on a machine at a time.
 - This only works between two instances on **one machine**. There is no network/remote play support.
-- Loading a different BIOS or app/card, pressing **Reset**, and using **Quick Load State** each drop an active IR Link automatically. All three reset the emulator's own IR state, so a link left connected across one would fall out of sync with the other instance. Reconnect through **IR Link > Connect** or **Host Session** afterward if you still need it.
+- Loading a different BIOS or app/card, pressing **Reset**, and using **Load State** each drop an active IR Link automatically. All three reset the emulator's own IR state, so a link left connected across one would fall out of sync with the other instance. Reconnect through **IR Link > Connect** or **Host Session** afterward if you still need it.
 - IR timing is inferred, not confirmed against real hardware. Two details in particular are inferred: how strongly this emulator filters a noisy signal, and what a receiving app reads back during a transfer. No app in this project's own test corpus has ever been traced using IR. An app that behaves differently over IR Link than on real hardware is worth reporting. See [hardware-notes.md](hardware-notes.md#ir--ir-link) for the technical detail.
 
 ## Building

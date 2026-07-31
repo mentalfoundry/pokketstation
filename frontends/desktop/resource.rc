@@ -15,8 +15,8 @@ BEGIN
         MENUITEM "Open &App/Card...",   ID_FILE_OPEN_APP
         MENUITEM "&Reset",              ID_FILE_RESET
         MENUITEM SEPARATOR
-        MENUITEM "Quick &Save State",   ID_FILE_QUICK_SAVE
-        MENUITEM "Quick &Load State",   ID_FILE_QUICK_LOAD
+        MENUITEM "&Save State",         ID_FILE_QUICK_SAVE
+        MENUITEM "&Load State",         ID_FILE_QUICK_LOAD
         MENUITEM SEPARATOR
         MENUITEM "E&xit",               ID_FILE_EXIT
     END
@@ -105,7 +105,7 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 107, 62, 50, 14
 END
 
-/* Rows are Up/Down/Left/Right/Fire/Debug Log/Reset/Quick Save/Quick Load,
+/* Rows are Up/Down/Left/Right/Fire/Debug Log/Reset/Save State/Load State,
    matching IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE's fixed +0..+8 order
    in resource.h. The current-key label (e.g. "Up") is filled in
    dynamically at WM_INITDIALOG, not here. */
@@ -142,11 +142,11 @@ BEGIN
     LTEXT           "", IDC_REMAP_LABEL_BASE + 6, 50, 119, 70, 10
     PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 6, 125, 117, 58, 14
 
-    LTEXT           "Quick Save:", -1, 7, 137, 40, 10
+    LTEXT           "Save State:", -1, 7, 137, 40, 10
     LTEXT           "", IDC_REMAP_LABEL_BASE + 7, 50, 137, 70, 10
     PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 7, 125, 135, 58, 14
 
-    LTEXT           "Quick Load:", -1, 7, 155, 40, 10
+    LTEXT           "Load State:", -1, 7, 155, 40, 10
     LTEXT           "", IDC_REMAP_LABEL_BASE + 8, 50, 155, 70, 10
     PUSHBUTTON      "Change...", IDC_REMAP_CHANGE_BASE + 8, 125, 153, 58, 14
 
