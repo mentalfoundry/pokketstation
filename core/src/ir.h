@@ -15,40 +15,41 @@ struct intc;
      IRDA_DATA bit0 LED     Transmit: 0=LED off, 1=LED on. Receive: the demodulated carrier level.
      IRDA_MISC              Unknown/reserved. See ir_write's handling of it below.
 
-   This layout matches psx-spx (the community-maintained PlayStation hardware reference, formerly Martin
-   Korth's "nocash psx-spx", now at psx-spx.consoledev.net), which documents these three registers together at
-   0x0C800000-0x0C80000F.
-   psx-spx itself is community reverse-engineering, not a leaked Sony devkit spec, and it says so: it flags
-   IRDA_MISC as unknown, and marks several details "reportedly" or with a question mark. Two mirrors of it
-   disagree with each other on what MODE bits 1-3 mean.
-   psx-spx.consoledev.net gives STDBY/BGEN/BFLT as above. The older problemkaputt.de mirror instead guesses a
-   plain "disable" bit plus two "IR_SEND_READY"/"IR_RECV_READY" bits, and calls that guess uncertain outright.
+   This layout is corroborated by an independent, publicly available community hardware reference for this
+   register range. That reference documents these three registers together, at 0x0C800000-0x0C80000F.
+   That reference is itself community reverse-engineering, not a leaked Sony devkit spec. It says so itself.
+   It flags IRDA_MISC as unknown. It marks several other details "reportedly" or with a question mark. Two
+   published versions of it disagree with each other on what MODE bits 1-3 mean.
+   One version gives STDBY/BGEN/BFLT as above. The other instead guesses a plain "disable" bit, plus two
+   differently-named bits. It calls that guess uncertain outright.
    STDBY/BGEN/BFLT is what this file already modeled, from disassembling a real app rather than from either
-   mirror. A real app's actual behavior is exactly what settles a disagreement between two secondary sources.
-   Treat the STDBY/BGEN/BFLT names as confirmed by that disassembly, with the psx-spx match as independent
-   corroboration, not the reverse.
+   published version. A real app's actual behavior settles a disagreement between two secondary sources.
+   Treat the STDBY/BGEN/BFLT names as confirmed by that disassembly. Treat the external match as independent
+   support for that confirmation, not the other way around.
 
-   The receive meaning of IRDA_DATA bit 0 is not in psx-spx at all. It is this emulator's own inference,
-   undocumented and unconfirmed against real hardware.
+   The receive meaning of IRDA_DATA bit 0 is not documented externally at all. It is this emulator's own
+   inference, undocumented and unconfirmed against real hardware.
 
-   psx-spx gives no numeric timing anywhere: no microsecond pulse widths, no carrier-to-pulse ratio beyond
-   "long is usually twice as long as short", nothing resembling the 184-tick transmit-timing gap this project's
-   own hardware testing is chasing (see docs/hardware-notes.md, "IR / IR Link"). That gap is not something a
-   register reference can answer; only measurement on real hardware can.
+   No external reference gives numeric timing for this peripheral. None has microsecond pulse widths. None
+   has a carrier-to-pulse ratio beyond "long is usually twice as long as short". None comes close to the
+   184-tick transmit-timing gap this project's own hardware testing is chasing (see docs/hardware-notes.md,
+   "IR / IR Link"). A register reference cannot answer that gap. Only measurement on real hardware can answer
+   it.
 
-   Real pulses are long or short ON periods, separated by short OFF gaps. A long pulse is approximately 2x a
-   short pulse. psx-spx explains why pulses alternate ON/OFF instead of one sustained ON period: real IR
-   receiver hardware adapts to ambient light, and a long steady signal risks being read as the new ambient
-   level rather than as data. This project's own trace of a real app's transmitted signal already shows exactly
-   this alternating shape (see tools/ir_probe.c's transmit-side analysis).
+   Real pulses are long or short ON periods, separated by short OFF gaps. A long pulse is about twice as long
+   as a short pulse. This shape has a documented external explanation. Real IR receiver hardware adapts to
+   ambient light. A long steady signal risks looking like the new ambient level, not like data. This project's
+   own trace of a real app's transmitted signal already shows this alternating shape (see tools/ir_probe.c's
+   transmit-side analysis).
    The real RX-IRQ handler (INT_IRDA, see intc.h) measures an incoming pulse's length.
-   It does this by reading Timer 2's live counter (reload 0xFFFFh) at the interrupt. psx-spx confirms this is
-   the usual technique, without confirming this specific app uses it.
+   It does this by reading Timer 2's live counter (reload 0xFFFFh) at the interrupt. An external reference
+   confirms this is the usual technique. It does not confirm that this specific app uses it.
 
-   psx-spx also states the real BIOS "doesn't contain any IR functions, aside from some basic initialization
-   and power-down stuff". That matches what this project's own disassembly already found: a real app drives
-   IRDA_MODE/IRDA_DATA directly from its own code, with its own hand-rolled interrupt handler, not through any
-   documented BIOS SWI. There is no undiscovered BIOS-level IR API to go looking for.
+   An external reference also states the real BIOS has no IR functions at all, aside from basic
+   initialization and power-down handling. That matches what this project's own disassembly already found. A
+   real app drives IRDA_MODE/IRDA_DATA directly from its own code, with its own hand-rolled interrupt handler,
+   not through any documented BIOS SWI. This project does not need to look for an undiscovered BIOS-level IR
+   API.
 
    This models IR as an asynchronous edge relay between two independently-clocked instances.
    Real IR hardware works the same way: two separate devices, two separate oscillators, and an optical signal

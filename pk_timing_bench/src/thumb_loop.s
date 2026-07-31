@@ -71,3 +71,27 @@ register_irq_handler:        @ r0 = handler address, or 0 to unregister
     svc #1
     pop {r3}                     @ r3 = saved lr
     bx r3
+
+@ Registers r0 as the app's FIQ callback via SWI 1, slot 2 - the other half of
+@ the same mechanism register_irq_handler uses, per the comment above (slot 1
+@ = IRQ, slot 2 = FIQ). Passing 0 unregisters again.
+@
+@ Confirmed the hard way, not just from the disassembly comment above:
+@ experiment 10 (Timer2/FIQ re-arm latency) hung in this emulator when it
+@ reused register_irq_handler (slot 1) for a FIQ-routed source. The BIOS's
+@ FIQ vector handler (0x040014D4 in a real J-110 BIOS dump) reads its
+@ callback from a DIFFERENT fixed RAM slot than the IRQ vector handler does -
+@ confirmed directly from a disassembled BIOS dump, not inferred. With no
+@ callback registered there, nothing ever acknowledged Timer2's HOLD bit, so
+@ FIQ re-asserted immediately on return and the CPU never left the vector.
+@ See experiments.s's run_experiment_10_fiq_rearm_latency.
+    .thumb_func
+    .global register_fiq_handler
+
+register_fiq_handler:         @ r0 = handler address, or 0 to unregister
+    push {lr}
+    adds r1, r0, #0              @ r1 = handler address (0 = unregister)
+    movs r0, #2                  @ r0 = FIQ callback slot
+    svc #1
+    pop {r3}                     @ r3 = saved lr
+    bx r3

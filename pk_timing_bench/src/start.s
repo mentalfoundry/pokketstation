@@ -169,6 +169,30 @@ clk_wait:
     bl draw_pixel
     .ltorg
 
+    @ Experiment 9 (screen 9): IRDA_DATA write cost vs WRAM write cost. Screens
+    @ 6-8 ruled out every generic interrupt/timer-path candidate for the
+    @ ~184-tick IR pulse-width shortfall; this checks the one MMIO write left
+    @ on the real transmit handler's hot path. See experiments.s.
+    bl run_experiment_9_irda_write
+    mov r0, #11
+    mov r1, #0
+    bl draw_pixel
+    .ltorg
+
+    @ Experiment 10 (screen 10): expiry-to-re-arm latency over FIQ (Timer2)
+    @ instead of IRQ (Timer1). Screen 8's exact method, moved onto the timer
+    @ that is actually FIQ-routed - a disassembled trace of the real transmit
+    @ handler shows it runs on FIQ, never measured on real hardware until now.
+    @ Same two failure modes as experiment 8 apply here (unregistered-callback
+    @ corruption, Thumb POP-into-PC non-interworking); both are already fixed
+    @ in the shared register_irq_handler/irq_rearm_handler_t2 this reuses.
+    @ See experiments.s.
+    bl run_experiment_10_fiq_rearm_latency
+    mov r0, #12
+    mov r1, #0
+    bl draw_pixel
+    .ltorg
+
     @ --- init UI state ---
     ldr r0, =WRAM_SCREEN_INDEX
     mov r1, #1

@@ -8,6 +8,71 @@ Each entry below is one full run. Each entry lists the build state tested, the e
 
 ---
 
+## 2026-07-31 (even later) — retail PocketStation unit (adds screen 10)
+
+**Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 10 (expiry-to-re-arm latency over FIQ/Timer2, instead of screen 8's IRQ/Timer1) since the previous run. `SCREEN_EXIT_PROMPT` moved from index 10 to 11. Only screen 10 was read this run.
+
+| Screen | Test (top) | Control (bottom) |
+|---|---|---|
+| 10 — expiry-to-re-arm latency, FIQ | `0x00000FE4` | `0x000003F8` |
+
+**Interpretation:**
+
+- **Real hardware matches screen 8's real-hardware reading exactly, bit-for-bit.** `0x0FE4`/`0x03F8` is the identical raw pair screen 8 read on 2026-07-31. The arithmetic is the same as screen 8's: bottom confirms the armed period (`0x3F8` = 1016), top gives an effective period of `4068 * 32 / 64 / 2` = 1017 Timer1 ticks, so expiry-to-re-arm latency is **0 ticks**, same as IRQ.
+- **FIQ costs the same as IRQ on real hardware.** This was the one remaining candidate this project could think of to explain the ~184-tick IR pulse-width shortfall as a generic interrupt-path cost: screen 8 measured re-arm latency over IRQ (Timer1, a stand-in, since Timer2 is FIQ-routed and this mechanism was not yet built), and screen 10 now measures the same thing over the real FIQ-routed timer. Both come back at 0 ticks. FIQ-specific overhead is ruled out.
+- **Every generic memory-access and interrupt-path cost this project can measure now matches real hardware.** Timer reload semantics (screen 6), interrupt entry cost (screen 7), re-arm latency over both IRQ and FIQ (screens 8 and 10), and `IRDA_DATA`'s own write cost (screen 9) all match. None of them explain the shortfall. See docs/hardware-notes.md's "Unresolved" bullet for where this leaves the investigation.
+
+This run had no crashes, no hangs, and no other anomalies. Notably, the build that hung in this emulator (the version that mistakenly reused `register_irq_handler`, slot 1, for a FIQ source) was never sent to this or any real unit — the emulator caught it first.
+
+---
+
+## 2026-07-31 (later) — retail PocketStation unit (adds screen 9)
+
+**Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 9 (`IRDA_DATA` write cost vs WRAM write cost) since the previous run. `SCREEN_EXIT_PROMPT` moved from index 9 to 10, since screen 9 is now a real result screen. Only screen 9 was read this run.
+
+| Screen | Test (top) | Control (bottom) |
+|---|---|---|
+| 9 — `IRDA_DATA` write cost vs WRAM | `0x00002BF2` | `0x00002849` |
+
+**Interpretation:**
+
+- **Real hardware matches this emulator exactly.** Both rows, `0x2BF2` and `0x2849`, are bit-for-bit identical to what this emulator itself produces for the same experiment (see README.md's "Screen 9" table). This is not a close match within jitter; it is the same value.
+- **This rules out the fourth and last easy candidate.** Screens 6, 7, and 8 already ruled out timer-reload semantics, interrupt entry cost, and expiry-to-re-arm latency. Screen 9 now rules out `IRDA_DATA`'s own MMIO write cost too: this emulator's generic 2-cycle "I/O" charge for that register already matches real hardware precisely. The ~184-tick IR pulse-width shortfall is not explained by any generic memory-access or interrupt-path cost this project has measured. See docs/hardware-notes.md's "Unresolved" bullet for where this leaves the investigation.
+
+This run had no crashes, no hangs, and no other anomalies.
+
+---
+
+## 2026-07-31 — retail PocketStation unit (adds screen 8)
+
+**Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 8 (expiry-to-re-arm latency) since the previous run.
+
+| Screen | Test (top) | Control (bottom) |
+|---|---|---|
+| 1 — ARM vs Thumb sanity check | `0x00002BF2` | `0x000019A3` |
+| 2 — `FLASH_CTRL` vs WRAM | `0x00002BF2` | `0x00002BF2` |
+| 3 — real BIOS ARM helper vs WRAM copy | `0x0000802D` | `0x00006A33` |
+| 4 — real BIOS Thumb helper vs WRAM copy | `0x0000B71B` | `0x0000B371` |
+| 6 — Timer2 period semantics | `0x00003F90` | `0x00003F87` |
+| 7 — interrupt cost | `0x00002BF2` | `0x00002D56` |
+| 8 — expiry-to-re-arm latency | `0x00000FE4` | `0x000003F8` |
+
+Screen 5 (raw Timer0 diagnostic, not deltas):
+
+| single_before | single_after | full_before | full_after |
+|---|---|---|---|
+| `0x0000FFEF` | `0x0000FFEE` | `0x00006269` | `0x0000E23C` |
+
+**Interpretation:**
+
+- Screens 1, 3, 4, 5, 6, and 7 all match the previous run (2026-07-30 later) within the same ±1 jitter seen between runs on this unit. Screen 2's two rows are now exactly equal, tighter than the previous run's ±1. Nothing here suggests a different unit or a measurement anomaly.
+- **Screen 8 rules out the re-arm-latency hypothesis.** Screen 8's bottom row confirms the armed period: `0x3F8` = 1016, matching `EXP8_TIMER_PERIOD`. The top row, `0xFE4` = 4068, gives an effective period of `4068 * 32 / 64 / 2` = 1017 Timer1 ticks. Real hardware's expiry-to-re-arm latency is `1017 - 1017` = **0 ticks**, not the ~184 ticks the hypothesis needed. This emulator currently measures 31 ticks for the same experiment, which is closer to the hypothesis than real hardware is, not further from it.
+- **All three candidate explanations for the ~184-tick IR pulse-width shortfall are now ruled out.** Screen 6 found only 1 tick from timer-reload semantics. Screen 7 found interrupt entry/dispatch cost matches this emulator to within 2.2%. Screen 8 finds expiry-to-re-arm latency is 0 ticks on real hardware, not 184. None of these generic interrupt/timer-path costs explain the shortfall. Whatever is missing is specific to the real transmit handler's own work, most likely the `IRDA_DATA` write itself or other work in that handler this project's synthetic screen 8 handler does not do.
+
+This run had no crashes, no hangs, and no other anomalies.
+
+---
+
 ## 2026-07-30 (later) — retail PocketStation unit (adds screen 7)
 
 **Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 7 (interrupt cost), the header fixes at `0x03` and `0x56`, and the emulator-side timer off-by-one fix that the earlier screen 6 run motivated.

@@ -10,6 +10,7 @@
     .section .text, "ax"
     .global memcpy_words
     .global measure_loop_ptr
+    .global measure_loop_ptr_store
     .global run_diagnostic_single_call
     .global measure_bios_call_loop_real
     .global measure_bios_call_loop_wram
@@ -18,6 +19,7 @@
     .global measure_timer_periods
     .global irq_ack_handler
     .global irq_rearm_handler
+    .global irq_rearm_handler_t2
 
 memcpy_words:            @ r0=dst, r1=src, r2=count(words)
     push {r3, lr}
@@ -42,6 +44,29 @@ ml_loop:
     ldr r3, [r5]
     subs r1, r1, #1
     bne ml_loop
+    ldr r3, [r4]
+    sub r0, r2, r3
+    mov r0, r0, lsl #16
+    mov r0, r0, lsr #16
+    pop {r4, r5, lr}
+    bx lr
+    .ltorg
+
+@ Same loop as measure_loop_ptr, but stores instead of loading. Used by
+@ experiment 9 to measure a real MMIO write's cost, since a real transmit
+@ handler's hot-path IRDA_DATA access is a store (the LED bit), not a load.
+@ Stores a constant 0 every iteration: this measures the bus/register access
+@ cost, not any behavior the stored value itself might trigger.
+measure_loop_ptr_store:   @ r0=ptr, r1=count -> r0=delta (before-after)
+    push {r4, r5, lr}
+    mov r5, r0
+    mov r3, #0
+    ldr r4, =TIMER0_COUNT
+    ldr r2, [r4]
+mls_loop:
+    str r3, [r5]
+    subs r1, r1, #1
+    bne mls_loop
     ldr r3, [r4]
     sub r0, r2, r3
     mov r0, r0, lsl #16
@@ -290,6 +315,30 @@ irq_rearm_handler:
     str r1, [r0, #4]
 
     ldr r0, =WRAM_REARM_COUNTER
+    ldr r1, [r0]
+    add r1, r1, #1
+    str r1, [r0]
+    pop {r0, r1, pc}
+    .ltorg
+
+@ IRQ handler for experiment 10. Identical to irq_rearm_handler above, except
+@ it re-arms TIMER2_BASE and counts into a separate WRAM slot. Timer2 is the
+@ FIQ-routed timer (INT_FIQ_MASK), so the same "register once, un-mask, take
+@ N interrupts, measure" shape as experiment 8 exercises the FIQ path instead
+@ of IRQ - the real IR transmit handler's actual exception type. See
+@ experiments.s's run_experiment_10_fiq_rearm_latency.
+irq_rearm_handler_t2:
+    push {r0, r1, lr}
+    ldr r0, =INTC_BASE
+    ldr r1, [r0]
+    str r1, [r0, #0x10]               @ acknowledge everything pending
+
+    ldr r0, =TIMER2_BASE               @ re-arm with the same period
+    ldr r1, =EXP8_TIMER_PERIOD
+    str r1, [r0]
+    str r1, [r0, #4]
+
+    ldr r0, =WRAM_REARM2_COUNTER
     ldr r1, [r0]
     add r1, r1, #1
     str r1, [r0]

@@ -44,12 +44,12 @@ To change the icon: edit or replace `assets/card_icon.bmp`, then rebuild. The fi
 
 ## Controls
 
-This app runs all eight measurements once, at startup. After that, you page through eight result screens by hand:
+This app runs all ten measurements once, at startup. After that, you page through ten result screens by hand:
 
 - **RIGHT**: next screen
 - **LEFT**: previous screen
-- Screens wrap around (8 → RIGHT → 1, 1 → LEFT → 8)
-- This app does not use ACTION, UP, or DOWN.
+- Screens wrap around (10 → RIGHT → 1, 1 → LEFT → 10)
+- **Holding ACTION** opens a CONTINUE/EXIT prompt, for returning to the system without a hardware reset. UP selects CONTINUE, DOWN selects EXIT, and a fresh ACTION press confirms. See "Screen index used for the continue/exit prompt" in `src/constants.inc`, and `src/ui.s`'s `pb_prompt_confirm_exit`, for the full behavior.
 
 ## What each screen shows
 
@@ -141,9 +141,35 @@ expiry-to-re-arm latency        = effective period - 1017
 | | top row | effective period | latency |
 |---|---|---|---|
 | This emulator | `0x1060` | 1048 | 31 ticks |
-| Real hardware, IF the app's own 184-tick budget is this latency | ~`0x12C4` | ~1201 | ~184 ticks |
+| Real hardware (measured 2026-07-31, see [VERIFICATION.md](VERIFICATION.md)) | `0x0FE4` | 1017 | **0 ticks** |
 
-A result near `0x12C4` confirms the emulator's interrupt path reaches the handler far too quickly, and would account for the whole remaining IR shortfall. A result near `0x1060` means the latency is not where the missing time goes either, and the 184 is something else again.
+**Real hardware rules this hypothesis out.** Expiry-to-re-arm latency measures 0 ticks on real hardware, not the ~184 the hypothesis needed. This emulator's own 31-tick figure for the same experiment is closer to the ruled-out hypothesis than real hardware is. Combined with screens 6 and 7, all three generic interrupt/timer-path candidates for the ~184-tick shortfall are now ruled out. See "Unresolved" in [docs/hardware-notes.md](../docs/hardware-notes.md) for where this leaves the investigation.
+
+**Screen 9: does `IRDA_DATA`'s own MMIO write cost more than a plain WRAM store?** Top is a loop of **30000** stores to `IRDA_DATA` (`0x0C800004`). Bottom is the same loop storing to a WRAM scratch address instead. Same two-row test/control layout as screens 1-4, and the same method screen 2 already used for `FLASH_CTRL` vs WRAM, but timing stores instead of loads.
+
+Screens 6, 7, and 8 each ruled out a generic interrupt/timer-path candidate for the ~184-tick IR pulse-width shortfall (see screen 8 above). None of them touch the real transmit handler's own work. The one MMIO write on that handler's hot path is `IRDA_DATA`, the LED bit, toggled on every pulse edge. This screen measures that write's cost directly.
+
+This emulator currently charges `IRDA_DATA` the same generic 2-cycle "I/O" data-access rate as everything outside WRAM and `FLASH_CTRL` (see "Memory access timing" in [docs/hardware-notes.md](../docs/hardware-notes.md)), the same rate BIOS, FLASH, and VRAM get.
+
+| | test (`IRDA_DATA`) | control (WRAM) |
+|---|---|---|
+| This emulator | `0x2BF2` | `0x2849` |
+| Real hardware (measured 2026-07-31, see [VERIFICATION.md](VERIFICATION.md)) | `0x2BF2` | `0x2849` |
+
+**Real hardware matches this emulator exactly, bit-for-bit.** `IRDA_DATA`'s own write cost is not the missing time either. Combined with screens 6-8, every generic memory-access and interrupt-path candidate this project can think of to measure has now been measured, and all of them match real hardware.
+
+**Screen 10: does expiry-to-re-arm latency come out differently over FIQ than over IRQ?** Same layout and arithmetic as screen 8, but Timer2 (FIQ-routed) instead of Timer1 (IRQ-routed).
+
+A disassembled trace of the *real* IR transmit handler, not a synthetic one, shows it runs on FIQ. Timer2 is hardwired to FIQ (`INT_FIQ_MASK`, see "Interrupt controller" in [docs/hardware-notes.md](../docs/hardware-notes.md)), and the real handler is reached through the FIQ vector (`0x1C`), confirmed by CPSR mode `0x11` at the exact point of its `IRDA_DATA` write. Screens 7 and 8 only ever measured IRQ. FIQ's own exception-entry cost was never measured on real hardware, only assumed identical to IRQ's.
+
+**This screen exists because of a real bug this project found, not shipped, while building it.** The first version reused `register_irq_handler` (screen 7/8's SWI 1, slot 1) for Timer2. In this emulator, that hung: `pc` got stuck inside the BIOS's own FIQ vector handler forever. Disassembling a real BIOS ROM dump explained why: the IRQ vector handler and the FIQ vector handler read their app-registered callback from two *different* fixed RAM slots (`0xFC` for IRQ, `0x100` for FIQ). With nothing registered at `0x100`, nothing ever acknowledged Timer2's HOLD bit, so FIQ re-asserted the instant the handler returned, forever. The fix is `register_fiq_handler` (`src/thumb_loop.s`), SWI 1 with slot 2 instead of slot 1 - the same mechanism a real app's own comment already documented (`movs r0,#2; ... svc #1` to install a FIQ callback), just never previously wired up in this project's own code. **If you build a variant of this experiment yourself, use `register_fiq_handler`, not `register_irq_handler` - the wrong one hangs the device with no way back except the physical reset button.**
+
+| | top row | effective period | latency |
+|---|---|---|---|
+| This emulator | `0x1080` | 1056 | 39 ticks |
+| Real hardware (measured 2026-07-31, see [VERIFICATION.md](VERIFICATION.md)) | `0x0FE4` | 1017 | **0 ticks** |
+
+**FIQ costs the same as IRQ on real hardware.** `0x0FE4`/`0x03F8` is the exact same raw pair screen 8 read for IRQ. This emulator's own 39-tick figure (higher than screen 8's 31-tick IRQ figure, for the same synthetic shape) is a small emulator inaccuracy, not evidence of FIQ-specific overhead - real hardware shows none. Combined with screens 6-9, every generic memory-access and interrupt-path cost this project can measure now matches real hardware. See "Unresolved" in [docs/hardware-notes.md](../docs/hardware-notes.md) for where this leaves the investigation.
 
 ### Reading the hex digits
 

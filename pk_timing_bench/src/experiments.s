@@ -13,6 +13,8 @@
     .global run_experiment_6_timer_period
     .global run_experiment_7_irq_latency
     .global run_experiment_8_rearm_latency
+    .global run_experiment_9_irda_write
+    .global run_experiment_10_fiq_rearm_latency
 
 @ Experiment 1: sanity check - ARM vs Thumb opcode-fetch cost (~2:1 expected)
 run_experiment_1_sanity:
@@ -318,6 +320,144 @@ exp8_wait:
 exp8_unreg_ret:
 
     mov r0, #0                         @ restore Timer1 as it was found
+    str r0, [r4, #8]
+    str r5, [r4]
+    str r6, [r4, #4]
+    str r7, [r4, #8]
+
+    pop {r4, r5, r6, r7, r8, lr}
+    bx lr
+    .ltorg
+
+@ Experiment 9: does IRDA_DATA's own MMIO write cost more than a plain WRAM
+@ store?
+@
+@ Screens 6, 7, and 8 each measured a generic interrupt/timer-path cost
+@ against real hardware, and all three matched (or undershot) this emulator.
+@ None of them explain the ~184-tick IR pulse-width shortfall. See
+@ docs/hardware-notes.md's "Unresolved" bullet.
+@
+@ What is left is specific to the real transmit handler's own work. The one
+@ MMIO write on that handler's hot path is IRDA_DATA, the LED bit, toggled on
+@ every pulse edge. This measures that write's cost directly: a tight loop of
+@ 30000 stores to IRDA_DATA (test), against the same loop storing to a WRAM
+@ scratch address instead (control). Same method screen 2 already used to
+@ settle FLASH_CTRL's data-access rate, just stores instead of loads.
+@
+@ IRDA_MODE is left untouched, so this always runs in whatever mode the
+@ device powers up in. IFMODE defaults to receive (this emulator's own
+@ default; the real POR value is undocumented - see core/src/ir.h), and a
+@ DATA write only drives the transmit LED while IFMODE=transmit. Storing a
+@ constant 0 here measures the register's own bus-access cost, not any
+@ transmit side effect, so it does not need transmit mode armed to be valid.
+run_experiment_9_irda_write:
+    push {lr}
+    ldr r0, =IRDA_DATA_ADDR
+    ldr r1, =LOOP_N
+    bl measure_loop_ptr_store
+    ldr r1, =WRAM_IRDA_TEST_RESULT
+    str r0, [r1]
+
+    ldr r0, =WRAM_DATA_SCRATCH
+    ldr r1, =LOOP_N
+    bl measure_loop_ptr_store
+    ldr r1, =WRAM_IRDA_CTRL_RESULT
+    str r0, [r1]
+    pop {lr}
+    bx lr
+    .ltorg
+
+@ Experiment 10: does expiry-to-re-arm latency come out differently over FIQ
+@ than over IRQ?
+@
+@ A disassembled trace of the real IR transmit handler (not a synthetic one)
+@ shows it runs on FIQ: Timer2 is hardwired to FIQ (INT_FIQ_MASK, see
+@ docs/hardware-notes.md's "Interrupt controller"), and the real handler is
+@ reached through the FIQ vector (0x1C), confirmed by CPSR mode 0x11 at the
+@ point of its IRDA_DATA write. Screens 7 and 8 only ever measured IRQ
+@ (Timer1). FIQ's own exception-entry cost has never been measured on real
+@ hardware, only assumed identical to IRQ's (see core/src/cpu.c: both use the
+@ same "2S+1N" pipeline-refill formula).
+@
+@ This is screen 8's exact method - same period (1016), same /2 divisor,
+@ same 64-reload count, same re-arm-in-handler shape - moved onto Timer2, the
+@ one timer that is actually FIQ-routed. Directly comparable to screen 8: the
+@ only thing that changes is the exception type.
+@
+@ This uses register_fiq_handler (thumb_loop.s), not register_irq_handler.
+@ The two are different SWI 1 callback slots, confirmed by disassembling a
+@ real J-110 BIOS dump: the IRQ vector handler (0x04001414) reads its
+@ callback from RAM offset 0xFC, the FIQ vector handler (0x040014D4) reads
+@ its own from offset 0x100 - a different slot entirely. This was found by
+@ trying register_irq_handler here first: it hung, in this emulator, because
+@ nothing ever acknowledged Timer2's HOLD bit, so FIQ re-asserted immediately
+@ on return and the CPU never left the vector. See register_fiq_handler's own
+@ comment for the full story.
+run_experiment_10_fiq_rearm_latency:
+    push {r4, r5, r6, r7, r8, lr}
+
+    ldr r0, =WRAM_REARM2_COUNTER       @ counter starts at zero
+    mov r1, #0
+    str r1, [r0]
+
+    ldr r4, =TIMER2_BASE                @ save Timer2 before borrowing it
+    ldr r5, [r4]
+    ldr r6, [r4, #4]
+    ldr r7, [r4, #8]
+
+    ldr r0, =irq_rearm_handler_t2       @ install the handler before un-masking
+    adr lr, exp10_reg_ret
+    ldr r1, =register_fiq_handler
+    bx r1
+exp10_reg_ret:
+
+    mov r0, #0                          @ arm Timer2 exactly as the real app does
+    str r0, [r4, #8]
+    ldr r0, =EXP8_TIMER_PERIOD
+    str r0, [r4]
+    str r0, [r4, #4]
+    mov r0, #EXP8_TIMER_CTRL
+    str r0, [r4, #8]
+
+    ldr r0, =INTC_ENABLE                @ un-mask only Timer2's FIQ-side bit
+    ldr r1, =INT_TIMER2_BIT
+    str r1, [r0]
+
+    ldr r8, =WRAM_REARM2_COUNTER
+exp10_sync:                             @ start on an interrupt boundary
+    ldr r0, [r8]
+    cmp r0, #0
+    beq exp10_sync
+
+    mov r0, #0                          @ restart the count, then take the stopwatch
+    str r0, [r8]
+    ldr r2, =TIMER0_COUNT
+    ldr r3, [r2]
+
+exp10_wait:
+    ldr r0, [r8]
+    cmp r0, #EXP8_INTERRUPTS
+    blo exp10_wait
+    ldr r0, [r2]
+    sub r0, r3, r0                      @ Timer0 counts down, so before minus after
+    mov r0, r0, lsl #16                 @ 16-bit mask; Timer0 wraps at 0x10000
+    mov r0, r0, lsr #16
+
+    ldr r1, =WRAM_REARM2_DELTA          @ store the result now, before anything else
+    str r0, [r1]                        @ runs - see run_experiment_8_rearm_latency's
+                                         @ comment on register_irq_handler clobbering r3
+
+    ldr r0, =INTC_MASK                  @ re-mask every source at once
+    mvn r1, #0
+    str r1, [r0]
+
+    mov r0, #0                          @ unregister our handler again
+    adr lr, exp10_unreg_ret
+    ldr r1, =register_fiq_handler
+    bx r1
+exp10_unreg_ret:
+
+    mov r0, #0                          @ restore Timer2 as it was found
     str r0, [r4, #8]
     str r5, [r4]
     str r6, [r4, #4]

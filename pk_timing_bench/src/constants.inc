@@ -24,13 +24,13 @@
 @ spin forever - recovering from that would need the physical reset button.
 .equ EXIT_RELEASE_TIMEOUT,    2000000
 @ Screen index used for the continue/exit prompt (see ui.s's poll_buttons
-@ and redraw_screen) - distinct from the 5 normal result screens and the
+@ and redraw_screen) - distinct from the normal result screens and the
 @ screen 5 diagnostic screen. Reaching FIRE_HOLD_THRESHOLD switches to
 @ this screen instead of exiting immediately, so the user can choose
 @ CONTINUE or EXIT - enabling usrs to quit gracefully (it shows
 @ its own bespoke continue/exit choice before actually departing,
 @ rather than exiting unconditionally on a hold).
-.equ SCREEN_EXIT_PROMPT,        9
+.equ SCREEN_EXIT_PROMPT,        11
 @ 0 = CONTINUE selected, 1 = EXIT selected. Defaults to CONTINUE when the
 @ prompt first appears, matching the real reference app.
 .equ WRAM_EXIT_PROMPT_SELECTION, 0x268
@@ -58,6 +58,18 @@
 @ Screen 8 (experiment 8) results, and the counter its handler increments.
 .equ WRAM_REARM_DELTA,        0x2A0
 .equ WRAM_REARM_COUNTER,      0x2A4
+
+@ Screen 9 (experiment 9) results: IRDA_DATA write cost (test) vs WRAM write
+@ cost (control), same loop-of-30000-stores method as screen 2 uses for
+@ FLASH_CTRL vs WRAM reads.
+.equ WRAM_IRDA_TEST_RESULT,   0x2A8
+.equ WRAM_IRDA_CTRL_RESULT,   0x2AC
+
+@ Screen 10 (experiment 10) results, and the counter its handler increments.
+@ Same shape as screen 8's WRAM_REARM_DELTA/WRAM_REARM_COUNTER, but for the
+@ FIQ-routed Timer2 re-arm instead of the IRQ-routed Timer1 one.
+.equ WRAM_REARM2_DELTA,       0x2B0
+.equ WRAM_REARM2_COUNTER,     0x2B4
 
 .equ TIMER0_BASE,   0x0A800000
 .equ TIMER0_PERIOD, TIMER0_BASE + 0x0
@@ -128,6 +140,31 @@
 .equ LCD_VRAM_ADDR, 0x0D000100
 
 .equ FLASH_CTRL_TEST_ADDR, 0x06000100
+
+@ Experiment 9: does IRDA_DATA's own MMIO bus access cost more than a plain
+@ WRAM store? Screens 6-8 ruled out every generic interrupt/timer-path cost
+@ for the ~184-tick IR pulse-width shortfall (see docs/hardware-notes.md's
+@ "Unresolved" bullet). What is left is specific to the real transmit
+@ handler's own work, and the one MMIO write on its hot path is IRDA_DATA
+@ (the LED bit, toggled on every pulse edge). This measures that write's
+@ cost directly, the same read-loop method screen 2 already used for
+@ FLASH_CTRL vs WRAM.
+.equ IRDA_BASE,      0x0C800000
+.equ IRDA_DATA_ADDR, IRDA_BASE + 0x4
+
+@ Experiment 10: does expiry-to-re-arm latency come out differently over FIQ
+@ than it did over IRQ (screen 8)? A real disassembled trace of the actual IR
+@ transmit handler (not a synthetic one) shows it runs on FIQ, not IRQ:
+@ Timer2 is hardwired to FIQ (INT_FIQ_MASK, core/src/intc.h), and the real
+@ app's handler is reached through the FIQ vector (0x1C), confirmed by CPSR
+@ mode 0x11 at the point of its IRDA_DATA write. Screens 7 and 8 only ever
+@ measured IRQ (Timer1). This reuses screen 8's exact method - same period,
+@ same divisor, same reload count, same re-arm-in-handler shape - on the one
+@ timer that is actually FIQ-routed, so it is directly comparable to screen 8
+@ with only the exception type changed.
+@ INT_TIMER2_BIT (0x2000, bit 13) is the FIQ-side enable bit, not
+@ INT_TIMER1_BIT's IRQ-side one - see INT_FIQ_MASK in core/src/intc.h.
+.equ INT_TIMER2_BIT, 0x2000
 
 @ Real BIOS ROM addresses (external to this app's own linked image - these
 @ are fixed, hardcoded, NOT link-time symbols) - see docs/app-notes.md.

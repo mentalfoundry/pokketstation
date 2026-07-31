@@ -192,9 +192,9 @@ static void test_full_loopback_tx_to_rx_across_two_instances(void) {
 }
 
 static void test_irda_misc_is_a_reserved_stub(void) {
-    /* IRDA_MISC (+0xC) is unknown/reserved in psx-spx, with no documented reset value or behavior. This
-       emulator has no basis to invent register state for it: reads return 0, and writes have no effect on it
-       or on anything else (mode/data stay exactly as they were). See ir.h's top comment. */
+    /* IRDA_MISC (+0xC) is unknown or reserved in an external reference, with no documented reset value or
+       behavior. This emulator has no basis to invent register state for it. Reads return 0. Writes have no
+       effect on it, or on anything else: mode and data stay exactly as they were. See ir.h's top comment. */
     psemu_t *ps = make_ps();
 
     psemu_bus_write32(&ps->bus, IRDA_MODE, TX_ACTIVE_MODE);
@@ -202,8 +202,8 @@ static void test_irda_misc_is_a_reserved_stub(void) {
     assert(psemu_bus_read32(&ps->bus, PSEMU_IR_BASE + 0xCu) == 0u);
     assert(ps->ir.mode == TX_ACTIVE_MODE); /* the write above did not disturb mode */
 
-    /* The gap at +0x8, between IRDA_DATA and IRDA_MISC, gets the same stub treatment: nothing distinguishes
-       it from IRDA_MISC itself in psx-spx or in this emulator. */
+    /* The gap at +0x8, between IRDA_DATA and IRDA_MISC, gets the same stub treatment. Nothing distinguishes
+       it from IRDA_MISC itself, externally or in this emulator. */
     psemu_bus_write32(&ps->bus, PSEMU_IR_BASE + 0x8u, 0xFFFFFFFFu);
     assert(psemu_bus_read32(&ps->bus, PSEMU_IR_BASE + 0x8u) == 0u);
 

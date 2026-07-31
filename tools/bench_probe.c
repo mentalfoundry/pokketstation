@@ -11,7 +11,10 @@
 
    The app is launched the same way a user would: the BIOS boots to its date/time screen, then Down+Action
    gets past it, then Right+Action selects and launches the app from the card directory (see psemu_load_app's
-   comment in psemu/psemu.h). */
+   comment in psemu/psemu.h).
+
+   Set BENCH_PROBE_DUMP_BIOS=1 to also dump raw BIOS ROM bytes (for offline disassembly) plus live INTC/CPSR
+   state. Useful when the app hangs partway through and the reason lives in BIOS code, not app code. */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -169,10 +172,50 @@ int main(int argc, char **argv) {
             printf("  -> expiry-to-re-arm latency %.1f ticks\n", ticks - 1017.0);
         }
     }
+    /* Experiment 9 (screen 9): IRDA_DATA write cost (test) vs WRAM write cost (control). Absent in builds
+       predating that experiment, where these slots simply read back 0. */
+    printf("screen9 irda write results @0x2A8:\n");
+    printf("  IRDA_DATA (test) 0x%08X\n", psemu_bus_read32(&ps->bus, 0x2A8u));
+    printf("  WRAM (control)   0x%08X\n", psemu_bus_read32(&ps->bus, 0x2ACu));
+
+    /* Experiment 10 (screen 10): Timer0 ticks across 64 re-armed Timer2/FIQ periods. Same arithmetic as
+       screen 8, over FIQ instead of IRQ. */
+    {
+        uint32_t delta = psemu_bus_read32(&ps->bus, 0x2B0u);
+        printf("screen10 FIQ re-arm latency @0x2B0:\n");
+        printf("  Timer0 delta over 64 periods 0x%08X\n", delta);
+        if (delta) {
+            double ticks = (double)delta * 32.0 / 64.0 / 2.0;
+            printf("  -> effective period %.1f Timer1 ticks (armed 1016, so 1017 without latency)\n", ticks);
+            printf("  -> expiry-to-re-arm latency %.1f ticks\n", ticks - 1017.0);
+        }
+    }
+
     printf("screen:\n");
     print_framebuffer(ps);
 
     printf("screen index (WRAM 0x25C) = %u\n", psemu_bus_read32(&ps->bus, 0x25Cu));
+
+    /* Set BENCH_PROBE_DUMP_BIOS=1 to dump raw BIOS ROM bytes for offline disassembly, plus live INTC/CPSR
+       state. This is what located the real BIOS's separate IRQ (0xFC) vs FIQ (0x100) callback-slot addresses
+       while debugging experiment 10's hang: pc got stuck inside the FIQ vector handler, and this dump made it
+       possible to disassemble exactly what it was doing instead of guessing from a PC trace alone. */
+    if (getenv("BENCH_PROBE_DUMP_BIOS")) {
+        FILE *dump = fopen("bios_code_dump.bin", "wb");
+        if (dump) {
+            uint32_t addr;
+            for (addr = 0x04001000u; addr < 0x04002000u; addr++) {
+                uint8_t byte = psemu_bus_read8(&ps->bus, addr);
+                fwrite(&byte, 1, 1, dump);
+            }
+            fclose(dump);
+            printf("wrote bios_code_dump.bin (0x04001000-0x04002000)\n");
+        }
+        printf("intc: enable=0x%08X hold=0x%08X status=0x%08X mask=0x%08X\n",
+            psemu_bus_read32(&ps->bus, 0x0A000008u), psemu_bus_read32(&ps->bus, 0x0A000000u),
+            psemu_bus_read32(&ps->bus, 0x0A000004u), psemu_bus_read32(&ps->bus, 0x0A00000Cu));
+        printf("cpsr=0x%08X\n", ps->cpu.cpsr);
+    }
 
     psemu_destroy(ps);
     free(bios);
