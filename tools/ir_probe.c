@@ -20,9 +20,20 @@
    decoded correctly, independent of trying to interpret the receive state machine's own internal state
    numbers.
 
+   Slice size trades relay precision against timing accuracy, and both directions have bitten this tool
+   before. psemu_run's budget is in reference-rate cycles converted to real seconds, but its loop always runs
+   at least one instruction. When one instruction's real duration exceeds the whole slice budget, that call
+   overshoots. A slow app-selected CLK_MODE makes an instruction expensive in real time (at ~254KHz one
+   instruction is ~11.8us, against a 3.79us budget at slice_cycles=4), so a finely sliced instance running
+   slowly over-advances its own clock badly, while a fast one does not. Two instances at different CLK_MODEs
+   therefore appear to drift apart. Measured: ~957000 reference cycles of apparent skew at slice 4, ~78600 at
+   64, ~20700 at 256, ~8200 at 1024, with total elapsed time exactly correct only at the coarse end. Use a
+   coarse slice when absolute timing matters, and a fine one only when relay precision matters more.
+
    usage: ir_probe <bios.bin> <app.mcs> <quicksave.dat> [slice_cycles] [frames] [scriptA] [scriptB] [trace]
      slice_cycles  emulated cycles to run each instance before exchanging edges. 33000 = one frontend frame
-                   (the frontend's real behavior). Smaller = finer interleaving. Default 33000.
+                   (the frontend's real behavior). Smaller = finer interleaving, but see the note above on
+                   what a small value costs in timing accuracy. Default 33000.
      frames        total emulated frames to run. Default 400 (~12s of emulated time).
      scriptA/B     per-instance button script: comma-separated "button@start-end" entries, frame-numbered.
                    Buttons: up, down, left, right, fire. Example: "up@20-30,fire@40-50".
@@ -201,6 +212,7 @@ int main(int argc, char **argv) {
        reliable trap point. This instead watches the state (+0x28) and bit-index (+0xC) fields themselves
        for any change, whatever code path produces it. */
     uint32_t last_b_state = 0xFFFFFFFFu, last_b_bitindex = 0xFFFFFFFFu;
+    uint32_t max_b_state = 0;
     int state_changes = 0;
     /* bit_index (+0xC) never moved past 0. Confirmed why below: B's buffer is never written at all in this
        scenario, so there is no "real data filling in" for any field to track. Watching the buffer bytes
@@ -331,6 +343,9 @@ int main(int argc, char **argv) {
             {
                 uint32_t state = psemu_bus_read8(&b->bus, 0x000003C4u + 0x28u);
                 uint32_t bit_index = psemu_bus_read32(&b->bus, 0x000003C4u + 0xCu);
+                if (state > max_b_state) {
+                    max_b_state = state;
+                }
                 if (state != last_b_state || bit_index != last_b_bitindex) {
                     state_changes++;
                     if (state_changes <= 500) {
@@ -412,6 +427,19 @@ int main(int argc, char **argv) {
                 !!(b->ir.mode & IR_MODE_BGEN), !!(b->ir.mode & IR_MODE_BFLT));
             last_b_mode = b->ir.mode;
         }
+        /* The end-of-run intc.enable is read after the receiver has already given up and gone to standby,
+           which says nothing about what it was listening to while a transfer was actually in flight. */
+        {
+            static uint32_t last_a_en = 0xFFFFFFFFu, last_b_en = 0xFFFFFFFFu;
+            if (a->intc.enable != last_a_en || b->intc.enable != last_b_en) {
+                printf("frame %ld: intc.enable A=0x%08X (IRDA=%s T2=%s) B=0x%08X (IRDA=%s T2=%s)\n", f,
+                    a->intc.enable, (a->intc.enable & INT_IRDA) ? "on" : "off",
+                    (a->intc.enable & INT_TIMER2) ? "on" : "off", b->intc.enable,
+                    (b->intc.enable & INT_IRDA) ? "on" : "off", (b->intc.enable & INT_TIMER2) ? "on" : "off");
+                last_a_en = a->intc.enable;
+                last_b_en = b->intc.enable;
+            }
+        }
         /* Both instances are meant to be stepped with identical cycle budgets so their IR clocks track each
            other, but this is the first place that checks it frame-by-frame instead of only at the very end. */
         {
@@ -431,6 +459,7 @@ int main(int argc, char **argv) {
     }
 
     printf("\nedges relayed: A->B %ld, B->A %ld\n", total_a_to_b, total_b_to_a);
+    printf("B receive state machine: max state reached = %u (state changes: %d)\n", max_b_state, state_changes);
     printf("A: cpu_faulted=%d  B: cpu_faulted=%d\n", psemu_cpu_faulted(a), psemu_cpu_faulted(b));
     /* Whether the receiving side ever even enabled the IR interrupt decides how it is meant to be driven:
        INT_IRDA-on-edge, or polling IRDA_DATA directly. */
