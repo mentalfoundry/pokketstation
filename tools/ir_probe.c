@@ -14,11 +14,16 @@
    Both instances start from the same save state, so the app is already sitting on its IR screen. Instance A is
    told to transmit, instance B to receive, via the same button presses a user would make.
 
-   Prints, near the end of a run: the receive handler's own sync-pulse acceptance check (each measured
-   Timer2 delta against the app's own window, flagged "in window" when it passes), and a direct byte
-   comparison of A's and B's data buffers - the most reliable way to tell whether a transfer actually
-   decoded correctly, independent of trying to interpret the receive state machine's own internal state
-   numbers.
+   Verdict, printed near the end of a run: whether each side ends up holding the other's hardware id.
+   The two instances are given distinct ids on purpose. A real IR message carries the sender's id, and
+   neither instance can learn the other's by any route except the link, so this cannot pass by coincidence.
+
+   Byte-for-byte buffer comparison was tried first and misled three separate times, which is worth recording
+   so it is not tried again: both instances run the same app from the same save file, so their message
+   buffers start identical and "match" before a single edge has been relayed; the buffers are cleared and
+   reused immediately after a transfer, so an end-of-run read finds only zeroes; and the field once assumed
+   to be the buffer pointer (state block +0x14) is really a pointer to a table of buffer pointers, so
+   comparing it compared pointers and neighbouring state. The id check has none of those failure modes.
 
    Slice size trades relay precision against timing accuracy, and both directions have bitten this tool
    before. psemu_run's budget is in reference-rate cycles converted to real seconds, but its loop always runs
@@ -155,16 +160,27 @@ static psemu_t *make_instance(const uint8_t *bios, size_t bios_size, const uint8
 }
 
 /* Moves every pending TX edge from `from` into `to`'s RX queue.
-   Both instances step in lockstep here, with identical cycle budgets. Their IR clocks therefore track each
-   other almost exactly.
-   An edge's timestamp relays as-is, with no wall-clock conversion and no playout delay.
-   That is the most favorable case possible: perfect clock alignment and minimum latency.
-   If a transfer still fails under those conditions, no transport tuning in the frontend will fix it. */
-static int relay_edges(psemu_t *from, psemu_t *to, const char *direction, int verbose) {
+   Both instances step in lockstep here, with identical cycle budgets, so their IR clocks track each other
+   almost exactly and no wall-clock conversion is needed.
+
+   This used to relay timestamps as-is and call that "the most favorable case possible". It is the opposite.
+   Relaying with no playout delay hands the receiver a batch of edges whose timestamps are already in its
+   past, so it releases the whole batch at once and every interval it measures collapses. Measured at
+   frontend frame granularity: with no delay the transfer fails outright, and with one frame of delay it
+   completes in both directions. The delay defaults to the desktop frontend's own IR_LINK_PLAYOUT_DELAY_US
+   so this probe models the real transport rather than a strictly worse one; IR_PROBE_PLAYOUT_DELAY overrides
+   it for experiments. */
+static int relay_edges(psemu_t *from, psemu_t *to, const char *direction, int verbose, uint64_t playout_delay) {
     ir_edge_t edge;
     int relayed = 0;
     while (ir_pop_tx_edge(&from->ir, &edge)) {
-        ir_push_rx_edge(&to->ir, edge.timestamp_cycles, edge.level);
+        /* A relay that runs every N cycles hands over edges up to N cycles after they were produced, with
+           timestamps already in the receiver's past. The receiver then releases the whole batch at once and
+           every interval it measures collapses, which is why a transfer that works at fine granularity fails
+           at frame granularity. Adding a fixed playout delay to every edge restores the spacing: the receiver
+           holds each edge until delay cycles after it was produced, so relative timing survives any relay
+           latency up to that delay. This is the ordinary jitter-buffer trade of latency for correctness. */
+        ir_push_rx_edge(&to->ir, edge.timestamp_cycles + playout_delay, edge.level);
         relayed++;
         if (verbose) {
             printf("  [relay %s] t=%llu level=%d\n", direction, (unsigned long long)edge.timestamp_cycles,
@@ -231,7 +247,14 @@ int main(int argc, char **argv) {
     int a_snap_len = 0, b_snap_len = 0;
     long a_snap_frame = -1, b_snap_frame = -1;
     uint32_t a_snap_addr = 0, b_snap_addr = 0, a_snap_idx = 0, b_snap_idx = 0;
+    uint8_t a_first[SNAP_MAX], b_first[SNAP_MAX];
+    int a_have_first = 0, b_have_first = 0;
+    int a_first_len = 0, b_first_len = 0;
+    long a_first_frame = -1, b_first_frame = -1;
 
+    /* The desktop frontend's IR_LINK_PLAYOUT_DELAY_US (100000us) expressed in the reference-rate cycle units
+       these timestamps use, so the default models the real transport. */
+    uint64_t playout_delay = (100000ull * PSEMU_ASSUMED_CPU_HZ) / 1000000ull;
     const char *script_a = "up@20-30";
     const char *script_b = "down@20-30";
 
@@ -274,8 +297,23 @@ int main(int argc, char **argv) {
         }
     }
 
+    {
+        const char *pd = getenv("IR_PROBE_PLAYOUT_DELAY");
+        if (pd) {
+            playout_delay = (uint64_t)strtoull(pd, NULL, 10);
+            printf("playout delay: %llu reference cycles\n", (unsigned long long)playout_delay);
+        }
+    }
     a = make_instance(bios, bios_size, app, app_size, state, state_size, "A");
+    /* Both instances otherwise run the same app from the same save with the same default hardware ID, and
+       a real IR message carries that ID. Identical IDs make "the receiver decoded the sender's message"
+       and "the receiver composed its own identical message" indistinguishable. Give each side a distinct
+       ID so the receiver's buffer proves which one it holds. Set after psemu_load_state, which would
+       otherwise overwrite it. */
     b = make_instance(bios, bios_size, app, app_size, state, state_size, "B");
+    psemu_set_hardware_id(a, 0xAA1111AAu);
+    psemu_set_hardware_id(b, 0xBB2222BBu);
+    printf("hardware ids: A=0x%08X B=0x%08X\n", psemu_get_hardware_id(a), psemu_get_hardware_id(b));
 
     printf("slice_cycles=%u (frontend frame = %u), frames=%ld, slices/frame=%u\n", slice_cycles, FRAME_CYCLES,
         frames, FRAME_CYCLES / (slice_cycles ? slice_cycles : 1u));
@@ -408,13 +446,36 @@ int main(int argc, char **argv) {
                         continue;
                     }
                     buf = psemu_bus_read32(&ps->bus, table + (idx - 1u) * 4u);
-                    if (buf == 0u) {
+                    nbytes = (bcount + 7u) / 8u;
+                    /* These fields are updated non-atomically by the app, so a poll can land mid-update and
+                       read a half-written table entry. Sampling A once produced a "buffer" at 0x000000FF,
+                       inside the BIOS callback slots. Every real buffer seen sits in low WRAM, so reject
+                       anything that could not be one rather than snapshotting nonsense. */
+                    if (buf < 0x100u || buf + nbytes > 0x800u) {
                         continue;
+                    }
+                    /* The sender holds its message from before the first bit goes out until it clears the
+                       buffer afterwards; the receiver's exists only once the last bit lands. Snapshotting
+                       both sides at "peak bit_index" therefore caught the sender just after it had zeroed
+                       the buffer. Capture the first-bit state and the last-bit state separately, and
+                       compare the sender's first against the receiver's last. */
+                    if (bidx >= 1u && !(side ? b_have_first : a_have_first)) {
+                        for (k = 0; k < nbytes; k++) {
+                            (side ? b_first : a_first)[k] = psemu_bus_read8(&ps->bus, buf + k);
+                        }
+                        if (side) {
+                            b_have_first = 1;
+                            b_first_len = (int)nbytes;
+                            b_first_frame = f;
+                        } else {
+                            a_have_first = 1;
+                            a_first_len = (int)nbytes;
+                            a_first_frame = f;
+                        }
                     }
                     if (bidx <= (side ? b_peak_bits : a_peak_bits)) {
                         continue;
                     }
-                    nbytes = (bcount + 7u) / 8u;
                     for (k = 0; k < nbytes; k++) {
                         (side ? b_snap : a_snap)[k] = psemu_bus_read8(&ps->bus, buf + k);
                     }
@@ -433,8 +494,8 @@ int main(int argc, char **argv) {
                     }
                 }
             }
-            total_a_to_b += relay_edges(a, b, "A->B", trace);
-            total_b_to_a += relay_edges(b, a, "B->A", trace);
+            total_a_to_b += relay_edges(a, b, "A->B", trace, playout_delay);
+            total_b_to_a += relay_edges(b, a, "B->A", trace, playout_delay);
             cycles_this_frame += slice;
         }
 
@@ -483,42 +544,61 @@ int main(int argc, char **argv) {
 
     printf("\nedges relayed: A->B %ld, B->A %ld\n", total_a_to_b, total_b_to_a);
     printf("B receive state machine: max state reached = %u (state changes: %d)\n", max_b_state, state_changes);
-    /* The decisive check. Each side's message is snapshotted at its own peak bit_index, so this compares
-       what the sender actually assembled against what the receiver actually decoded, at the moments those
-       existed - not whatever the shared, later-cleared buffers happen to hold at the end of the run. A
-       result here is only meaningful if the bytes are non-trivial: two all-zero buffers "match" without any
-       transfer having happened at all, which is exactly how an earlier version of this check misled. */
+    /* The decisive check, and the only one here that cannot be faked by coincidence.
+
+       Comparing the two sides' message buffers byte-for-byte proved unreliable three separate times: both
+       instances run the same app from the same save file, so their buffers start identical, and two all-zero
+       or two identically-stale buffers "match" without a single edge having been relayed. The buffers are
+       also cleared and reused right after a transfer, so when they are sampled matters as much as what they
+       hold.
+
+       Giving each instance a distinct hardware id removes the ambiguity. A real IR message carries the
+       sender's id, so finding one side's id in the other side's RAM can only happen if data actually
+       crossed the link. Neither instance can derive the other's id by any other route. */
     {
-        int i, same = 0, diff = 0, a_nonzero = 0, b_nonzero = 0;
-        int n = a_snap_len < b_snap_len ? a_snap_len : b_snap_len;
-        printf("\nmessage snapshot: A %d bytes at peak %u bits (frame %ld), B %d bytes at peak %u bits (frame %ld)\n",
-            a_snap_len, a_peak_bits, a_snap_frame, b_snap_len, b_peak_bits, b_snap_frame);
-        for (i = 0; i < a_snap_len; i++) {
-            if (a_snap[i]) {
-                a_nonzero++;
+        uint32_t id_a = psemu_get_hardware_id(a);
+        uint32_t id_b = psemu_get_hardware_id(b);
+        uint32_t addr;
+        int b_has_a = 0, a_has_b = 0;
+        for (addr = 0x300u; addr + 4u <= 0x800u; addr++) {
+            uint32_t at_b = (uint32_t)psemu_bus_read8(&b->bus, addr) |
+                            ((uint32_t)psemu_bus_read8(&b->bus, addr + 1u) << 8) |
+                            ((uint32_t)psemu_bus_read8(&b->bus, addr + 2u) << 16) |
+                            ((uint32_t)psemu_bus_read8(&b->bus, addr + 3u) << 24);
+            uint32_t at_a = (uint32_t)psemu_bus_read8(&a->bus, addr) |
+                            ((uint32_t)psemu_bus_read8(&a->bus, addr + 1u) << 8) |
+                            ((uint32_t)psemu_bus_read8(&a->bus, addr + 2u) << 16) |
+                            ((uint32_t)psemu_bus_read8(&a->bus, addr + 3u) << 24);
+            if (at_b == id_a && !b_has_a) {
+                printf("B holds A's id 0x%08X at 0x%08X\n", id_a, addr);
+                b_has_a = 1;
+            }
+            if (at_a == id_b && !a_has_b) {
+                printf("A holds B's id 0x%08X at 0x%08X\n", id_b, addr);
+                a_has_b = 1;
             }
         }
-        for (i = 0; i < b_snap_len; i++) {
-            if (b_snap[i]) {
-                b_nonzero++;
-            }
+        printf("\nIR TRANSFER RESULT: A->B %s, B->A %s\n", b_has_a ? "VERIFIED" : "not seen",
+            a_has_b ? "VERIFIED" : "not seen");
+        if (b_has_a && a_has_b) {
+            printf("  Both sides decoded the other's hardware id: a full bidirectional exchange completed.\n");
+        } else if (!b_has_a && !a_has_b) {
+            printf("  Neither side holds the other's id: no message content crossed the link.\n");
         }
-        for (i = 0; i < n; i++) {
-            if (a_snap[i] == b_snap[i]) {
-                same++;
-            } else {
-                diff++;
-            }
-            printf("  [%2d] A=0x%02X B=0x%02X%s\n", i, a_snap[i], b_snap[i],
-                a_snap[i] != b_snap[i] ? "  <-- MISMATCH" : "");
+    }
+    /* The window both message buffers live in. Printed unconditionally because it is the quickest way to
+       see whether anything was written at all: with no transfer this range stays entirely zero. */
+    {
+        int j;
+        printf("\nlow-RAM window 0x340-0x36F at end of run:\n  A:");
+        for (j = 0; j < 48; j++) {
+            printf(" %02X", psemu_bus_read8(&a->bus, 0x340u + (uint32_t)j));
         }
-        printf("compared %d bytes: %d same, %d different (A has %d non-zero bytes, B has %d)\n", n, same, diff,
-            a_nonzero, b_nonzero);
-        if (n == 0 || (a_nonzero == 0 && b_nonzero == 0)) {
-            printf("  -> INCONCLUSIVE: nothing but zeroes to compare, so this says nothing about a transfer.\n");
-        } else if (diff == 0) {
-            printf("  -> TRANSFER VERIFIED: receiver decoded the sender's message exactly.\n");
+        printf("\n  B:");
+        for (j = 0; j < 48; j++) {
+            printf(" %02X", psemu_bus_read8(&b->bus, 0x340u + (uint32_t)j));
         }
+        printf("\n");
     }
     printf("A: cpu_faulted=%d  B: cpu_faulted=%d\n", psemu_cpu_faulted(a), psemu_cpu_faulted(b));
     /* Whether the receiving side ever even enabled the IR interrupt decides how it is meant to be driven:
