@@ -155,6 +155,14 @@ static void write_diagnostic_report(
        An empty value means "use the default".
      - Whether to show a console window (show_console). This app has no in-app
        toggle for it. Only a hand edit of settings.cfg sets it.
+     - Whether the window title carries live IR Link counters (ir_link_diagnostics),
+       off by default and likewise only settable by a hand edit. They report edges
+       sent, received, dropped, and arriving too late to be placed in time. That
+       last one is the reason this exists at all: a link can report Connected, with
+       matching sent and received counts and nothing dropped, and still decode
+       nothing, and no other symptom tells those two apart. Useful when diagnosing a
+       link that will not transfer, meaningless otherwise, and it changes every
+       frame, so it stays off unless asked for.
        --console and --no-console override it for a single run, the same as any
        other CLI flag. They do not write back to settings.cfg.
        A one-off flag on the command line is not the same thing as a persisted
@@ -179,6 +187,10 @@ typedef struct {
     char shadow_color[7];
     int show_console;
     int show_shadows;
+    /* Appends live IR Link edge counters to the window title while connected. Off by default: the numbers
+       mean nothing to someone just using the link, and they change every frame. See ir_link_diagnostics in
+       load_settings's comment above. */
+    int ir_link_diagnostics;
     /* SDL_GetScancodeName()-formatted key names (e.g. "Up", "Z", "Left Ctrl").
        Empty means "use that button's hardcoded default". See resolve_key_binding. */
     char key_up[32];
@@ -250,6 +262,7 @@ static int load_settings(app_settings_t *settings, const char *path) {
     settings->key_quick_save[0] = '\0';
     settings->key_quick_load[0] = '\0';
     settings->show_console = 0;
+    settings->ir_link_diagnostics = 0;
     settings->show_shadows = 0;
     if (f) {
         while (fgets(line, sizeof(line), f)) {
@@ -287,6 +300,8 @@ static int load_settings(app_settings_t *settings, const char *path) {
                 snprintf(settings->key_quick_load, sizeof(settings->key_quick_load), "%s", line + 15);
             } else if (strncmp(line, "show_console=", 13) == 0) {
                 settings->show_console = atoi(line + 13) != 0;
+            } else if (strncmp(line, "ir_link_diagnostics=", 20) == 0) {
+                settings->ir_link_diagnostics = atoi(line + 20) != 0;
             } else if (strncmp(line, "show_shadows=", 13) == 0) {
                 settings->show_shadows = atoi(line + 13) != 0;
             }
@@ -364,6 +379,7 @@ static void save_settings(const app_settings_t *settings, const char *path) {
     fprintf(f, "key_quick_save=%s\n", settings->key_quick_save);
     fprintf(f, "key_quick_load=%s\n", settings->key_quick_load);
     fprintf(f, "show_console=%d\n", settings->show_console ? 1 : 0);
+    fprintf(f, "ir_link_diagnostics=%d\n", settings->ir_link_diagnostics ? 1 : 0);
     fprintf(f, "show_shadows=%d\n", settings->show_shadows ? 1 : 0);
     fclose(f);
 }
@@ -1516,6 +1532,8 @@ int main(int argc, char **argv) {
 
     ir_link_t ir_link;
     ir_link_init(&ir_link);
+    /* After ir_link_init, which zeroes the struct. Off unless settings.cfg asks for it. */
+    ir_link.show_diagnostics = settings.ir_link_diagnostics;
 
     SDL_SysWMinfo wm_info;
     SDL_VERSION(&wm_info.version);

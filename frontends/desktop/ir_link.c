@@ -336,6 +336,9 @@ static void drain_tx_edges(ir_link_t *link, psemu_t *ps) {
    arriving too late to be placed in time (late climbs, which destroys decoding while everything else looks
    healthy). */
 static void update_connected_status(ir_link_t *link) {
+    if (!link->show_diagnostics) {
+        return; /* plain "Connected", set once by on_connected */
+    }
     snprintf(link->status, sizeof(link->status), "Connected  tx=%lu rx=%lu drop=%lu late=%lu", link->edges_sent,
         link->edges_received, link->dropped_tx, link->late_edges);
 }

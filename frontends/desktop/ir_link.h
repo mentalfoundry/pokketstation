@@ -159,6 +159,11 @@ typedef struct ir_link {
     unsigned long edges_sent;
     unsigned long edges_received;
     unsigned long dropped_tx;
+    /* When set, the connected status line carries the counters above, so they reach the window title. The
+       counters themselves are always maintained; only whether they are displayed is optional. Off unless the
+       frontend turns it on (settings.cfg's ir_link_diagnostics), since the numbers change every frame and
+       mean nothing to someone who is simply using the link. */
+    int show_diagnostics;
     /* How far ahead of this instance's own IR clock each arriving edge is scheduled. This is the margin the
        playout buffer actually delivers, as opposed to the margin it nominally budgets. Once it reaches zero
        an edge is already due on arrival, so ir_tick releases it immediately along with everything else that
