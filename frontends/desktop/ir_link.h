@@ -40,7 +40,14 @@ typedef enum {
 } ir_link_state_t;
 
 #define IR_LINK_DEFAULT_PIPE_NAME "\\\\.\\pipe\\pokketstation_ir_link"
-#define IR_LINK_WRITE_QUEUE_CAPACITY 64u
+
+/* One real IR message is far bigger than a "burst of transitions in one frame" suggests: a Chocobo World
+   transfer measured 658 edges, and the reply brings the total near 1000. At 64 this queue overflowed part
+   way through every message and silently dropped the rest, which is unrecoverable for a bit-banged protocol
+   where each pulse width carries a bit. Sized to hold several whole messages so a slow peer causes delay
+   rather than corruption. This mirrors IR_EDGE_QUEUE_CAPACITY in core/src/ir.h, which had the identical
+   problem at the identical size. */
+#define IR_LINK_WRITE_QUEUE_CAPACITY 4096u
 
 /* ir_link_pump runs once per rendered frame, about every 31ms, after that frame's psemu_run finished.
    An edge from the peer's whole last frame is therefore always somewhat stale when it reaches this instance's
@@ -107,6 +114,20 @@ typedef struct ir_link {
     uint32_t write_head;
     uint32_t write_count;
     int write_pending;
+
+    /* Wall-clock-to-core-clock offset, latched once when the link connects rather than recomputed per use.
+       An edge's timestamp says when it was produced, so converting it with an offset sampled later mixes two
+       different moments. Emulated time and wall time never advance at exactly the same rate, so a
+       recomputed offset differs from frame to frame, and edges produced in different frames then get
+       shifted by different amounts. That distorts the spacing between edges, and in this protocol the
+       spacing is the data: pulse width is what encodes each bit. Latching keeps every conversion on one
+       consistent mapping, so relative spacing survives exactly and only a uniform shift remains, which is
+       what IR_LINK_PLAYOUT_DELAY_US exists to absorb.
+       Confirmed by measurement: with the offset recomputed per call, a real app's transfer failed over this
+       transport while succeeding through an in-process relay; latching it makes the same transfer complete
+       in both directions. See frontends/desktop/ir_link_selftest.c's transfer mode. */
+    int64_t wall_minus_core_us;
+    int clock_offset_latched;
 
     char pipe_name[256];
     char status[128]; /* human-readable text for ir_link_status_text, such as a window-title suffix */

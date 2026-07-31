@@ -128,6 +128,7 @@ static void on_connected(ir_link_t *link) {
     link->write_pending = 0;
     link->write_head = 0;
     link->write_count = 0;
+    link->clock_offset_latched = 0; /* re-latched on this connection's first conversion */
     set_status(link, "Connected");
     start_read(link);
     enqueue_write(link, 0, 0, IR_WIRE_KIND_HELLO);
@@ -139,7 +140,11 @@ int ir_link_host(ir_link_t *link, const char *pipe_name) {
     link->is_server = 1;
     link->pipe = CreateNamedPipeA(pipe_name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1 /* one peer, this is a point-to-point link */,
-        (DWORD)(sizeof(ir_wire_message_t) * 8u), (DWORD)(sizeof(ir_wire_message_t) * 8u), 0, NULL);
+        /* Buffers sized for a whole message burst. At 8 messages the pipe itself became the bottleneck: a
+           sender could only hand over 8 edges before blocking, against the ~65 per frame a real transfer
+           produces. */
+        (DWORD)(sizeof(ir_wire_message_t) * IR_LINK_WRITE_QUEUE_CAPACITY),
+        (DWORD)(sizeof(ir_wire_message_t) * IR_LINK_WRITE_QUEUE_CAPACITY), 0, NULL);
     if (link->pipe == INVALID_HANDLE_VALUE) {
         link->state = IR_LINK_ERROR;
         set_status_with_error(link, "Couldn't create pipe", GetLastError());
@@ -203,6 +208,16 @@ int ir_link_connect(ir_link_t *link, const char *pipe_name) {
     return 1;
 }
 
+/* Returns this link's wall-to-core offset, sampling it once on first use after a connect and reusing it from
+   then on. See ir_link.h's wall_minus_core_us for why this must not be resampled per call. */
+static int64_t link_clock_offset(ir_link_t *link, psemu_t *ps) {
+    if (!link->clock_offset_latched) {
+        link->wall_minus_core_us = (int64_t)host_wall_us_now() - (int64_t)psemu_ir_get_clock_us(ps);
+        link->clock_offset_latched = 1;
+    }
+    return link->wall_minus_core_us;
+}
+
 static void handle_incoming_message(ir_link_t *link, psemu_t *ps, const ir_wire_message_t *msg) {
     if (msg->magic != IR_WIRE_MAGIC || msg->version != IR_WIRE_VERSION) {
         link->state = IR_LINK_ERROR;
@@ -213,25 +228,26 @@ static void handle_incoming_message(ir_link_t *link, psemu_t *ps, const ir_wire_
         return; /* handshake only: its purpose was the magic/version check just above */
     }
     {
-        int64_t wall_minus_core_us = (int64_t)host_wall_us_now() - (int64_t)psemu_ir_get_clock_us(ps);
+        int64_t wall_minus_core_us = link_clock_offset(link, ps);
         uint64_t local_us = wall_to_local_us(wall_minus_core_us, msg->timestamp_us) + IR_LINK_PLAYOUT_DELAY_US;
         psemu_ir_push_rx_edge(ps, local_us, msg->level);
     }
 }
 
-static void poll_read(ir_link_t *link, psemu_t *ps) {
+/* Returns 1 if a message was completed and consumed, 0 if nothing was ready. */
+static int poll_read(ir_link_t *link, psemu_t *ps) {
     DWORD bytes;
     if (!link->read_pending) {
-        return;
+        return 0;
     }
     if (!GetOverlappedResult(link->pipe, &link->ov_read, &bytes, FALSE)) {
         DWORD err = GetLastError();
         if (err == ERROR_IO_INCOMPLETE) {
-            return;
+            return 0;
         }
         link->state = IR_LINK_ERROR;
         set_status_with_error(link, "Peer disconnected", err);
-        return;
+        return 0;
     }
     link->read_pending = 0;
     if (bytes == sizeof(link->read_msg)) {
@@ -240,47 +256,71 @@ static void poll_read(ir_link_t *link, psemu_t *ps) {
     if (link->state == IR_LINK_CONNECTED) {
         start_read(link);
     }
+    return 1;
 }
 
-static void poll_write(ir_link_t *link) {
+/* Returns 1 if the outstanding write completed, 0 if it is still in flight. */
+static int poll_write(ir_link_t *link) {
     DWORD bytes;
     if (!link->write_pending) {
-        return;
+        return 0;
     }
     if (!GetOverlappedResult(link->pipe, &link->ov_write, &bytes, FALSE)) {
         DWORD err = GetLastError();
         if (err == ERROR_IO_INCOMPLETE) {
-            return;
+            return 0;
         }
         link->state = IR_LINK_ERROR;
         set_status_with_error(link, "Peer disconnected", err);
-        return;
+        return 0;
     }
     link->write_pending = 0;
     link->write_head = (link->write_head + 1u) % IR_LINK_WRITE_QUEUE_CAPACITY;
     link->write_count--;
+    return 1;
 }
 
 static void drain_tx_edges(ir_link_t *link, psemu_t *ps) {
     psemu_ir_edge_t edge;
-    int64_t wall_minus_core_us = (int64_t)host_wall_us_now() - (int64_t)psemu_ir_get_clock_us(ps);
+    int64_t wall_minus_core_us = link_clock_offset(link, ps);
     while (psemu_ir_pop_tx_edge(ps, &edge)) {
         uint64_t wall_us = local_to_wall_us(wall_minus_core_us, edge.timestamp_us);
         enqueue_write(link, wall_us, edge.level, IR_WIRE_KIND_EDGE);
     }
 }
 
+/* One pump must move a whole frame's worth of edges, not one message.
+   A real IR burst is hundreds of transitions produced across a handful of emulated frames - measured at 658
+   edges for one Chocobo World message, roughly 65 per frame. This used to complete exactly one read and one
+   write per pump, so the transport carried about one edge per frame in each direction and a burst could
+   never get through in time; the write queue then overflowed and dropped the rest. Both directions now drain
+   until the pipe has nothing left to give or nothing left to take, which is the same backpressure as before,
+   just no longer throttled to one message per frame.
+   The bound is a safety net against an unexpectedly hot pipe starving the rest of the frame, not an
+   expected limit. */
+#define IR_LINK_MAX_MESSAGES_PER_PUMP 4096
+
 static void pump_connected(ir_link_t *link, psemu_t *ps) {
-    poll_read(link, ps);
-    if (link->state != IR_LINK_CONNECTED) {
-        return;
+    int i;
+    for (i = 0; i < IR_LINK_MAX_MESSAGES_PER_PUMP; i++) {
+        if (!poll_read(link, ps) || link->state != IR_LINK_CONNECTED) {
+            break;
+        }
     }
-    poll_write(link);
     if (link->state != IR_LINK_CONNECTED) {
         return;
     }
     drain_tx_edges(link, ps);
-    start_write(link);
+    for (i = 0; i < IR_LINK_MAX_MESSAGES_PER_PUMP; i++) {
+        poll_write(link);
+        if (link->state != IR_LINK_CONNECTED) {
+            return;
+        }
+        if (link->write_pending || link->write_count == 0) {
+            break; /* still in flight, or nothing left to send */
+        }
+        start_write(link);
+    }
 }
 
 void ir_link_pump(ir_link_t *link, psemu_t *ps) {
