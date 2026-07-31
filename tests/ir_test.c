@@ -211,6 +211,57 @@ static void test_irda_misc_is_a_reserved_stub(void) {
     printf("test_irda_misc_is_a_reserved_stub OK\n");
 }
 
+static void test_tx_falling_edge_lands_later_than_rising(void) {
+    /* IR_TX_FALL_STRETCH_CYCLES (ir.c): a documented concession, not a modeled physical effect. Only the
+       falling edge is delayed. This checks the direction and asymmetry of that behavior without hardcoding
+       the exact constant, the same way test_bflt_enabled_rejects_short_glitch checks IR_BFLT_DEBOUNCE_CYCLES
+       by behavior instead of by value. */
+    psemu_t *ps = make_ps();
+    ir_edge_t edge;
+    uint64_t write_time;
+
+    psemu_bus_write32(&ps->bus, IRDA_MODE, TX_ACTIVE_MODE);
+    write_time = ir_get_clock_cycles(&ps->ir);
+
+    psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED); /* LED on: a rising edge */
+    assert(ir_pop_tx_edge(&ps->ir, &edge) == 1);
+    assert(edge.level == 1);
+    assert(edge.timestamp_cycles == write_time); /* rising edges are never stretched */
+
+    psemu_bus_write32(&ps->bus, IRDA_DATA, 0); /* LED off: a falling edge, at the same clock_cycles */
+    assert(ir_pop_tx_edge(&ps->ir, &edge) == 1);
+    assert(edge.level == 0);
+    assert(edge.timestamp_cycles > write_time); /* falling edges land later than when they were written */
+
+    psemu_destroy(ps);
+    printf("test_tx_falling_edge_lands_later_than_rising OK\n");
+}
+
+static void test_tx_short_pulse_keeps_edges_in_order(void) {
+    /* The monotonicity guard in enqueue_tx_edge (ir.c): a real pulse shorter than the stretch would
+       otherwise let a delayed falling edge land after the rising edge that follows it, reordering the
+       queue. This drives the worst case directly: three edges written back to back, with no ir_tick
+       between any of them, so the clock never advances and the falling edge's stretch has zero real gap
+       to work with. */
+    psemu_t *ps = make_ps();
+    ir_edge_t first, second, third;
+
+    psemu_bus_write32(&ps->bus, IRDA_MODE, TX_ACTIVE_MODE);
+    psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED); /* rising */
+    psemu_bus_write32(&ps->bus, IRDA_DATA, 0);           /* falling, stretched into the future */
+    psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED); /* rising again, still at the true (unstretched) time */
+
+    assert(ir_pop_tx_edge(&ps->ir, &first) == 1 && first.level == 1);
+    assert(ir_pop_tx_edge(&ps->ir, &second) == 1 && second.level == 0);
+    assert(ir_pop_tx_edge(&ps->ir, &third) == 1 && third.level == 1);
+
+    assert(second.timestamp_cycles >= first.timestamp_cycles);
+    assert(third.timestamp_cycles >= second.timestamp_cycles); /* clamped: never lands before the falling edge */
+
+    psemu_destroy(ps);
+    printf("test_tx_short_pulse_keeps_edges_in_order OK\n");
+}
+
 int main(void) {
     test_tx_write_with_carrier_enabled_enqueues_edges();
     test_tx_write_without_carrier_produces_no_edge();
@@ -222,6 +273,8 @@ int main(void) {
     test_bflt_enabled_confirms_sustained_edge();
     test_full_loopback_tx_to_rx_across_two_instances();
     test_irda_misc_is_a_reserved_stub();
+    test_tx_falling_edge_lands_later_than_rising();
+    test_tx_short_pulse_keeps_edges_in_order();
     printf("All IR tests passed.\n");
     return 0;
 }

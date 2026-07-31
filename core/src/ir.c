@@ -13,11 +13,38 @@ int psemu_ir_trace_enabled = 0;
    This is an inferred debounce window, not a confirmed hardware measurement. See ir.h's top comment. */
 #define IR_BFLT_DEBOUNCE_CYCLES ((2ull * PSEMU_ASSUMED_CPU_HZ) / IR_CARRIER_HZ)
 
+/* A deliberate concession, not a modeled physical effect. Documented here, not hidden: a real IR-using
+   app's receive-side sync-pulse acceptance window rejects this emulator's own transmitted sync pulse by a
+   small margin (measured at 26-38 Timer2 ticks short of the window floor - see docs/hardware-notes.md's
+   "Unresolved" bullet for the full history). Real hardware measurements, three separate times, ruled out
+   every CPU and interrupt-dispatch explanation for a shortfall of this shape: timer reload semantics,
+   interrupt entry cost, and re-arm latency over both IRQ and FIQ, including a full realistic dispatch
+   chain with the same shape the real transmit handler uses. All three matched real hardware exactly. This
+   emulator's own digital timing is not the source of the gap.
+   The leading remaining explanation is real transceiver physics outside the CPU entirely: an LED does not
+   switch off instantly, and a receiving photodiode's own response and AGC settling add real time before a
+   pulse reads as "ended". This emulator does not model IR as an analog signal, and does not try to here
+   either. It only stretches when a transmitted pulse appears to end, by a fixed amount, so that a real
+   app's own receive-side timing expectations - tuned against real analog hardware this project has no way
+   to reproduce - can still be met by this fully digital link.
+   Only the falling edge (LED digitally commanded off) is delayed. The rising edge (LED turning on) stays
+   at its true digital time, and the OFF gap between pulses is intentionally left unstretched: there is no
+   real-hardware evidence for what a receiver expects there, only for the ON-pulse acceptance window.
+   The constant is tuned against this emulator's own measured shortfall (38 Timer2 ticks, at a real IR
+   app's own IR-screen clock rate and Timer2's /2 divisor), converted to this fixed PSEMU_ASSUMED_CPU_HZ
+   reference rate, not against the real app's own unrelated "184" constant: an earlier attempt used 184
+   directly and reordered edges outright, delaying a falling edge past the next pulse's rising edge - the
+   real gap between transmitted pulses is far smaller than 184 Timer2 ticks. See tools/ir_probe.c for the
+   two-instance test this was calibrated against, and for the trace that caught that reordering before it
+   shipped. */
+#define IR_TX_FALL_STRETCH_CYCLES 316ull
+
 void ir_init(ir_t *ir) {
     ir->mode = 0;
     ir->data = 0;
     ir->clock_cycles = 0;
     ir->tx_led_state = 0;
+    ir->tx_last_edge_cycles = 0;
     ir->tx_queue.head = 0;
     ir->tx_queue.count = 0;
     ir->rx_queue.head = 0;
@@ -107,7 +134,20 @@ static int tx_emit_active(const ir_t *ir) {
 }
 
 static void enqueue_tx_edge(ir_t *ir, int level) {
-    queue_push(&ir->tx_queue, ir->clock_cycles, level);
+    /* See IR_TX_FALL_STRETCH_CYCLES above: only a falling edge (level 0, LED commanded off) is delayed. */
+    uint64_t timestamp = ir->clock_cycles;
+    if (level == 0) {
+        timestamp += IR_TX_FALL_STRETCH_CYCLES;
+    }
+    /* Guards against a stretched falling edge landing after the pulse that follows it. A real gap this
+       short should not happen at the tuned constant above, but this makes that a compressed edge instead
+       of a silently reordered queue if it ever does - caught exactly this way once already, while tuning
+       the constant: an earlier, larger value delayed a falling edge past the next rising edge outright. */
+    if (timestamp < ir->tx_last_edge_cycles) {
+        timestamp = ir->tx_last_edge_cycles;
+    }
+    ir->tx_last_edge_cycles = timestamp;
+    queue_push(&ir->tx_queue, timestamp, level);
 }
 
 static void handle_mode_write(ir_t *ir) {

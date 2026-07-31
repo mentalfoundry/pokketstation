@@ -107,6 +107,9 @@ typedef struct ir {
     uint64_t clock_cycles; /* local monotonic clock. Only ir_tick advances it. */
 
     int tx_led_state; /* the last edge level this emitted onto tx_queue */
+    uint64_t tx_last_edge_cycles; /* the last timestamp actually pushed onto tx_queue. Guards
+                                      IR_TX_FALL_STRETCH_CYCLES (ir.c): a stretched falling edge must never
+                                      land after the pulse that follows it. */
 
     ir_edge_queue_t tx_queue; /* edges from local CPU writes. ir_pop_tx_edge collects them. */
     ir_edge_queue_t rx_queue; /* edges from ir_push_rx_edge. They wait for their delivery time. */
