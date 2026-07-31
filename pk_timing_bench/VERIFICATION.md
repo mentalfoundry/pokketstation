@@ -8,6 +8,23 @@ Each entry below is one full run. Each entry lists the build state tested, the e
 
 ---
 
+## 2026-07-31 (yet later) — retail PocketStation unit (adds screen 11)
+
+**Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 11 (the real transmit handler's full dispatch chain: acknowledge, nested `ARM` call, `ARM`-to-`Thumb` trampoline, then re-arm - not a bare re-arm) since the previous run. `SCREEN_EXIT_PROMPT` moved from index 11 to 12. Only screen 11 was read this run.
+
+| Screen | Test (top) | Control (bottom) |
+|---|---|---|
+| 11 — full-dispatch FIQ latency | `0x00000FE4` | `0x000003F8` |
+
+**Interpretation:**
+
+- **Real hardware matches screens 8 and 10 exactly, bit-for-bit, a third time.** `0x0FE4`/`0x03F8` is the identical raw pair both of those screens read. The arithmetic is unchanged: bottom confirms the armed period (`0x3F8` = 1016), top gives an effective period of `4068 * 32 / 64 / 2` = 1017 Timer2 ticks, latency `1017 - 1017` = **0 ticks**. This holds even with the full realistic dispatch chain in the handler, not just a bare re-arm.
+- **This is no longer just "another candidate ruled out."** It falsifies the underlying theory screens 8, 10, and 11 were all built to test: that a re-armed timer's next period does not start until its handler reaches the re-arm, so dispatch latency adds to every period. Three real-hardware measurements now show 0 added latency regardless of how much work sits between expiry and the register write. The simplest explanation left standing: Timer2 auto-reloads in hardware the instant it expires, independent of when software services the interrupt, as long as any re-arm write lands before the *next* natural expiry - which, at a ~1017-tick period against a <200-tick dispatch chain, it always does with enormous margin. See docs/hardware-notes.md's "Unresolved" bullet: the 184-tick figure the real app compensates for is very unlikely to be latency compensation at all, and the original disassembly that produced the "1200 − 184 = 1016" reading is worth re-examining for an alternative meaning.
+
+This run had no crashes, no hangs, and no other anomalies.
+
+---
+
 ## 2026-07-31 (even later) — retail PocketStation unit (adds screen 10)
 
 **Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 10 (expiry-to-re-arm latency over FIQ/Timer2, instead of screen 8's IRQ/Timer1) since the previous run. `SCREEN_EXIT_PROMPT` moved from index 10 to 11. Only screen 10 was read this run.

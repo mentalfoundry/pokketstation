@@ -180,7 +180,9 @@ This screen reproduces that same shape - acknowledge, nested ARM call, ARM-to-Th
 | | top row | effective period | latency |
 |---|---|---|---|
 | This emulator | `0x1103` | 1088.8 | 71.8 ticks |
-| Real hardware | *(not yet measured)* | | |
+| Real hardware (measured 2026-07-31, see [VERIFICATION.md](VERIFICATION.md)) | `0x0FE4` | 1017 | **0 ticks** |
+
+**Real hardware matches screens 8 and 10 exactly, bit-for-bit, a third time.** Even with the full realistic dispatch chain in the handler, not a bare re-arm, real hardware still shows 0 added latency. This does more than rule out one more candidate: it falsifies the theory all three screens were built to test, that a re-armed timer's next period does not start until its handler reaches the re-arm. The simplest explanation left standing is that Timer2 auto-reloads in hardware the instant it expires, independent of when software services the interrupt, as long as the re-arm write lands before the *next* natural expiry - which it always does by a wide margin here. See "Unresolved" in [docs/hardware-notes.md](../docs/hardware-notes.md): the app's 184-tick figure is very unlikely to be latency compensation at all.
 
 ### Reading the hex digits
 
