@@ -44,11 +44,11 @@ To change the icon: edit or replace `assets/card_icon.bmp`, then rebuild. The fi
 
 ## Controls
 
-This app runs all ten measurements once, at startup. After that, you page through ten result screens by hand:
+This app runs all eleven measurements once, at startup. After that, you page through eleven result screens by hand:
 
 - **RIGHT**: next screen
 - **LEFT**: previous screen
-- Screens wrap around (10 → RIGHT → 1, 1 → LEFT → 10)
+- Screens wrap around (11 → RIGHT → 1, 1 → LEFT → 11)
 - **Holding ACTION** opens a CONTINUE/EXIT prompt, for returning to the system without a hardware reset. UP selects CONTINUE, DOWN selects EXIT, and a fresh ACTION press confirms. See "Screen index used for the continue/exit prompt" in `src/constants.inc`, and `src/ui.s`'s `pb_prompt_confirm_exit`, for the full behavior.
 
 ## What each screen shows
@@ -170,6 +170,17 @@ A disassembled trace of the *real* IR transmit handler, not a synthetic one, sho
 | Real hardware (measured 2026-07-31, see [VERIFICATION.md](VERIFICATION.md)) | `0x0FE4` | 1017 | **0 ticks** |
 
 **FIQ costs the same as IRQ on real hardware.** `0x0FE4`/`0x03F8` is the exact same raw pair screen 8 read for IRQ. This emulator's own 39-tick figure (higher than screen 8's 31-tick IRQ figure, for the same synthetic shape) is a small emulator inaccuracy, not evidence of FIQ-specific overhead - real hardware shows none. Combined with screens 6-9, every generic memory-access and interrupt-path cost this project can measure now matches real hardware. See "Unresolved" in [docs/hardware-notes.md](../docs/hardware-notes.md) for where this leaves the investigation.
+
+**Screen 11: what does the real transmit handler's FULL dispatch chain cost, not just a bare re-arm?** Same layout and arithmetic as screens 8 and 10.
+
+Screens 8 and 10 both measured a *bare* re-arm: install a minimal handler, take an interrupt, write two timer registers, return. Both came back at 0 ticks on real hardware. But a disassembled trace of the real transmit handler shows its actual dispatch is not bare. It acknowledges its own interrupt sources, calls through a jump table indexed by INTC bit, calls a nested subroutine that reads a state flag, then calls a second subroutine that crosses from ARM to Thumb through an interworking `BX`, before it re-arms Timer2. Measured directly in this emulator (`tools/ir_probe.c`, not `pk_timing_bench`) by timing that real dispatch chain across a real Chocobo World transmit burst, the steady-state cost came out at 128-160 Timer2 ticks - most of the app's 184-tick budget, not the ~0-39 ticks a bare re-arm measures.
+
+This screen reproduces that same shape - acknowledge, nested ARM call, ARM-to-Thumb trampoline, then re-arm - as a real `pk_timing_bench` experiment, so it can be measured on real hardware the same direct way as screens 8 and 10, instead of only inside the emulator. It is not byte-for-byte identical to the real transmit handler (this is original homebrew code, not a copy), so an exact match to 128-160 is not expected. What matters is whether real hardware shows a bare-re-arm-like result (near 0, meaning this emulator overstates dispatch cost) or something closer to its own emulated figure or beyond (meaning the extra dispatch machinery genuinely costs real cycles this emulator's per-instruction model does not fully capture).
+
+| | top row | effective period | latency |
+|---|---|---|---|
+| This emulator | `0x1103` | 1088.8 | 71.8 ticks |
+| Real hardware | *(not yet measured)* | | |
 
 ### Reading the hex digits
 

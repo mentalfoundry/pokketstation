@@ -30,7 +30,7 @@
 @ CONTINUE or EXIT - enabling usrs to quit gracefully (it shows
 @ its own bespoke continue/exit choice before actually departing,
 @ rather than exiting unconditionally on a hold).
-.equ SCREEN_EXIT_PROMPT,        11
+.equ SCREEN_EXIT_PROMPT,        12
 @ 0 = CONTINUE selected, 1 = EXIT selected. Defaults to CONTINUE when the
 @ prompt first appears, matching the real reference app.
 .equ WRAM_EXIT_PROMPT_SELECTION, 0x268
@@ -165,6 +165,25 @@
 @ INT_TIMER2_BIT (0x2000, bit 13) is the FIQ-side enable bit, not
 @ INT_TIMER1_BIT's IRQ-side one - see INT_FIQ_MASK in core/src/intc.h.
 .equ INT_TIMER2_BIT, 0x2000
+
+@ Experiment 11: what does the real transmit handler's FULL dispatch chain
+@ cost, not just a bare re-arm? A disassembled trace of the real handler
+@ (see screen 10's comment) shows it is not a bare re-arm: it acknowledges
+@ its own interrupt sources first, calls through a jump table indexed by
+@ INTC bit, calls a nested subroutine that reads a flag byte, then calls a
+@ second subroutine that crosses from ARM to Thumb through an interworking
+@ BX before it re-arms Timer2. Emulator-side measurement (not on real
+@ hardware, see docs/hardware-notes.md's "Unresolved" bullet) put that full
+@ chain's cost at 128-160 Timer2 ticks, most of the app's 184-tick budget -
+@ far more than screen 10's bare re-arm (0 ticks on real hardware). This
+@ reproduces that same shape, screen 8/10's exact method, so the results
+@ are directly comparable across all three: screen 8 (bare, IRQ), screen 10
+@ (bare, FIQ), screen 11 (full realistic dispatch, FIQ).
+@ WRAM_EXP11_FLAG is a dummy state byte the flag-check subroutine reads,
+@ standing in for the real handler's own state-struct field read.
+.equ WRAM_REARM3_DELTA,      0x2B8
+.equ WRAM_REARM3_COUNTER,    0x2BC
+.equ WRAM_EXP11_FLAG,        0x2C0
 
 @ Real BIOS ROM addresses (external to this app's own linked image - these
 @ are fixed, hardcoded, NOT link-time symbols) - see docs/app-notes.md.

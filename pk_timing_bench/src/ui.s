@@ -145,6 +145,8 @@ clr_loop:
     beq rs_irda_screen
     cmp r4, #10
     beq rs_fiq_rearm_screen
+    cmp r4, #11
+    beq rs_full_dispatch_screen
 
     sub r5, r4, #1
     lsl r5, r5, #3
@@ -247,6 +249,24 @@ rs_fiq_rearm_screen:
     @ Timer2/FIQ periods (top), and the period each one was armed with
     @ (bottom). Same layout as screen 8 (rs_rearm_screen), FIQ instead of IRQ.
     ldr r5, =WRAM_REARM2_DELTA
+    ldr r0, [r5]
+    mov r1, #9
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r0, =EXP8_TIMER_PERIOD
+    mov r1, #17
+    mov r2, #0
+    bl draw_hex_u32
+    b rs_done
+
+rs_full_dispatch_screen:
+    @ Experiment 11: Timer0 stopwatch ticks across EXP8_INTERRUPTS re-armed
+    @ Timer2/FIQ periods (top), the same shape as screen 10, but the handler
+    @ does the full realistic dispatch (acknowledge, nested call, ARM-to-
+    @ Thumb trampoline) before its re-arm. Bottom is the armed period, same
+    @ as screens 8 and 10.
+    ldr r5, =WRAM_REARM3_DELTA
     ldr r0, [r5]
     mov r1, #9
     mov r2, #0
@@ -521,7 +541,7 @@ screen_next:
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
     add r1, r1, #1
-    cmp r1, #10
+    cmp r1, #11
     ble sn_store
     mov r1, #1
 sn_store:
@@ -537,7 +557,7 @@ screen_prev:
     sub r1, r1, #1
     cmp r1, #1
     bge sp_store
-    mov r1, #10
+    mov r1, #11
 sp_store:
     str r1, [r0]
     pop {r0, r1, lr}

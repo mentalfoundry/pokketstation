@@ -95,3 +95,32 @@ register_fiq_handler:         @ r0 = handler address, or 0 to unregister
     svc #1
     pop {r3}                     @ r3 = saved lr
     bx r3
+
+@ Experiment 11's re-arm target. Entered via an interworking BX from ARM code
+@ (helpers.s's exp11_rearm_via_trampoline), the same ARM-to-Thumb crossing a
+@ disassembled trace of the real transmit handler shows before its own
+@ re-arm. r0=TIMER2_BASE, r1=period. Calls a second, nested Thumb function to
+@ do the actual writes, mirroring that same trace's own two-level Thumb call
+@ shape, rather than writing period/count directly here.
+@
+@ Returns via pop-then-bx, not a direct "pop {..., pc}": on ARMv4T a Thumb
+@ POP into PC does not interwork (see register_irq_handler's comment above -
+@ this avoids the exact same trap).
+    .thumb_func
+    .global exp11_thumb_rearm
+
+exp11_thumb_rearm:            @ r0=TIMER2_BASE, r1=period; lr = the ARM caller's return address
+    push {r4, r5, lr}
+    adds r4, r0, #0            @ low<-low "MOV": ARM7TDMI's real Thumb-1 has no dedicated encoding for
+    adds r5, r1, #0            @ this, only this always-flag-setting ADD idiom - see measure_loop_ptr_thumb above
+    bl exp11_thumb_write_both
+    pop {r4, r5}
+    pop {r0}
+    mov lr, r0
+    bx lr
+
+    .thumb_func
+exp11_thumb_write_both:       @ r4=TIMER2_BASE, r5=period; a plain Thumb-to-Thumb call, no interworking
+    str r5, [r4]
+    str r5, [r4, #4]
+    bx lr

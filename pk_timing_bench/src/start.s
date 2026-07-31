@@ -193,6 +193,15 @@ clk_wait:
     bl draw_pixel
     .ltorg
 
+    @ Experiment 11 (screen 11): the real transmit handler's full dispatch
+    @ chain over FIQ - acknowledge, nested ARM call, ARM-to-Thumb trampoline,
+    @ re-arm - not just the bare re-arm screen 10 measures. See experiments.s.
+    bl run_experiment_11_realistic_fiq_dispatch
+    mov r0, #13
+    mov r1, #0
+    bl draw_pixel
+    .ltorg
+
     @ --- init UI state ---
     ldr r0, =WRAM_SCREEN_INDEX
     mov r1, #1

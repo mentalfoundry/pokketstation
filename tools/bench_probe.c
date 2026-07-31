@@ -190,6 +190,18 @@ int main(int argc, char **argv) {
             printf("  -> expiry-to-re-arm latency %.1f ticks\n", ticks - 1017.0);
         }
     }
+    /* Experiment 11 (screen 11): same shape as screen 10, but the handler does the full realistic dispatch
+       (acknowledge, nested call, ARM-to-Thumb trampoline) before its re-arm, not a bare one. */
+    {
+        uint32_t delta = psemu_bus_read32(&ps->bus, 0x2B8u);
+        printf("screen11 full-dispatch FIQ latency @0x2B8:\n");
+        printf("  Timer0 delta over 64 periods 0x%08X\n", delta);
+        if (delta) {
+            double ticks = (double)delta * 32.0 / 64.0 / 2.0;
+            printf("  -> effective period %.1f Timer1 ticks (armed 1016, so 1017 without latency)\n", ticks);
+            printf("  -> expiry-to-write latency %.1f ticks\n", ticks - 1017.0);
+        }
+    }
 
     printf("screen:\n");
     print_framebuffer(ps);

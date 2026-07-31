@@ -19,7 +19,7 @@
 #define WRAM_SCREEN_INDEX 0x25Cu
 #define WRAM_FIRE_HOLD_COUNTER 0x264u
 #define WRAM_EXIT_PROMPT_SELECTION 0x268u
-#define SCREEN_EXIT_PROMPT 11u
+#define SCREEN_EXIT_PROMPT 12u
 #define FIRE_HOLD_THRESHOLD 75000u
 
 static uint8_t *read_file(const char *path, size_t *out_size) {

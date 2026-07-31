@@ -20,6 +20,7 @@
     .global irq_ack_handler
     .global irq_rearm_handler
     .global irq_rearm_handler_t2
+    .global irq_rearm_handler_t2_full
 
 memcpy_words:            @ r0=dst, r1=src, r2=count(words)
     push {r3, lr}
@@ -343,4 +344,57 @@ irq_rearm_handler_t2:
     add r1, r1, #1
     str r1, [r0]
     pop {r0, r1, pc}
+    .ltorg
+
+@ Experiment 11's flag-check subroutine. A disassembled trace of the real
+@ transmit handler shows it calls a small subroutine that reads a byte out
+@ of its own state struct, then branches on it, before doing its main work.
+@ This stands in for that read. It always returns nonzero: this experiment
+@ always takes the "do the work" path, since the real handler's own
+@ state-machine branching is not what is being measured here, only the
+@ dispatch cost around it.
+exp11_flag_check:
+    push {r7, lr}
+    ldr r7, =WRAM_EXP11_FLAG
+    ldrb r0, [r7]
+    pop {r7, pc}
+    .ltorg
+
+@ Experiment 11's re-arm subroutine. Sets up Timer2's base and period, then
+@ crosses into Thumb through an interworking BX to actually perform the
+@ writes (exp11_thumb_rearm, thumb_loop.s) - mirroring the real handler's
+@ own ARM-to-Thumb trampoline call before its own re-arm.
+exp11_rearm_via_trampoline:
+    push {r0, r1, lr}
+    ldr r0, =TIMER2_BASE
+    ldr r1, =EXP8_TIMER_PERIOD
+    adr lr, exp11_trampoline_ret
+    ldr r2, =exp11_thumb_rearm
+    bx r2
+exp11_trampoline_ret:
+    pop {r0, r1, pc}
+    .ltorg
+
+@ FIQ handler for experiment 11: the full realistic dispatch shape a
+@ disassembled trace of the real transmit handler showed, not just a bare
+@ re-arm (compare irq_rearm_handler_t2 above). It acknowledges its own
+@ sources first, calls a nested subroutine that reads a state flag, then
+@ calls a second subroutine that crosses into Thumb before re-arming Timer2.
+@ See experiments.s's run_experiment_11_realistic_fiq_dispatch.
+irq_rearm_handler_t2_full:
+    push {r0, r1, r2, lr}
+    ldr r0, =INTC_BASE
+    ldr r1, [r0]                       @ HOLD
+    ldr r2, [r0, #8]                   @ ENABLE
+    and r1, r1, r2
+    str r1, [r0, #0x10]                @ acknowledge, mirroring the real handler's own early ack
+
+    bl exp11_flag_check
+    bl exp11_rearm_via_trampoline
+
+    ldr r0, =WRAM_REARM3_COUNTER
+    ldr r1, [r0]
+    add r1, r1, #1
+    str r1, [r0]
+    pop {r0, r1, r2, pc}
     .ltorg

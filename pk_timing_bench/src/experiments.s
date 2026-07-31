@@ -15,6 +15,7 @@
     .global run_experiment_8_rearm_latency
     .global run_experiment_9_irda_write
     .global run_experiment_10_fiq_rearm_latency
+    .global run_experiment_11_realistic_fiq_dispatch
 
 @ Experiment 1: sanity check - ARM vs Thumb opcode-fetch cost (~2:1 expected)
 run_experiment_1_sanity:
@@ -456,6 +457,105 @@ exp10_wait:
     ldr r1, =register_fiq_handler
     bx r1
 exp10_unreg_ret:
+
+    mov r0, #0                          @ restore Timer2 as it was found
+    str r0, [r4, #8]
+    str r5, [r4]
+    str r6, [r4, #4]
+    str r7, [r4, #8]
+
+    pop {r4, r5, r6, r7, r8, lr}
+    bx lr
+    .ltorg
+
+@ Experiment 11: what does the real transmit handler's FULL dispatch chain
+@ cost, not just a bare re-arm?
+@
+@ Screen 10 measured a bare re-arm over FIQ and found it costs the same as
+@ IRQ (0 ticks on real hardware). But a disassembled trace of the real
+@ transmit handler shows its actual dispatch is not bare: it acknowledges
+@ its own interrupt sources, calls through a jump table indexed by INTC bit,
+@ calls a nested subroutine that reads a state flag, then calls a second
+@ subroutine that crosses from ARM to Thumb through an interworking BX
+@ before it re-arms Timer2. Measured directly in this emulator (not yet on
+@ real hardware - see docs/hardware-notes.md's "Unresolved" bullet), that
+@ full chain costs 128-160 Timer2 ticks for the steady-state bulk of a real
+@ transmission: most of the app's 184-tick budget, far more than screen
+@ 10's bare re-arm.
+@
+@ This reproduces that same shape - acknowledge, nested ARM call, ARM-to-
+@ Thumb trampoline, re-arm - using screen 8/10's exact measurement method,
+@ so the result is directly comparable across all three: screen 8 (bare,
+@ IRQ), screen 10 (bare, FIQ), screen 11 (full realistic dispatch, FIQ).
+@ See irq_rearm_handler_t2_full, exp11_flag_check, and
+@ exp11_rearm_via_trampoline in helpers.s, and exp11_thumb_rearm in
+@ thumb_loop.s.
+run_experiment_11_realistic_fiq_dispatch:
+    push {r4, r5, r6, r7, r8, lr}
+
+    ldr r0, =WRAM_REARM3_COUNTER       @ counter starts at zero
+    mov r1, #0
+    str r1, [r0]
+    ldr r0, =WRAM_EXP11_FLAG           @ dummy state byte the flag-check subroutine reads
+    mov r1, #1
+    strb r1, [r0]
+
+    ldr r4, =TIMER2_BASE                @ save Timer2 before borrowing it
+    ldr r5, [r4]
+    ldr r6, [r4, #4]
+    ldr r7, [r4, #8]
+
+    ldr r0, =irq_rearm_handler_t2_full  @ install the handler before un-masking
+    adr lr, exp11_reg_ret
+    ldr r1, =register_fiq_handler
+    bx r1
+exp11_reg_ret:
+
+    mov r0, #0                          @ arm Timer2 exactly as the real app does
+    str r0, [r4, #8]
+    ldr r0, =EXP8_TIMER_PERIOD
+    str r0, [r4]
+    str r0, [r4, #4]
+    mov r0, #EXP8_TIMER_CTRL
+    str r0, [r4, #8]
+
+    ldr r0, =INTC_ENABLE                @ un-mask only Timer2's FIQ-side bit
+    ldr r1, =INT_TIMER2_BIT
+    str r1, [r0]
+
+    ldr r8, =WRAM_REARM3_COUNTER
+exp11_sync:                             @ start on an interrupt boundary
+    ldr r0, [r8]
+    cmp r0, #0
+    beq exp11_sync
+
+    mov r0, #0                          @ restart the count, then take the stopwatch
+    str r0, [r8]
+    ldr r2, =TIMER0_COUNT
+    ldr r3, [r2]
+
+exp11_wait:
+    ldr r0, [r8]
+    cmp r0, #EXP8_INTERRUPTS
+    blo exp11_wait
+    ldr r0, [r2]
+    sub r0, r3, r0                      @ Timer0 counts down, so before minus after
+    mov r0, r0, lsl #16                 @ 16-bit mask; Timer0 wraps at 0x10000
+    mov r0, r0, lsr #16
+
+    ldr r1, =WRAM_REARM3_DELTA          @ store the result now, before anything else
+    str r0, [r1]                        @ runs - see run_experiment_8_rearm_latency's
+                                         @ comment on register_irq_handler clobbering r3
+
+    ldr r0, =INTC_MASK                  @ re-mask every source at once
+    mvn r1, #0
+    str r1, [r0]
+
+    mov r0, #0                          @ unregister our handler again
+    adr lr, exp11_unreg_ret
+    ldr r1, =register_fiq_handler
+    bx r1
+exp11_unreg_ret:
 
     mov r0, #0                          @ restore Timer2 as it was found
     str r0, [r4, #8]
