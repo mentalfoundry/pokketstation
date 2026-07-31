@@ -14,6 +14,12 @@
    Both instances start from the same save state, so the app is already sitting on its IR screen. Instance A is
    told to transmit, instance B to receive, via the same button presses a user would make.
 
+   Prints, near the end of a run: the receive handler's own sync-pulse acceptance check (each measured
+   Timer2 delta against the app's own window, flagged "in window" when it passes), and a direct byte
+   comparison of A's and B's data buffers - the most reliable way to tell whether a transfer actually
+   decoded correctly, independent of trying to interpret the receive state machine's own internal state
+   numbers.
+
    usage: ir_probe <bios.bin> <app.mcs> <quicksave.dat> [slice_cycles] [frames] [scriptA] [scriptB] [trace]
      slice_cycles  emulated cycles to run each instance before exchanging edges. 33000 = one frontend frame
                    (the frontend's real behavior). Smaller = finer interleaving. Default 33000.
@@ -287,6 +293,15 @@ int main(int argc, char **argv) {
                     /* Timer2 counts down and reloads at 0xFFFF, so an unsigned 16-bit difference handles the
                        wrap the same way the handler's own `lsl/lsr #16` truncation does. */
                     meas[meas_n++] = (prev_t2 - t2) & 0xFFFFu;
+                    /* Dump B's PC trace a few edges after sync, so it lands inside the receive-side
+                       decode logic actually processing that edge, not idling afterward. */
+                    if (meas_n == 5) {
+                        FILE *tr = fopen("ir_probe_B_decode_trace.log", "w");
+                        if (tr) {
+                            psemu_write_crash_report(b, tr);
+                            fclose(tr);
+                        }
+                    }
                 }
                 prev_t2 = t2;
                 have_prev_t2 = 1;
@@ -392,6 +407,35 @@ int main(int argc, char **argv) {
         printf("A IR state block: unit[+0x20]=%u expected_level[+0x26]=%u state[+0x28]=%u\n",
             psemu_bus_read32(&a->bus, sb + 0x20u) & 0xFFFFu, psemu_bus_read8(&a->bus, sb + 0x26u),
             psemu_bus_read8(&a->bus, sb + 0x28u));
+    }
+    /* Direct proof of transfer success or failure, independent of interpreting the state machine's own
+       state numbers: field+0x14 is the data-buffer pointer both the transmit and receive state machines
+       use (see docs/hardware-notes.md's disassembly notes). If a transfer actually decoded correctly, B's
+       buffer should now hold the same bytes A's own buffer does. */
+    {
+        uint32_t sb = 0x000003C4u;
+        uint32_t a_buf = psemu_bus_read32(&a->bus, sb + 0x14u);
+        uint32_t b_buf = psemu_bus_read32(&b->bus, sb + 0x14u);
+        uint32_t bit_index_a = psemu_bus_read32(&a->bus, sb + 0xCu);
+        uint32_t bit_index_b = psemu_bus_read32(&b->bus, sb + 0xCu);
+        int i, mismatches = 0, matches = 0;
+        printf("A data buffer @0x%08X (bit_index=%u), B data buffer @0x%08X (bit_index=%u):\n", a_buf, bit_index_a,
+            b_buf, bit_index_b);
+        for (i = 0; i < 32; i++) {
+            uint8_t av = psemu_bus_read8(&a->bus, a_buf + (uint32_t)i);
+            uint8_t bv = psemu_bus_read8(&b->bus, b_buf + (uint32_t)i);
+            if (av != bv) {
+                mismatches++;
+            } else {
+                matches++;
+            }
+            printf("  [%2d] A=0x%02X B=0x%02X%s\n", i, av, bv, av != bv ? "  <-- MISMATCH" : "");
+        }
+        /* Byte-exact equality is a coincidence past the real message: B's buffer is not necessarily
+           zeroed the same way A's trailing memory happens to be. Report counts, not a blunt pass/fail -
+           the mismatch position within the message matters more than the total. */
+        printf("%d of %d bytes matched, %d differed (position matters more than the count here)\n", matches, matches + mismatches,
+            mismatches);
     }
     /* The app's IRQ dispatcher (found by disassembling the code dump above) reads its per-source handler
        table from a RAM-resident vector table, so the INT_IRDA handler's address is only knowable at runtime.
