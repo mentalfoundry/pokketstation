@@ -110,6 +110,10 @@ uint32_t ir_read(ir_t *ir, uint32_t offset) {
 static int queue_push(ir_edge_queue_t *q, uint64_t timestamp_cycles, int level) {
     uint32_t tail;
     if (q->count >= IR_EDGE_QUEUE_CAPACITY) {
+        if (psemu_ir_trace_enabled) {
+            printf("[ir trace] QUEUE FULL: dropped edge level=%d t=%llu\n", level,
+                (unsigned long long)timestamp_cycles);
+        }
         return 0; /* full: drop the newest edge rather than corrupt ordering */
     }
     tail = (q->head + q->count) % IR_EDGE_QUEUE_CAPACITY;

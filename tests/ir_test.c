@@ -262,6 +262,36 @@ static void test_tx_short_pulse_keeps_edges_in_order(void) {
     printf("test_tx_short_pulse_keeps_edges_in_order OK\n");
 }
 
+static void test_rx_queue_holds_a_full_message_without_dropping(void) {
+    /* A real 41-byte Chocobo World transmit burst produces 658 edges (see tools/ir_probe.c's transmit-side
+       analysis). IR_EDGE_QUEUE_CAPACITY was once 64: a real receiver relayed edges faster than it drained
+       them, the queue filled almost immediately, and queue_push's own full-queue guard silently dropped 594
+       of the 658 edges before decode ever saw them - confirmed directly by counting every edge's path
+       through the receive side, not inferred. This pushes more than one full message's worth of edges with
+       no ir_tick in between (the exact condition that starved the real queue), then drains them all in one
+       call. The final edge is the only one that differs in level from everything before it, so if any
+       edges were silently dropped along the way, rx_level ends up wrong. */
+    psemu_t *ps = make_ps();
+    uint64_t t0;
+    const int message_edges = 700;
+    int i;
+
+    psemu_bus_write32(&ps->bus, IRDA_MODE, RX_ACTIVE_MODE | IR_MODE_BFLT); /* filter disabled: apply immediately */
+    t0 = ir_get_clock_cycles(&ps->ir);
+
+    for (i = 0; i < message_edges - 1; i++) {
+        ir_push_rx_edge(&ps->ir, t0, 1); /* redundant after the first: still consumes a queue slot */
+    }
+    ir_push_rx_edge(&ps->ir, t0, 0); /* the one edge that must survive for this test to catch a drop */
+
+    ir_tick(&ps->ir, &ps->intc, 0); /* drains the entire backlog in one call, exactly like a relay burst */
+
+    assert(ps->ir.rx_level == 0);
+
+    psemu_destroy(ps);
+    printf("test_rx_queue_holds_a_full_message_without_dropping OK\n");
+}
+
 int main(void) {
     test_tx_write_with_carrier_enabled_enqueues_edges();
     test_tx_write_without_carrier_produces_no_edge();
@@ -275,6 +305,7 @@ int main(void) {
     test_irda_misc_is_a_reserved_stub();
     test_tx_falling_edge_lands_later_than_rising();
     test_tx_short_pulse_keeps_edges_in_order();
+    test_rx_queue_holds_a_full_message_without_dropping();
     printf("All IR tests passed.\n");
     return 0;
 }

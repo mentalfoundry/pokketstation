@@ -80,7 +80,12 @@ struct intc;
 
 #define IR_CARRIER_HZ 40000u
 
-#define IR_EDGE_QUEUE_CAPACITY 64u
+/* A real Chocobo World transmit burst (41 bytes) produces 658 edges (see tools/ir_probe.c's transmit-side
+   analysis). A capacity of 64 dropped 594 of those 658 outright once the two instances' independently
+   app-controlled CPU clock speeds (CLK_MODE) diverged during setup, backlogging the receive side's queue
+   faster than it could drain - confirmed directly via a counter on the drop path, not inferred. This margin
+   covers more than four such messages before dropping anything. */
+#define IR_EDGE_QUEUE_CAPACITY 4096u
 
 /* An edge is a transition of the demodulated IR signal.
    Level 1 means the carrier/LED went on. Level 0 means it went off.

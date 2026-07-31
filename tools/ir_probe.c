@@ -184,15 +184,17 @@ int main(int argc, char **argv) {
     /* Transmit-side analysis. Each time A's IRDA_DATA changes, this records the state of all three of A's
        timers, plus the emulated real time since the previous change. That identifies which timer actually
        paces the transmit callback, and what its effective period is, rather than assuming it. */
-#define TX_MAX 14
+#define TX_MAX 700
     struct {
         uint64_t at_ref;
+        long frame;
         uint32_t period[3], count[3], control[3];
     } tx_ev[TX_MAX];
     int tx_n = 0;
     uint32_t last_a_data = 0xFFFFFFFFu;
 #define MEAS_MAX 700
     uint32_t meas[MEAS_MAX];
+    long meas_frame[MEAS_MAX];
     int meas_n = 0;
     /* One-off instrumentation: neither INT_IRDA nor INT_TIMER2 are enabled for B in this scenario, so B is
        not interrupt-driven here at all - it must be polling directly, and no single PC address is a
@@ -284,6 +286,7 @@ int main(int argc, char **argv) {
                 if (tx_n < TX_MAX) {
                     int t;
                     tx_ev[tx_n].at_ref = a->ir.clock_cycles;
+                    tx_ev[tx_n].frame = f;
                     for (t = 0; t < 3; t++) {
                         tx_ev[tx_n].period[t] = a->timer.timers[t].period;
                         tx_ev[tx_n].count[t] = a->timer.timers[t].count;
@@ -309,6 +312,7 @@ int main(int argc, char **argv) {
                 if (have_prev_t2 && meas_n < MEAS_MAX) {
                     /* Timer2 counts down and reloads at 0xFFFF, so an unsigned 16-bit difference handles the
                        wrap the same way the handler's own `lsl/lsr #16` truncation does. */
+                    meas_frame[meas_n] = f;
                     meas[meas_n++] = (prev_t2 - t2) & 0xFFFFu;
                     /* Dump B's PC trace a few edges after sync, so it lands inside the receive-side
                        decode logic actually processing that edge, not idling afterward. */
@@ -330,8 +334,8 @@ int main(int argc, char **argv) {
                 if (state != last_b_state || bit_index != last_b_bitindex) {
                     state_changes++;
                     if (state_changes <= 500) {
-                        printf("  [state #%d] pc=0x%08X state=%u bit_index=%u\n", state_changes, b->cpu.r[15], state,
-                            bit_index);
+                        printf("  [state #%d] f=%ld pc=0x%08X state=%u bit_index=%u\n", state_changes, f,
+                            b->cpu.r[15], state, bit_index);
                     }
                     last_b_state = state;
                     last_b_bitindex = bit_index;
@@ -355,8 +359,8 @@ int main(int argc, char **argv) {
                             if (cur[k] != last_b_buf[k]) {
                                 buf_changes++;
                                 if (buf_changes <= 200) {
-                                    printf("  [B buf #%d] pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", buf_changes,
-                                        b->cpu.r[15], k, last_b_buf[k], cur[k]);
+                                    printf("  [B buf #%d] f=%ld pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", buf_changes,
+                                        f, b->cpu.r[15], k, last_b_buf[k], cur[k]);
                                 }
                                 last_b_buf[k] = cur[k];
                             }
@@ -382,8 +386,8 @@ int main(int argc, char **argv) {
                             if (cur[k] != last_a_buf[k]) {
                                 a_buf_changes++;
                                 if (a_buf_changes <= 200) {
-                                    printf("  [A buf #%d] pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", a_buf_changes,
-                                        a->cpu.r[15], k, last_a_buf[k], cur[k]);
+                                    printf("  [A buf #%d] f=%ld pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", a_buf_changes,
+                                        f, a->cpu.r[15], k, last_a_buf[k], cur[k]);
                                 }
                                 last_a_buf[k] = cur[k];
                             }
@@ -407,6 +411,22 @@ int main(int argc, char **argv) {
                 b->ir.mode, (b->ir.mode & IR_MODE_IFMODE) ? "TX" : "RX", !!(b->ir.mode & IR_MODE_STDBY),
                 !!(b->ir.mode & IR_MODE_BGEN), !!(b->ir.mode & IR_MODE_BFLT));
             last_b_mode = b->ir.mode;
+        }
+        /* Both instances are meant to be stepped with identical cycle budgets so their IR clocks track each
+           other, but this is the first place that checks it frame-by-frame instead of only at the very end. */
+        {
+            long long skew = (long long)a->ir.clock_cycles - (long long)b->ir.clock_cycles;
+            static long long last_skew = 0;
+            static uint32_t last_a_hz = 0, last_b_hz = 0;
+            uint32_t a_hz = clk_current_hz(&a->clk), b_hz = clk_current_hz(&b->clk);
+            if (f == 0 || (skew > last_skew + 5000) || (skew < last_skew - 5000) || a_hz != last_a_hz ||
+                b_hz != last_b_hz) {
+                printf("frame %ld: ir clock skew (A-B) = %lld (A=%llu B=%llu) A_hz=%u B_hz=%u\n", f, skew,
+                    (unsigned long long)a->ir.clock_cycles, (unsigned long long)b->ir.clock_cycles, a_hz, b_hz);
+                last_skew = skew;
+                last_a_hz = a_hz;
+                last_b_hz = b_hz;
+            }
         }
     }
 
@@ -454,11 +474,15 @@ int main(int argc, char **argv) {
     }
     {
         int k, t;
-        printf("\nA transmit-side timer state at each IRDA_DATA change:\n");
-        printf("  %-10s %-8s   %-22s %-22s %-22s\n", "t(ref)", "d(ref)", "timer0 per/cnt/ctl",
+        printf("\nA transmit-side timer state at each IRDA_DATA change (%d total, first/last 10 shown):\n", tx_n);
+        printf("  %-6s %-10s %-8s   %-22s %-22s %-22s\n", "frame", "t(ref)", "d(ref)", "timer0 per/cnt/ctl",
             "timer1 per/cnt/ctl", "timer2 per/cnt/ctl");
         for (k = 0; k < tx_n; k++) {
-            printf("  %-10llu %-8lld", (unsigned long long)tx_ev[k].at_ref,
+            if (k == 10 && tx_n > 20) {
+                printf("  ...\n");
+                k = tx_n - 10;
+            }
+            printf("  %-6ld %-10llu %-8lld", tx_ev[k].frame, (unsigned long long)tx_ev[k].at_ref,
                 k ? (long long)(tx_ev[k].at_ref - tx_ev[k - 1].at_ref) : 0);
             for (t = 0; t < 3; t++) {
                 printf("   %6u/%6u/%X", tx_ev[k].period[t], tx_ev[k].count[t], tx_ev[k].control[t]);
@@ -475,7 +499,7 @@ int main(int argc, char **argv) {
         printf("\nTimer2 tick deltas B actually measures between line-level changes (handler wants %u +- %u):\n",
             4u * unit, unit / 2u);
         for (k = 0; k < meas_n; k++) {
-            printf("  [%2d] %6u%s\n", k, meas[k],
+            printf("  [%3d] f=%-4ld %6u%s\n", k, meas_frame[k], meas[k],
                 (meas[k] + unit / 2u >= 4u * unit && meas[k] <= 4u * unit + unit / 2u) ? "  <-- in window" : "");
         }
     }
