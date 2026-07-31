@@ -77,7 +77,13 @@ static void enqueue_write(ir_link_t *link, uint64_t timestamp_us, int level, uin
     uint32_t tail;
     ir_wire_message_t *msg;
     if (link->write_count >= IR_LINK_WRITE_QUEUE_CAPACITY) {
+        if (kind == IR_WIRE_KIND_EDGE) {
+            link->dropped_tx++;
+        }
         return; /* peer isn't draining fast enough (or the link is stuck) - drop rather than stall psemu_run */
+    }
+    if (kind == IR_WIRE_KIND_EDGE) {
+        link->edges_sent++;
     }
     tail = (link->write_head + link->write_count) % IR_LINK_WRITE_QUEUE_CAPACITY;
     msg = &link->write_queue[tail];
@@ -211,11 +217,21 @@ int ir_link_connect(ir_link_t *link, const char *pipe_name) {
 /* Returns this link's wall-to-core offset, sampling it once on first use after a connect and reusing it from
    then on. See ir_link.h's wall_minus_core_us for why this must not be resampled per call. */
 static int64_t link_clock_offset(ir_link_t *link, psemu_t *ps) {
-    if (!link->clock_offset_latched) {
-        link->wall_minus_core_us = (int64_t)host_wall_us_now() - (int64_t)psemu_ir_get_clock_us(ps);
+    uint64_t now = host_wall_us_now();
+    /* Re-latch on a fresh connection, and again whenever the link has been quiet long enough that no message
+       can be in flight. Holding it across a message keeps that message's edge spacing exact; refreshing it
+       between messages stops the two processes' clock drift from accumulating past the playout buffer.
+       See IR_LINK_OFFSET_RELATCH_IDLE_US. */
+    if (!link->clock_offset_latched || now - link->last_edge_wall_us >= IR_LINK_OFFSET_RELATCH_IDLE_US) {
+        link->wall_minus_core_us = (int64_t)now - (int64_t)psemu_ir_get_clock_us(ps);
         link->clock_offset_latched = 1;
     }
     return link->wall_minus_core_us;
+}
+
+/* Records edge activity, which is what the idle test above measures. */
+static void note_edge_activity(ir_link_t *link) {
+    link->last_edge_wall_us = host_wall_us_now();
 }
 
 static void handle_incoming_message(ir_link_t *link, psemu_t *ps, const ir_wire_message_t *msg) {
@@ -230,6 +246,18 @@ static void handle_incoming_message(ir_link_t *link, psemu_t *ps, const ir_wire_
     {
         int64_t wall_minus_core_us = link_clock_offset(link, ps);
         uint64_t local_us = wall_to_local_us(wall_minus_core_us, msg->timestamp_us) + IR_LINK_PLAYOUT_DELAY_US;
+        int64_t lead = (int64_t)local_us - (int64_t)psemu_ir_get_clock_us(ps);
+        if (link->edges_received == 0 || lead < link->min_lead_us) {
+            link->min_lead_us = lead;
+        }
+        if (link->edges_received == 0 || lead > link->max_lead_us) {
+            link->max_lead_us = lead;
+        }
+        if (lead <= 0) {
+            link->late_edges++;
+        }
+        link->edges_received++;
+        note_edge_activity(link);
         psemu_ir_push_rx_edge(ps, local_us, msg->level);
     }
 }
@@ -286,6 +314,7 @@ static void drain_tx_edges(ir_link_t *link, psemu_t *ps) {
     while (psemu_ir_pop_tx_edge(ps, &edge)) {
         uint64_t wall_us = local_to_wall_us(wall_minus_core_us, edge.timestamp_us);
         enqueue_write(link, wall_us, edge.level, IR_WIRE_KIND_EDGE);
+        note_edge_activity(link);
     }
 }
 
@@ -299,6 +328,17 @@ static void drain_tx_edges(ir_link_t *link, psemu_t *ps) {
    The bound is a safety net against an unexpectedly hot pipe starving the rest of the frame, not an
    expected limit. */
 #define IR_LINK_MAX_MESSAGES_PER_PUMP 4096
+
+/* Keeps the connected status line carrying live link counters, so the window title shows what the transport
+   is actually doing. A link that is connected but not carrying a transfer looks identical to a working one
+   otherwise, and the three failure modes seen so far are only distinguishable by these numbers: the peer
+   sending nothing (tx stays 0 on its side), edges dropped because a queue filled (drop climbs), and edges
+   arriving too late to be placed in time (late climbs, which destroys decoding while everything else looks
+   healthy). */
+static void update_connected_status(ir_link_t *link) {
+    snprintf(link->status, sizeof(link->status), "Connected  tx=%lu rx=%lu drop=%lu late=%lu", link->edges_sent,
+        link->edges_received, link->dropped_tx, link->late_edges);
+}
 
 static void pump_connected(ir_link_t *link, psemu_t *ps) {
     int i;
@@ -320,6 +360,9 @@ static void pump_connected(ir_link_t *link, psemu_t *ps) {
             break; /* still in flight, or nothing left to send */
         }
         start_write(link);
+    }
+    if (link->state == IR_LINK_CONNECTED) {
+        update_connected_status(link);
     }
 }
 

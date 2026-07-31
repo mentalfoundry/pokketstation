@@ -67,8 +67,31 @@ typedef enum {
    OS scheduling adds more jitter.
    Every edge in a batch gets the same constant shift, so their original relative spacing survives exactly.
    The pulse widths the receiver measures therefore survive too.
-   Only the arrival of the whole batch is later, and a turn-based IR exchange does not notice that. */
-#define IR_LINK_PLAYOUT_DELAY_US 100000ull
+   Only the arrival of the whole batch is later, and a turn-based IR exchange does not notice that.
+
+   Sizing: the delay has to cover not just transit and batching but the clock drift that builds up over one
+   whole message, because the offset is deliberately held constant for its duration (see
+   IR_LINK_OFFSET_RELATCH_IDLE_US). A measured two-process transfer consumed about 85ms of margin that way,
+   leaving only ~16ms at 100ms. 250ms keeps a comfortable margin on a slower or busier machine. The added
+   latency costs nothing here: a turn-based IR exchange has no interactive deadline. */
+#define IR_LINK_PLAYOUT_DELAY_US 250000ull
+
+/* How long the link must be free of edge traffic before the wall-to-core offset may be re-latched.
+
+   The offset cannot simply be held forever, and it cannot be resampled per use either. Each instance
+   advances its emulated clock by exactly one frame's worth of cycles per rendered frame, but a real frame
+   takes longer than that in wall-clock terms, by an amount that differs between two processes (different
+   startup cost, render load, and scheduling). Their core clocks therefore drift apart without bound. Held
+   forever, that drift eventually pushes every arriving edge outside the playout buffer: measured between two
+   real processes, one side saw every single edge arrive about 200ms in its own past, released the whole
+   batch at once, and decoded nothing. Resampled per use, the offset instead varies between frames and
+   destroys the spacing that encodes each bit.
+
+   Re-latching only after a quiet period gives both properties. Within one message the offset is constant, so
+   spacing is exact; between messages it catches up with however far the two clocks have drifted. A
+   turn-based IR exchange always has gaps far longer than this, and this is shorter than the shortest gap
+   between a message and its reply. */
+#define IR_LINK_OFFSET_RELATCH_IDLE_US 250000ull
 
 /* One 16-byte message per edge, with kind=IR_WIRE_KIND_EDGE.
    A connect-time handshake uses kind=IR_WIRE_KIND_HELLO instead.
@@ -128,6 +151,21 @@ typedef struct ir_link {
        in both directions. See frontends/desktop/ir_link_selftest.c's transfer mode. */
     int64_t wall_minus_core_us;
     int clock_offset_latched;
+    uint64_t last_edge_wall_us; /* when this link last carried an edge, for the idle test above */
+
+    /* Plain counters, for diagnosing a link that connects but carries nothing useful. Cheap enough to keep
+       always on, and the only way to tell "the peer sent nothing" from "the peer sent it and we dropped it".
+       dropped_tx counts edges enqueue_write had to discard because the queue was full. */
+    unsigned long edges_sent;
+    unsigned long edges_received;
+    unsigned long dropped_tx;
+    /* How far ahead of this instance's own IR clock each arriving edge is scheduled. This is the margin the
+       playout buffer actually delivers, as opposed to the margin it nominally budgets. Once it reaches zero
+       an edge is already due on arrival, so ir_tick releases it immediately along with everything else that
+       is late, the batch's spacing collapses, and a bit-banged message stops decoding. */
+    int64_t min_lead_us;
+    int64_t max_lead_us;
+    unsigned long late_edges;
 
     char pipe_name[256];
     char status[128]; /* human-readable text for ir_link_status_text, such as a window-title suffix */
