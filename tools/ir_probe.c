@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
     } tx_ev[TX_MAX];
     int tx_n = 0;
     uint32_t last_a_data = 0xFFFFFFFFu;
-#define MEAS_MAX 24
+#define MEAS_MAX 700
     uint32_t meas[MEAS_MAX];
     int meas_n = 0;
 
@@ -418,10 +418,18 @@ int main(int argc, char **argv) {
         uint32_t b_buf = psemu_bus_read32(&b->bus, sb + 0x14u);
         uint32_t bit_index_a = psemu_bus_read32(&a->bus, sb + 0xCu);
         uint32_t bit_index_b = psemu_bus_read32(&b->bus, sb + 0xCu);
+        /* field+0x8: the total-bit-count limit the transmit handler compares its own bit-index against
+           (see 0x2005168-0x2005170 in the disassembled handler). Bytes at or past bit_count/8 are outside
+           the real message entirely - never written by any repeat, so a mismatch there is stale memory,
+           not a decode error. */
+        uint32_t bit_count_a = psemu_bus_read32(&a->bus, sb + 0x8u);
+        uint32_t bit_count_b = psemu_bus_read32(&b->bus, sb + 0x8u);
         int i, mismatches = 0, matches = 0;
-        printf("A data buffer @0x%08X (bit_index=%u), B data buffer @0x%08X (bit_index=%u):\n", a_buf, bit_index_a,
-            b_buf, bit_index_b);
-        for (i = 0; i < 32; i++) {
+        printf("A data buffer @0x%08X (bit_index=%u, bit_count=%u -> %u bytes), B data buffer @0x%08X (bit_index=%u, "
+               "bit_count=%u -> %u bytes):\n",
+            a_buf, bit_index_a, bit_count_a, (bit_count_a + 7u) / 8u, b_buf, bit_index_b, bit_count_b,
+            (bit_count_b + 7u) / 8u);
+        for (i = 0; i < 41; i++) {
             uint8_t av = psemu_bus_read8(&a->bus, a_buf + (uint32_t)i);
             uint8_t bv = psemu_bus_read8(&b->bus, b_buf + (uint32_t)i);
             if (av != bv) {

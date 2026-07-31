@@ -36,8 +36,17 @@ int psemu_ir_trace_enabled = 0;
    directly and reordered edges outright, delaying a falling edge past the next pulse's rising edge - the
    real gap between transmitted pulses is far smaller than 184 Timer2 ticks. See tools/ir_probe.c for the
    two-instance test this was calibrated against, and for the trace that caught that reordering before it
-   shipped. */
-#define IR_TX_FALL_STRETCH_CYCLES 316ull
+   shipped.
+   A second, related failure came from the same root cause at a smaller scale: stretching the falling edge
+   necessarily compresses the OFF gap that follows it (there is no way to lengthen an ON pulse without
+   taking the time from somewhere adjacent). At 316, that compression left only ~1.2-1.6x IR_BFLT_DEBOUNCE_
+   CYCLES of margin on the shortest real gaps - thin enough that this emulator's own glitch filter
+   occasionally rejected a genuine gap as noise, merging two pulses (and the bits they encoded) into one.
+   tools/ir_probe.c's own byte-for-byte buffer comparison caught this directly: specific bytes decoded
+   wrong, and the raw Timer2-tick deltas at those positions did not match any single-pulse duration, only
+   sums of two or three consecutive ones. 200 keeps sync inside its acceptance window with room to spare
+   (4268 against a 4200-5400 window) while keeping over 3x debounce margin on the shortest gap. */
+#define IR_TX_FALL_STRETCH_CYCLES 200ull
 
 void ir_init(ir_t *ir) {
     ir->mode = 0;
