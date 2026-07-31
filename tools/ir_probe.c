@@ -194,6 +194,23 @@ int main(int argc, char **argv) {
 #define MEAS_MAX 700
     uint32_t meas[MEAS_MAX];
     int meas_n = 0;
+    /* One-off instrumentation: neither INT_IRDA nor INT_TIMER2 are enabled for B in this scenario, so B is
+       not interrupt-driven here at all - it must be polling directly, and no single PC address is a
+       reliable trap point. This instead watches the state (+0x28) and bit-index (+0xC) fields themselves
+       for any change, whatever code path produces it. */
+    uint32_t last_b_state = 0xFFFFFFFFu, last_b_bitindex = 0xFFFFFFFFu;
+    int state_changes = 0;
+    /* bit_index (+0xC) never moved past 0. Confirmed why below: B's buffer is never written at all in this
+       scenario, so there is no "real data filling in" for any field to track. Watching the buffer bytes
+       directly is what proved that, and mirroring the same watch onto A's own buffer (below) is what showed
+       the previously-reported "37 of 41 bytes decode" was really A constructing its own message, compared
+       against B's untouched, stale, pre-loaded copy. See docs/hardware-notes.md's "IR / IR Link" notes. */
+    uint8_t last_b_buf[41];
+    int have_last_b_buf = 0;
+    int buf_changes = 0;
+    uint8_t last_a_buf[41];
+    int have_last_a_buf = 0;
+    int a_buf_changes = 0;
 
     const char *script_a = "up@20-30";
     const char *script_b = "down@20-30";
@@ -306,6 +323,73 @@ int main(int argc, char **argv) {
                 prev_t2 = t2;
                 have_prev_t2 = 1;
                 last_rx_level = b->ir.rx_level;
+            }
+            {
+                uint32_t state = psemu_bus_read8(&b->bus, 0x000003C4u + 0x28u);
+                uint32_t bit_index = psemu_bus_read32(&b->bus, 0x000003C4u + 0xCu);
+                if (state != last_b_state || bit_index != last_b_bitindex) {
+                    state_changes++;
+                    if (state_changes <= 500) {
+                        printf("  [state #%d] pc=0x%08X state=%u bit_index=%u\n", state_changes, b->cpu.r[15], state,
+                            bit_index);
+                    }
+                    last_b_state = state;
+                    last_b_bitindex = bit_index;
+                }
+            }
+            {
+                uint32_t b_buf = psemu_bus_read32(&b->bus, 0x000003C4u + 0x14u);
+                if (b_buf != 0u) {
+                    uint8_t cur[41];
+                    int k;
+                    for (k = 0; k < 41; k++) {
+                        cur[k] = psemu_bus_read8(&b->bus, b_buf + (uint32_t)k);
+                    }
+                    if (!have_last_b_buf) {
+                        for (k = 0; k < 41; k++) {
+                            last_b_buf[k] = cur[k];
+                        }
+                        have_last_b_buf = 1;
+                    } else {
+                        for (k = 0; k < 41; k++) {
+                            if (cur[k] != last_b_buf[k]) {
+                                buf_changes++;
+                                if (buf_changes <= 200) {
+                                    printf("  [B buf #%d] pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", buf_changes,
+                                        b->cpu.r[15], k, last_b_buf[k], cur[k]);
+                                }
+                                last_b_buf[k] = cur[k];
+                            }
+                        }
+                    }
+                }
+            }
+            {
+                uint32_t a_buf = psemu_bus_read32(&a->bus, 0x000003C4u + 0x14u);
+                if (a_buf != 0u) {
+                    uint8_t cur[41];
+                    int k;
+                    for (k = 0; k < 41; k++) {
+                        cur[k] = psemu_bus_read8(&a->bus, a_buf + (uint32_t)k);
+                    }
+                    if (!have_last_a_buf) {
+                        for (k = 0; k < 41; k++) {
+                            last_a_buf[k] = cur[k];
+                        }
+                        have_last_a_buf = 1;
+                    } else {
+                        for (k = 0; k < 41; k++) {
+                            if (cur[k] != last_a_buf[k]) {
+                                a_buf_changes++;
+                                if (a_buf_changes <= 200) {
+                                    printf("  [A buf #%d] pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", a_buf_changes,
+                                        a->cpu.r[15], k, last_a_buf[k], cur[k]);
+                                }
+                                last_a_buf[k] = cur[k];
+                            }
+                        }
+                    }
+                }
             }
             total_a_to_b += relay_edges(a, b, "A->B", trace);
             total_b_to_a += relay_edges(b, a, "B->A", trace);
