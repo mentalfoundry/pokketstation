@@ -69,14 +69,26 @@ void timer_write8(timer_t *timer, uint32_t offset, uint8_t value) {
     case 1:
         reg = &timer->timers[index].count;
         break;
-    case 2:
+    case 2: {
+        uint32_t was_enabled = timer->timers[index].control & TIMER_CTRL_ENABLE;
         reg = &timer->timers[index].control;
         *reg = (*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift);
         /* Real hardware restarts the prescaler whenever control is rewritten.
            This matches this emulator's own timer-start logic, which re-invokes on every control write.
            Drop any partial divisor progress so a mode/enable change starts from a clean edge. */
         timer->timers[index].cycle_accumulator = 0;
+        /* Arming a timer loads its counter from PERIOD. A real IR-using app's own timer-set helper only
+           ever writes PERIOD and then CONTROL, never COUNT (it disables the timer, writes the period, and
+           re-enables it - see the routine its IR receive handler calls to re-arm Timer2 between pulses).
+           Without a load on the enable edge, that newly armed timer would keep counting down from whatever
+           stale value it happened to hold, and every interval the app measured against it would be wrong.
+           Confirmed by disassembling that helper and by the receive handler's own arithmetic, which reads
+           elapsed time as (armed period - current count). */
+        if (!was_enabled && (timer->timers[index].control & TIMER_CTRL_ENABLE)) {
+            timer->timers[index].count = timer->timers[index].period;
+        }
         return;
+    }
     default:
         return;
     }

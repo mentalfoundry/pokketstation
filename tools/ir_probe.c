@@ -207,6 +207,12 @@ int main(int argc, char **argv) {
     uint32_t meas[MEAS_MAX];
     long meas_frame[MEAS_MAX];
     int meas_n = 0;
+    /* The same measurement, filtered the way the app's own handler filters it (see the rx_level block). */
+    uint32_t qual[MEAS_MAX], qual_state[MEAS_MAX];
+    long qual_frame[MEAS_MAX];
+    int qual_n = 0;
+    uint32_t prev_qual_t2 = 0;
+    int have_prev_qual_t2 = 0;
     /* One-off instrumentation: neither INT_IRDA nor INT_TIMER2 are enabled for B in this scenario, so B is
        not interrupt-driven here at all - it must be polling directly, and no single PC address is a
        reliable trap point. This instead watches the state (+0x28) and bit-index (+0xC) fields themselves
@@ -219,12 +225,12 @@ int main(int argc, char **argv) {
        directly is what proved that, and mirroring the same watch onto A's own buffer (below) is what showed
        the previously-reported "37 of 41 bytes decode" was really A constructing its own message, compared
        against B's untouched, stale, pre-loaded copy. See docs/hardware-notes.md's "IR / IR Link" notes. */
-    uint8_t last_b_buf[41];
-    int have_last_b_buf = 0;
-    int buf_changes = 0;
-    uint8_t last_a_buf[41];
-    int have_last_a_buf = 0;
-    int a_buf_changes = 0;
+#define SNAP_MAX 64
+    uint8_t a_snap[SNAP_MAX], b_snap[SNAP_MAX];
+    uint32_t a_peak_bits = 0, b_peak_bits = 0;
+    int a_snap_len = 0, b_snap_len = 0;
+    long a_snap_frame = -1, b_snap_frame = -1;
+    uint32_t a_snap_addr = 0, b_snap_addr = 0, a_snap_idx = 0, b_snap_idx = 0;
 
     const char *script_a = "up@20-30";
     const char *script_b = "down@20-30";
@@ -319,6 +325,32 @@ int main(int argc, char **argv) {
                 }
                 last_a_data = a->ir.data;
             }
+            /* The app's own handler ignores any edge whose live level does not match its expected_level
+               (+0x26): it reads the level back out of INTC STATUS bit 12 and returns immediately on a
+               mismatch (see the handler entry at 0x02005244). Its measured interval is therefore between
+               consecutive *qualifying* edges, which is not the same thing as between consecutive level
+               changes. Replicating that filter here reproduces the number the app actually tests, instead
+               of a reconstruction that happens to be measuring something else. */
+            if (b->ir.rx_level != last_rx_level) {
+                uint32_t expected = psemu_bus_read8(&b->bus, 0x000003C4u + 0x26u);
+                uint32_t st = psemu_bus_read8(&b->bus, 0x000003C4u + 0x28u);
+                static int edge_log = 0;
+                if (edge_log < 30) {
+                    printf("  [edge %2d] f=%ld level=%d expected=%u state=%u t2=%u\n", edge_log, f,
+                        b->ir.rx_level, expected, st, b->timer.timers[2].count);
+                    edge_log++;
+                }
+                if ((uint32_t)b->ir.rx_level == expected) {
+                    uint32_t t2q = b->timer.timers[2].count;
+                    if (have_prev_qual_t2 && qual_n < MEAS_MAX) {
+                        qual_frame[qual_n] = f;
+                        qual_state[qual_n] = st;
+                        qual[qual_n++] = (prev_qual_t2 - t2q) & 0xFFFFu;
+                    }
+                    prev_qual_t2 = t2q;
+                    have_prev_qual_t2 = 1;
+                }
+            }
             if (b->ir.rx_level != last_rx_level) {
                 uint32_t t2 = b->timer.timers[2].count;
                 if (have_prev_t2 && meas_n < MEAS_MAX) {
@@ -356,57 +388,48 @@ int main(int argc, char **argv) {
                     last_b_bitindex = bit_index;
                 }
             }
+            /* Snapshot each side's live data buffer at the moment its own bit_index peaks. That is the only
+               instant a fully-assembled message exists: the app reuses and clears these buffers afterwards,
+               so an end-of-run read finds zeroes and proves nothing either way. The buffer address must be
+               resolved through the pointer table (field+0x14 is the table, field+0x27 the index). */
             {
-                uint32_t b_buf = psemu_bus_read32(&b->bus, 0x000003C4u + 0x14u);
-                if (b_buf != 0u) {
-                    uint8_t cur[41];
-                    int k;
-                    for (k = 0; k < 41; k++) {
-                        cur[k] = psemu_bus_read8(&b->bus, b_buf + (uint32_t)k);
+                int side;
+                for (side = 0; side < 2; side++) {
+                    psemu_t *ps = side ? b : a;
+                    uint32_t sb = 0x000003C4u;
+                    uint32_t table = psemu_bus_read32(&ps->bus, sb + 0x14u);
+                    uint32_t idx = psemu_bus_read8(&ps->bus, sb + 0x27u);
+                    uint32_t bidx = psemu_bus_read32(&ps->bus, sb + 0xCu);
+                    uint32_t bcount = psemu_bus_read32(&ps->bus, sb + 0x8u);
+                    uint32_t buf;
+                    uint32_t nbytes;
+                    uint32_t k;
+                    if (table == 0u || idx == 0u || bcount == 0u || bcount > 8u * SNAP_MAX) {
+                        continue;
                     }
-                    if (!have_last_b_buf) {
-                        for (k = 0; k < 41; k++) {
-                            last_b_buf[k] = cur[k];
-                        }
-                        have_last_b_buf = 1;
+                    buf = psemu_bus_read32(&ps->bus, table + (idx - 1u) * 4u);
+                    if (buf == 0u) {
+                        continue;
+                    }
+                    if (bidx <= (side ? b_peak_bits : a_peak_bits)) {
+                        continue;
+                    }
+                    nbytes = (bcount + 7u) / 8u;
+                    for (k = 0; k < nbytes; k++) {
+                        (side ? b_snap : a_snap)[k] = psemu_bus_read8(&ps->bus, buf + k);
+                    }
+                    if (side) {
+                        b_peak_bits = bidx;
+                        b_snap_len = (int)nbytes;
+                        b_snap_frame = f;
+                        b_snap_addr = buf;
+                        b_snap_idx = idx;
                     } else {
-                        for (k = 0; k < 41; k++) {
-                            if (cur[k] != last_b_buf[k]) {
-                                buf_changes++;
-                                if (buf_changes <= 200) {
-                                    printf("  [B buf #%d] f=%ld pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", buf_changes,
-                                        f, b->cpu.r[15], k, last_b_buf[k], cur[k]);
-                                }
-                                last_b_buf[k] = cur[k];
-                            }
-                        }
-                    }
-                }
-            }
-            {
-                uint32_t a_buf = psemu_bus_read32(&a->bus, 0x000003C4u + 0x14u);
-                if (a_buf != 0u) {
-                    uint8_t cur[41];
-                    int k;
-                    for (k = 0; k < 41; k++) {
-                        cur[k] = psemu_bus_read8(&a->bus, a_buf + (uint32_t)k);
-                    }
-                    if (!have_last_a_buf) {
-                        for (k = 0; k < 41; k++) {
-                            last_a_buf[k] = cur[k];
-                        }
-                        have_last_a_buf = 1;
-                    } else {
-                        for (k = 0; k < 41; k++) {
-                            if (cur[k] != last_a_buf[k]) {
-                                a_buf_changes++;
-                                if (a_buf_changes <= 200) {
-                                    printf("  [A buf #%d] f=%ld pc=0x%08X byte[%d] 0x%02X -> 0x%02X\n", a_buf_changes,
-                                        f, a->cpu.r[15], k, last_a_buf[k], cur[k]);
-                                }
-                                last_a_buf[k] = cur[k];
-                            }
-                        }
+                        a_peak_bits = bidx;
+                        a_snap_len = (int)nbytes;
+                        a_snap_frame = f;
+                        a_snap_addr = buf;
+                        a_snap_idx = idx;
                     }
                 }
             }
@@ -460,6 +483,43 @@ int main(int argc, char **argv) {
 
     printf("\nedges relayed: A->B %ld, B->A %ld\n", total_a_to_b, total_b_to_a);
     printf("B receive state machine: max state reached = %u (state changes: %d)\n", max_b_state, state_changes);
+    /* The decisive check. Each side's message is snapshotted at its own peak bit_index, so this compares
+       what the sender actually assembled against what the receiver actually decoded, at the moments those
+       existed - not whatever the shared, later-cleared buffers happen to hold at the end of the run. A
+       result here is only meaningful if the bytes are non-trivial: two all-zero buffers "match" without any
+       transfer having happened at all, which is exactly how an earlier version of this check misled. */
+    {
+        int i, same = 0, diff = 0, a_nonzero = 0, b_nonzero = 0;
+        int n = a_snap_len < b_snap_len ? a_snap_len : b_snap_len;
+        printf("\nmessage snapshot: A %d bytes at peak %u bits (frame %ld), B %d bytes at peak %u bits (frame %ld)\n",
+            a_snap_len, a_peak_bits, a_snap_frame, b_snap_len, b_peak_bits, b_snap_frame);
+        for (i = 0; i < a_snap_len; i++) {
+            if (a_snap[i]) {
+                a_nonzero++;
+            }
+        }
+        for (i = 0; i < b_snap_len; i++) {
+            if (b_snap[i]) {
+                b_nonzero++;
+            }
+        }
+        for (i = 0; i < n; i++) {
+            if (a_snap[i] == b_snap[i]) {
+                same++;
+            } else {
+                diff++;
+            }
+            printf("  [%2d] A=0x%02X B=0x%02X%s\n", i, a_snap[i], b_snap[i],
+                a_snap[i] != b_snap[i] ? "  <-- MISMATCH" : "");
+        }
+        printf("compared %d bytes: %d same, %d different (A has %d non-zero bytes, B has %d)\n", n, same, diff,
+            a_nonzero, b_nonzero);
+        if (n == 0 || (a_nonzero == 0 && b_nonzero == 0)) {
+            printf("  -> INCONCLUSIVE: nothing but zeroes to compare, so this says nothing about a transfer.\n");
+        } else if (diff == 0) {
+            printf("  -> TRANSFER VERIFIED: receiver decoded the sender's message exactly.\n");
+        }
+    }
     printf("A: cpu_faulted=%d  B: cpu_faulted=%d\n", psemu_cpu_faulted(a), psemu_cpu_faulted(b));
     /* Whether the receiving side ever even enabled the IR interrupt decides how it is meant to be driven:
        INT_IRDA-on-edge, or polling IRDA_DATA directly. */
@@ -527,9 +587,18 @@ int main(int argc, char **argv) {
         int k;
         printf("\nTimer2 tick deltas B actually measures between line-level changes (handler wants %u +- %u):\n",
             4u * unit, unit / 2u);
-        for (k = 0; k < meas_n; k++) {
+        for (k = 0; k < meas_n && k < 8; k++) {
             printf("  [%3d] f=%-4ld %6u%s\n", k, meas_frame[k], meas[k],
                 (meas[k] + unit / 2u >= 4u * unit && meas[k] <= 4u * unit + unit / 2u) ? "  <-- in window" : "");
+        }
+        /* This second list is the one that matters: it is what the app's own handler measures, after its
+           expected-level filter. The sync test it applies at state 2 is |delta - 4*unit| <= unit/2. */
+        printf("\nSame, filtered by the app's own expected-level rule (state 2 wants %u +- %u):\n", 4u * unit,
+            unit / 2u);
+        for (k = 0; k < qual_n && k < 24; k++) {
+            printf("  [%3d] f=%-4ld state=%u %6u%s\n", k, qual_frame[k], qual_state[k], qual[k],
+                (qual[k] + unit / 2u >= 4u * unit && qual[k] <= 4u * unit + unit / 2u) ? "  <-- in sync window"
+                                                                                      : "");
         }
     }
     /* The app's IR state block, resolved from the literal its INT_IRDA handler loads into r7 (0x000003C4 in
@@ -551,8 +620,18 @@ int main(int argc, char **argv) {
        buffer should now hold the same bytes A's own buffer does. */
     {
         uint32_t sb = 0x000003C4u;
-        uint32_t a_buf = psemu_bus_read32(&a->bus, sb + 0x14u);
-        uint32_t b_buf = psemu_bus_read32(&b->bus, sb + 0x14u);
+        /* field+0x14 is NOT the data buffer. It points at an array of buffer pointers, indexed by the
+           counter at field+0x27: the receive bit-store reads its target as table[(field+0x27) - 1] (see
+           0x020054BC in the disassembly). Comparing the table bytes directly, as this once did, compares
+           pointers and unrelated neighbouring state rather than any message content. */
+        uint32_t a_table = psemu_bus_read32(&a->bus, sb + 0x14u);
+        uint32_t b_table = psemu_bus_read32(&b->bus, sb + 0x14u);
+        uint32_t a_idx = psemu_bus_read8(&a->bus, sb + 0x27u);
+        uint32_t b_idx = psemu_bus_read8(&b->bus, sb + 0x27u);
+        uint32_t a_buf = psemu_bus_read32(&a->bus, a_table);
+        uint32_t b_buf = psemu_bus_read32(&b->bus, b_table);
+        printf("A buffer table @0x%08X idx=%u -> first buffer 0x%08X\n", a_table, a_idx, a_buf);
+        printf("B buffer table @0x%08X idx=%u -> first buffer 0x%08X\n", b_table, b_idx, b_buf);
         uint32_t bit_index_a = psemu_bus_read32(&a->bus, sb + 0xCu);
         uint32_t bit_index_b = psemu_bus_read32(&b->bus, sb + 0xCu);
         /* field+0x8: the total-bit-count limit the transmit handler compares its own bit-index against
@@ -566,7 +645,7 @@ int main(int argc, char **argv) {
                "bit_count=%u -> %u bytes):\n",
             a_buf, bit_index_a, bit_count_a, (bit_count_a + 7u) / 8u, b_buf, bit_index_b, bit_count_b,
             (bit_count_b + 7u) / 8u);
-        for (i = 0; i < 41; i++) {
+        for (i = 0; i < (int)((bit_count_a + 7u) / 8u); i++) {
             uint8_t av = psemu_bus_read8(&a->bus, a_buf + (uint32_t)i);
             uint8_t bv = psemu_bus_read8(&b->bus, b_buf + (uint32_t)i);
             if (av != bv) {

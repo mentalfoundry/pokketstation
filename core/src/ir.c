@@ -85,10 +85,11 @@ uint32_t ir_read(ir_t *ir, uint32_t offset) {
     uint32_t value;
 
     if (word_index == 1u && (ir->mode & IR_MODE_IFMODE) == 0u) {
-        /* Receive mode: DATA bit0 mirrors the live demodulated level, not the last value software wrote
-           there (software has no reason to be writing it while receiving anyway). See ir.h's top comment
-           on this being an inferred, unconfirmed read-back semantic. */
-        value = ir->rx_level ? IR_DATA_LED : 0u;
+        /* Receive mode: DATA bit0 mirrors the live demodulated line, which is active low. Carrier present
+           reads 0, idle reads 1. ir->rx_level itself stays in physical terms (1 = carrier present), so the
+           inversion lives here and in apply_rx_level's INT_IRDA level, the two places software can observe.
+           See ir.h's top comment for the disassembly this rests on. */
+        value = ir->rx_level ? 0u : IR_DATA_LED;
     } else if (word_index >= 2u) {
         /* IRDA_MISC (+0xC) and the gap before it (+0x8) get the same treatment. An external reference marks
            IRDA_MISC unknown or reserved, with no documented reset value or behavior. This emulator has no
@@ -239,7 +240,7 @@ static void apply_rx_level(ir_t *ir, struct intc *intc, int level) {
            STATUS must therefore follow the real level, while HOLD still latches an interrupt on both edges.
            A disassembly of a real app's INT_IRDA handler confirms this.
            See intc.h's INT_STATUS_MASK comment. */
-        intc_set_level_and_pulse(intc, INT_IRDA, level);
+        intc_set_level_and_pulse(intc, INT_IRDA, !level);
     }
 }
 

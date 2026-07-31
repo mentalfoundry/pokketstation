@@ -87,11 +87,18 @@ static void test_loopback_edge_asserts_irda(void) {
     psemu_bus_write32(&ps->bus, IRDA_MODE, RX_ACTIVE_MODE | IR_MODE_BFLT); /* receive, filter disabled */
     assert(!intc_irq_asserted(&ps->intc));
 
+    /* Idle, with no carrier, reads as 1: the demodulated receive line is active low. */
+    assert((psemu_bus_read32(&ps->bus, IRDA_DATA) & IR_DATA_LED) != 0);
+
     ir_push_rx_edge(&ps->ir, ir_get_clock_cycles(&ps->ir), 1);
     ir_tick(&ps->ir, &ps->intc, 0);
 
     assert(intc_irq_asserted(&ps->intc));
-    assert((psemu_bus_read32(&ps->bus, IRDA_DATA) & IR_DATA_LED) != 0); /* rx_level surfaced on DATA bit0 */
+    /* Carrier present now reads 0. This assertion used to expect the opposite, back when the receive
+       polarity was this emulator's own unconfirmed inference (ir.h flagged it as exactly that). A real IR
+       app's own receive handler settles it: it arms waiting for level 0 and treats a carrier burst as the
+       low period it measures. See ir.h's top comment. */
+    assert((psemu_bus_read32(&ps->bus, IRDA_DATA) & IR_DATA_LED) == 0);
 
     psemu_destroy(ps);
     printf("test_loopback_edge_asserts_irda OK\n");

@@ -12,7 +12,8 @@ struct intc;
      IRDA_MODE bit1 STDBY   0=Active, 1=Stand-by
      IRDA_MODE bit2 BGEN    0=Enable 40KHz carrier generator, 1=Disable
      IRDA_MODE bit3 BFLT    0=Enable filter, 1=Disable
-     IRDA_DATA bit0 LED     Transmit: 0=LED off, 1=LED on. Receive: the demodulated carrier level.
+     IRDA_DATA bit0 LED     Transmit: 0=LED off, 1=LED on. Receive: the demodulated line, active low
+                            (0 = carrier present, 1 = idle).
      IRDA_MISC              Unknown/reserved. See ir_write's handling of it below.
 
    This layout is corroborated by an independent, publicly available community hardware reference for this
@@ -27,8 +28,17 @@ struct intc;
    Treat the STDBY/BGEN/BFLT names as confirmed by that disassembly. Treat the external match as independent
    support for that confirmation, not the other way around.
 
-   The receive meaning of IRDA_DATA bit 0 is not documented externally at all. It is this emulator's own
-   inference, undocumented and unconfirmed against real hardware.
+   The receive meaning of IRDA_DATA bit 0 is not documented externally at all. It was this emulator's own
+   inference, and the original guess (1 = carrier present) was backwards. Disassembling a real IR app's
+   receive handler settles the polarity: the handler reads the live line out of INTC STATUS bit 12, compares
+   it against an expected level it keeps in its own state, and arms itself expecting 0 before any carrier
+   has arrived. It then measures the sync burst as the interval ending when the line returns to 1. A carrier
+   burst therefore reads 0 and idle reads 1, which is also how real IR demodulator receivers behave: their
+   output is active low. With the original polarity the handler rejected the edge that starts a sync burst,
+   locked onto the short inter-pulse gap instead, and never advanced past sync detection. With this polarity
+   it advances into bit accumulation and assembles a full message. Still unconfirmed against real hardware
+   directly, but no longer a bare guess. rx_level itself stays in physical terms (1 = carrier present); the
+   inversion happens where software observes it, in ir_read and in apply_rx_level's INT_IRDA level.
 
    No external reference gives numeric timing for this peripheral. None has microsecond pulse widths. None
    has a carrier-to-pulse ratio beyond "long is usually twice as long as short". None comes close to the
