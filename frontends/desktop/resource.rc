@@ -42,15 +42,11 @@ BEGIN
             MENUITEM "&Light (black on white)", ID_COLORS_STANDARD
             MENUITEM "&Dark (white on black)", ID_COLORS_REVERSED
             MENUITEM SEPARATOR
-            MENUITEM "C&ustom Colors...", ID_COLORS_CUSTOM
-        END
-        MENUITEM SEPARATOR
-        POPUP "Sprite &Shadows"
-        BEGIN
-            MENUITEM "&Enable", ID_VIEW_SHADOWS_ENABLE
-            MENUITEM "&Disable", ID_VIEW_SHADOWS_DISABLE
-            MENUITEM SEPARATOR
-            MENUITEM "Shadow &Color...", ID_VIEW_SHADOW_COLOR
+            /* Everything the three presets do not cover lives behind this one
+               item, sprite shadows included - they are part of how the LCD
+               looks, not a separate feature, and their color has to be picked
+               against the scheme it sits on anyway. */
+            MENUITEM "&Advanced Colors...", ID_COLORS_ADVANCED
         END
     END
     POPUP "&Help"
@@ -70,39 +66,53 @@ BEGIN
     PUSHBUTTON      "Cancel", IDCANCEL, 105, 46, 50, 14
 END
 
-IDD_CUSTOM_COLORS DIALOGEX 0, 0, 164, 100
+/* Everything about how the LCD looks that the three presets do not cover, in
+   one dialog, arranged as two tiers.
+   Tier one, always visible: pick one screen color and the active pixel and
+   sprite shadow colors are matched to it (see derive_theme_colors in main.c),
+   with a live preview and the sprite-shadow toggle. That is the whole
+   decision for most people.
+   Tier two, the Custom Colors group: all three colors by hand. It is hidden
+   at WM_INITDIALOG and toggled by IDC_CUSTOM_TOGGLE. Nothing in this group
+   re-derives anything - IDC_SCREEN_CHOOSE and IDC_REMATCH are the only two
+   controls that ever overwrite a color the user set by hand.
+   The height below (268) is the *expanded* height - everything has to fit in
+   the template. advanced_colors_dialog_proc shrinks the dialog to end just
+   below the IDC_CUSTOM_TOGGLE row before it is ever shown, and measures that
+   collapsed height from the toggle button's own position rather than from a
+   second hardcoded number here.
+   That is also why OK/Cancel sit *above* the group instead of at the bottom:
+   expanding then needs no control to move, only the dialog to grow. Vista+
+   task dialogs put their expando content below the buttons the same way. */
+IDD_ADVANCED_COLORS DIALOGEX 0, 0, 190, 268
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Custom Colors"
+CAPTION "Advanced Colors"
 FONT 8, "MS Shell Dlg"
 BEGIN
-    LTEXT           "Active pixel color (RRGGBB hex):", -1, 7, 9, 150, 10
-    EDITTEXT        IDC_PIXEL_HEX, 7, 21, 70, 14, ES_AUTOHSCROLL | ES_UPPERCASE
-    PUSHBUTTON      "Choose...", IDC_PIXEL_CHOOSE, 82, 20, 60, 14
+    LTEXT           "Pick one color for the screen. The active pixel and sprite shadow colors are matched to it automatically.",
+                    -1, 7, 7, 176, 18
+    PUSHBUTTON      "Choose Screen Color...", IDC_SCREEN_CHOOSE, 7, 29, 100, 14
 
-    LTEXT           "Background color (RRGGBB hex):", -1, 7, 42, 150, 10
-    EDITTEXT        IDC_BG_HEX, 7, 54, 70, 14, ES_AUTOHSCROLL | ES_UPPERCASE
-    PUSHBUTTON      "Choose...", IDC_BG_CHOOSE, 82, 53, 60, 14
+    CONTROL         "", IDC_COLOR_PREVIEW, "Static", SS_OWNERDRAW | WS_CHILD | WS_VISIBLE | WS_BORDER,
+                    7, 49, 176, 46
 
-    /* Right-aligned to x=157, matching the labels'/Choose buttons' own
-       right edge above, instead of centered under the old wider dialog -
-       that's what let the dialog be narrowed down in the first place. */
-    DEFPUSHBUTTON   "OK",     IDOK,     51, 78, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 107, 78, 50, 14
-END
+    AUTOCHECKBOX    "Sprite shadows (LCD ghosting trail)", IDC_SHADOWS_ENABLE, 7, 101, 176, 10
 
-IDD_SHADOW_COLOR DIALOGEX 0, 0, 164, 84
-STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Sprite Shadow Color"
-FONT 8, "MS Shell Dlg"
-BEGIN
-    LTEXT           "Shadow color (RRGGBB hex):", -1, 7, 9, 150, 10
-    EDITTEXT        IDC_SHADOW_HEX, 7, 21, 70, 14, ES_AUTOHSCROLL | ES_UPPERCASE
-    PUSHBUTTON      "Choose...", IDC_SHADOW_CHOOSE, 82, 20, 60, 14
+    PUSHBUTTON      "Custom Colors >>", IDC_CUSTOM_TOGGLE, 7, 117, 70, 14
+    DEFPUSHBUTTON   "OK",     IDOK,     79, 117, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 133, 117, 50, 14
 
-    PUSHBUTTON      "Reset to Default", IDC_SHADOW_RESET, 7, 42, 135, 14
-
-    DEFPUSHBUTTON   "OK",     IDOK,     51, 62, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 107, 62, 50, 14
+    GROUPBOX        "Custom Colors", IDC_CUSTOM_GROUP, 7, 138, 176, 123
+    LTEXT           "Screen (background) color (RRGGBB hex):", IDC_CUSTOM_BG_LABEL, 14, 151, 162, 10
+    EDITTEXT        IDC_BG_HEX, 14, 162, 60, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+    PUSHBUTTON      "Choose...", IDC_BG_CHOOSE, 79, 161, 55, 14
+    LTEXT           "Active pixel color (RRGGBB hex):", IDC_CUSTOM_PIXEL_LABEL, 14, 182, 162, 10
+    EDITTEXT        IDC_PIXEL_HEX, 14, 193, 60, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+    PUSHBUTTON      "Choose...", IDC_PIXEL_CHOOSE, 79, 192, 55, 14
+    LTEXT           "Sprite shadow color (RRGGBB hex):", IDC_CUSTOM_SHADOW_LABEL, 14, 213, 162, 10
+    EDITTEXT        IDC_SHADOW_HEX, 14, 224, 60, 14, ES_AUTOHSCROLL | ES_UPPERCASE
+    PUSHBUTTON      "Choose...", IDC_SHADOW_CHOOSE, 79, 223, 55, 14
+    PUSHBUTTON      "Match to Screen Color", IDC_REMATCH, 14, 242, 100, 14
 END
 
 /* Rows are Up/Down/Left/Right/Fire/Debug Log/Reset/Save State/Load State,

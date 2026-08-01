@@ -18,6 +18,7 @@
     "processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #endif
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -240,9 +241,17 @@ typedef struct {
 /* Real late-90s STN/passive-matrix LCDs (watches, Tamagotchis, and the
    PocketStation itself) show faint "ghosting" trailing a lit pixel.
    This comes from slow crystal response, not a real drop shadow.
-   This fixed shadow color applies regardless of the active color scheme.
-   See View > Sprite Shadows. */
-#define DISPLAY_SHADOW_COLOR RGBA_PACK(0x8E, 0x9B, 0x8E)
+   This is the ghosting color a fresh settings.cfg starts with, matching the
+   Classic scheme it also starts with.
+   It is not a fixed color: switching color scheme re-matches the ghosting to
+   the new scheme (see theme_shadow_for), because a ghost is a half-lit pixel
+   of that scheme rather than a color of its own.
+   This value is exactly what theme_shadow_for returns for the Classic scheme,
+   so a fresh settings.cfg and picking View > Colors > Classic by hand agree
+   to the byte. It was 8E9B8E when it was hand-picked and independent of the
+   rule, which is within a rounding step of this - close enough to be the same
+   color on screen, far enough to leave two disagreeing values on disk. */
+#define DISPLAY_SHADOW_COLOR RGBA_PACK(0x90, 0x9A, 0x8E)
 
 /* Inverse of RGBA_PACK's top 3 bytes. Formats the value the way settings.cfg
    stores colors ("RRGGBB"). See save_settings. */
@@ -824,33 +833,260 @@ static void resize_client_to_scale(HWND hwnd, int multiplier) {
     SetWindowPos(hwnd, NULL, 0, 0, target_w + chrome_w, target_h + chrome_h, SWP_NOMOVE | SWP_NOZORDER);
 }
 
-static void apply_display_colors(menu_context_t *ctx, uint32_t pixel_rgba, uint32_t bg_rgba) {
+/* --- Deriving a whole scheme from one picked color -----------------------
+   View > Colors > Advanced Colors... asks for one color, the screen
+   (background), and works the other two out from it.
+   The background is the anchor rather than the active pixel color because
+   most of the LCD is unlit most of the time: the background *is* the color a
+   user perceives the screen to be, the same way an LCD is described by its
+   panel tint ("that green Game Boy screen"), not by its ink.
+   The two derived colors stay in the picked color's own hue, which is what
+   keeps any pick from coming out jarring - a real STN LCD's ink is its panel
+   color darkened, not a separate color. Only lightness and saturation move.
+   Sanity check: feeding the shipped Classic background (BCC7B9) through
+   derive_theme_colors returns 20291D / 939E90, a slightly softer take on the
+   hand-picked Classic ink and shadow (111A15 / 909A8E) this project already
+   used - close enough to say the rule agrees with a human eye. */
+
+/* Undoes sRGB's transfer function for one 0..1 channel, so channels can be
+   weighted into a real luminance. Straight RGB averages are not perceptual:
+   full green looks far brighter than full blue at the same numeric value. */
+static double srgb_to_linear(double c) {
+    return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+/* WCAG 2.x relative luminance of an RGBA_PACK value (alpha ignored). */
+static double rgba_luminance(uint32_t rgba) {
+    double r = srgb_to_linear((double)((rgba >> 24) & 0xFFu) / 255.0);
+    double g = srgb_to_linear((double)((rgba >> 16) & 0xFFu) / 255.0);
+    double b = srgb_to_linear((double)((rgba >> 8) & 0xFFu) / 255.0);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/* WCAG 2.x contrast ratio, 1.0 (identical) to 21.0 (black on white). */
+static double contrast_ratio(uint32_t a, uint32_t b) {
+    double la = rgba_luminance(a) + 0.05;
+    double lb = rgba_luminance(b) + 0.05;
+    return la > lb ? la / lb : lb / la;
+}
+
+/* All three outputs are 0..1. Hue is a fraction of the circle, not degrees. */
+static void rgba_to_hsl(uint32_t rgba, double *h, double *s, double *l) {
+    double r = (double)((rgba >> 24) & 0xFFu) / 255.0;
+    double g = (double)((rgba >> 16) & 0xFFu) / 255.0;
+    double b = (double)((rgba >> 8) & 0xFFu) / 255.0;
+    double max = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    double min = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    double delta = max - min;
+    *l = (max + min) / 2.0;
+    if (delta <= 0.0) {
+        /* A pure gray has no meaningful hue. Reporting 0 (red) is harmless:
+           derive_theme_colors keeps saturation at 0 for it either way, so the
+           derived colors stay gray too. */
+        *h = 0.0;
+        *s = 0.0;
+        return;
+    }
+    /* Safe from a divide by zero: l is only 0.0 or 1.0 when max == min, which
+       the delta check above already returned on. */
+    *s = delta / (1.0 - fabs(2.0 * (*l) - 1.0));
+    if (max == r) {
+        *h = (g - b) / delta;
+        if (*h < 0.0) {
+            *h += 6.0;
+        }
+    } else if (max == g) {
+        *h = (b - r) / delta + 2.0;
+    } else {
+        *h = (r - g) / delta + 4.0;
+    }
+    *h /= 6.0;
+}
+
+static uint8_t channel_to_byte(double v) {
+    int scaled = (int)(v * 255.0 + 0.5);
+    if (scaled < 0) {
+        scaled = 0;
+    }
+    if (scaled > 255) {
+        scaled = 255;
+    }
+    return (uint8_t)scaled;
+}
+
+static double hue_to_channel(double p, double q, double t) {
+    if (t < 0.0) {
+        t += 1.0;
+    }
+    if (t > 1.0) {
+        t -= 1.0;
+    }
+    if (t < 1.0 / 6.0) {
+        return p + (q - p) * 6.0 * t;
+    }
+    if (t < 1.0 / 2.0) {
+        return q;
+    }
+    if (t < 2.0 / 3.0) {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    return p;
+}
+
+/* Inverse of rgba_to_hsl. Hue is expected in 0..1 (it wraps), s and l in 0..1. */
+static uint32_t hsl_to_rgba(double h, double s, double l) {
+    double r, g, b;
+    if (s <= 0.0) {
+        r = g = b = l;
+    } else {
+        double q = l < 0.5 ? l * (1.0 + s) : l + s - l * s;
+        double p = 2.0 * l - q;
+        r = hue_to_channel(p, q, h + 1.0 / 3.0);
+        g = hue_to_channel(p, q, h);
+        b = hue_to_channel(p, q, h - 1.0 / 3.0);
+    }
+    return RGBA_PACK(channel_to_byte(r), channel_to_byte(g), channel_to_byte(b));
+}
+
+/* Mixes `t` (0..1) of `to` into `from`, per channel. */
+static uint32_t blend_rgba(uint32_t from, uint32_t to, double t) {
+    uint8_t out[3];
+    int i;
+    for (i = 0; i < 3; i++) {
+        int shift = 24 - i * 8;
+        double a = (double)((from >> shift) & 0xFFu);
+        double b = (double)((to >> shift) & 0xFFu);
+        out[i] = channel_to_byte((a + (b - a) * t) / 255.0);
+    }
+    return RGBA_PACK(out[0], out[1], out[2]);
+}
+
+/* The derived ink has to clear this contrast ratio against the background
+   wherever the picked color physically allows it. 8.5:1 is comfortably past
+   WCAG AAA (7:1) without going all the way to the harshest possible pair;
+   the shipped Classic scheme sits at about 10:1 for reference. */
+#define THEME_INK_MIN_CONTRAST 8.5
+/* Contrast alone is not enough to make ink *look* like ink. A light
+   background whose contrast target is already met at 34% lightness still
+   reads as gray-on-white rather than as a display, so dark ink is pushed at
+   least this dark, and light ink at least this light. */
+#define THEME_INK_DARK_MAX_LIGHTNESS 0.30
+#define THEME_INK_LIGHT_MIN_LIGHTNESS 0.78
+/* The ghosting trail is a partially-switched pixel, so it belongs between the
+   background and the ink, much nearer the background. 0.26 is not arbitrary:
+   it is where the ghosting color hand-picked for the Classic scheme before
+   any of this existed (8E9B8E) sits between that scheme's background and its
+   ink, to within a rounding step. The rule was fitted to the eye, not the
+   other way round. */
+#define THEME_SHADOW_MIX 0.26
+
+/* The one rule for what a scheme's ghosting trail looks like, shared by the
+   Light/Dark/Classic presets and by Advanced Colors...' matched scheme, so no
+   path can drift from the others.
+   DISPLAY_SHADOW_COLOR is this function's own result for the Classic scheme,
+   kept as a constant because settings.cfg's defaults are filled in long
+   before any scheme is chosen. */
+static uint32_t theme_shadow_for(uint32_t bg_rgba, uint32_t pixel_rgba) {
+    return blend_rgba(bg_rgba, pixel_rgba, THEME_SHADOW_MIX);
+}
+
+/* Works out the active pixel color and the sprite shadow color that go with
+   `bg_rgba`. Neither output is ever equal to the input.
+   The caller keeps the picked background exactly as picked - it is never
+   "corrected" - so a deliberately loud pick still gets a usable scheme rather
+   than a silently different color. */
+static void derive_theme_colors(uint32_t bg_rgba, uint32_t *out_pixel, uint32_t *out_shadow) {
+    double h, s, l, ink_s, ink_l, step;
+    /* Ink goes whichever way has more room to move. Comparing against both
+       ends rather than testing lightness > 50% is what gets mid-tone picks
+       right: a saturated mid blue has more headroom towards white than the
+       naive lightness test suggests. */
+    int dark_ink = contrast_ratio(bg_rgba, RGBA_PACK(0x00, 0x00, 0x00))
+        >= contrast_ratio(bg_rgba, RGBA_PACK(0xFF, 0xFF, 0xFF));
+    int i;
+
+    rgba_to_hsl(bg_rgba, &h, &s, &l);
+    if (dark_ink) {
+        /* Saturation has to go *up* for dark ink or the hue disappears into
+           black; a near-gray dark tone is what makes a scheme look muddy. */
+        ink_s = s * 1.5 > 0.45 ? 0.45 : s * 1.5;
+        step = -0.005;
+    } else {
+        /* Light ink is the opposite case: carrying the background's full
+           saturation up into a near-white tone comes out neon. */
+        ink_s = s * 0.6 > 0.30 ? 0.30 : s * 0.6;
+        step = 0.005;
+    }
+    /* Walk away from the background's own lightness and stop at the first
+       step that clears the contrast target, rather than jumping straight to
+       black or white. Stopping early is the whole point: the softest ink that
+       is still legible is the one that does not fight the background.
+       Starting the search from the extreme end covers picks where the target
+       is physically unreachable (a saturated mid-tone red screen tops out
+       around 5:1) - those get the best contrast available instead. */
+    ink_l = dark_ink ? 0.0 : 1.0;
+    for (i = 0; i <= 200; i++) {
+        double candidate = l + step * (double)i;
+        if (candidate < 0.0 || candidate > 1.0) {
+            break;
+        }
+        if (contrast_ratio(hsl_to_rgba(h, ink_s, candidate), bg_rgba) >= THEME_INK_MIN_CONTRAST) {
+            ink_l = candidate;
+            break;
+        }
+    }
+    if (dark_ink && ink_l > THEME_INK_DARK_MAX_LIGHTNESS) {
+        ink_l = THEME_INK_DARK_MAX_LIGHTNESS;
+    }
+    if (!dark_ink && ink_l < THEME_INK_LIGHT_MIN_LIGHTNESS) {
+        ink_l = THEME_INK_LIGHT_MIN_LIGHTNESS;
+    }
+    *out_pixel = hsl_to_rgba(h, ink_s, ink_l);
+    *out_shadow = theme_shadow_for(bg_rgba, *out_pixel);
+}
+
+static void apply_display_colors_full(menu_context_t *ctx, uint32_t pixel_rgba, uint32_t bg_rgba,
+    uint32_t shadow_rgba) {
     *ctx->pixel_rgba = pixel_rgba;
     *ctx->bg_rgba = bg_rgba;
+    *ctx->shadow_rgba = shadow_rgba;
     format_rgba_hex(pixel_rgba, ctx->settings->pixel_color, sizeof(ctx->settings->pixel_color));
     format_rgba_hex(bg_rgba, ctx->settings->bg_color, sizeof(ctx->settings->bg_color));
+    format_rgba_hex(shadow_rgba, ctx->settings->shadow_color, sizeof(ctx->settings->shadow_color));
     save_settings(ctx->settings, ctx->settings_path);
 }
 
-static void set_sprite_shadows(menu_context_t *ctx, int enabled) {
-    *ctx->show_shadows = enabled;
-    ctx->settings->show_shadows = enabled;
-    save_settings(ctx->settings, ctx->settings_path);
+/* Switching to a whole scheme - the Light/Dark/Classic presets - re-matches
+   the sprite shadow to it, the same way Advanced Colors... does. A scheme is
+   all three colors: the sage-gray ghost that suits Classic is plainly wrong
+   over Light's white, and picking a preset is a decision about the whole
+   look, not about two thirds of it.
+   This does mean a preset discards a shadow color set by hand in Advanced
+   Colors..., which is the same thing it already does to a hand-set pixel or
+   background color.
+   Note this re-matches around each preset's own hand-picked ink rather than
+   running the preset's background back through derive_theme_colors - the
+   presets' pairings are deliberate and stay exactly as authored. */
+static void apply_display_colors(menu_context_t *ctx, uint32_t pixel_rgba, uint32_t bg_rgba) {
+    apply_display_colors_full(ctx, pixel_rgba, bg_rgba, theme_shadow_for(bg_rgba, pixel_rgba));
 }
 
-/* Fills the IDC_PIXEL_HEX/IDC_BG_HEX edit control at `edit_id` with whatever
-   ChooseColorA returns.
+/* Fills the hex edit control at `edit_id` with whatever ChooseColorA returns,
+   and reports whether the user actually picked something.
    This seeds ChooseColorA from that field's current text, falling back to
    black if the text is not valid hex yet.
    A "Choose..." click and hand-typing the hex code can freely mix: either
-   one just overwrites the same field. */
-static void choose_color_into_hex_field(HWND hdlg, int edit_id) {
+   one just overwrites the same field.
+   The return value matters for IDC_SCREEN_CHOOSE, which re-derives the other
+   two colors afterwards - re-deriving on a cancelled pick would throw away
+   hand-set colors in exchange for nothing. */
+static int choose_color_into_hex_field(HWND hdlg, int edit_id) {
     /* CHOOSECOLOR requires a caller-owned 16-entry custom-color scratch array.
        This array is static so the user's custom-palette additions survive
        between picks, both within one dialog session and across separate menu
        invocations, instead of resetting every time. */
     static COLORREF custom_colors[16] = {0};
-    char text[7];
+    char text[7], new_hex[7];
     uint8_t r, g, b;
     CHOOSECOLORA cc;
 
@@ -861,57 +1097,263 @@ static void choose_color_into_hex_field(HWND hdlg, int edit_id) {
     cc.lpCustColors = custom_colors;
     cc.Flags = CC_FULLOPEN | CC_RGBINIT;
     cc.rgbResult = parse_hex_rgb(text, &r, &g, &b) ? RGB(r, g, b) : RGB(0, 0, 0);
-    if (ChooseColorA(&cc)) {
-        char new_hex[7];
-        snprintf(new_hex, sizeof(new_hex), "%02X%02X%02X", GetRValue(cc.rgbResult), GetGValue(cc.rgbResult),
-            GetBValue(cc.rgbResult));
-        SetDlgItemTextA(hdlg, edit_id, new_hex);
+    if (!ChooseColorA(&cc)) {
+        return 0;
     }
+    snprintf(new_hex, sizeof(new_hex), "%02X%02X%02X", GetRValue(cc.rgbResult), GetGValue(cc.rgbResult),
+        GetBValue(cc.rgbResult));
+    SetDlgItemTextA(hdlg, edit_id, new_hex);
+    return 1;
 }
 
-/* lParam payload for custom_colors_dialog_proc.
+/* lParam payload for advanced_colors_dialog_proc.
    Same pattern as hwid_dialog_data_t: parsed_*_rgba is filled in, and IDOK
-   is allowed to close the dialog, only after both hex fields pass
-   parse_hex_rgb. */
+   is allowed to close the dialog, only after every hex field passes
+   parse_hex_rgb.
+   The three hex fields are always the source of truth on OK, never the
+   derivation - a hand-set color has to survive. IDC_SCREEN_CHOOSE and
+   IDC_REMATCH are the only controls that write a field the user did not
+   click into, and both are unambiguous requests to re-match. */
 typedef struct {
     char pixel_hex[7];
     char bg_hex[7];
+    char shadow_hex[7];
+    /* Mirrors IDC_SHADOWS_ENABLE, so the preview can draw the ghosting trail
+       only when it is actually switched on rather than advertising one that
+       is not there. Applied on OK like every other field here. */
+    int show_shadows;
+    int custom_visible;
+    /* Window heights in pixels. expanded_height is measured from the template
+       at WM_INITDIALOG; collapsed_height is derived from IDC_CUSTOM_TOGGLE's
+       own position, so neither is a second copy of a resource.rc number. */
+    int collapsed_height;
+    int expanded_height;
     uint32_t parsed_pixel_rgba;
     uint32_t parsed_bg_rgba;
-} custom_colors_dialog_data_t;
+    uint32_t parsed_shadow_rgba;
+} advanced_colors_dialog_data_t;
 
-static INT_PTR CALLBACK custom_colors_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+/* Everything inside (and including) the Custom Colors group box. Hidden
+   controls drop out of the tab order on their own, so a collapsed dialog
+   cannot be keyboard-navigated into the fields it is hiding. */
+static const int advanced_colors_custom_ids[] = {IDC_CUSTOM_GROUP, IDC_CUSTOM_BG_LABEL, IDC_BG_HEX, IDC_BG_CHOOSE,
+    IDC_CUSTOM_PIXEL_LABEL, IDC_PIXEL_HEX, IDC_PIXEL_CHOOSE, IDC_CUSTOM_SHADOW_LABEL, IDC_SHADOW_HEX,
+    IDC_SHADOW_CHOOSE, IDC_REMATCH};
+
+/* 8x8 sample sprite for the preview swatch, MSB (0x80) = leftmost column.
+   A face, rather than a scrap of a real PocketStation frame: it has isolated
+   lit pixels, solid runs, and a flat bottom edge, so every part of the scheme
+   (ink, background, and the ghosting row under a lit pixel) shows up. */
+static const uint8_t preview_sprite[8] = {0x3C, 0x42, 0xA5, 0x81, 0xA5, 0x99, 0x42, 0x3C};
+
+static COLORREF rgba_to_colorref(uint32_t rgba) {
+    return RGB((rgba >> 24) & 0xFFu, (rgba >> 16) & 0xFFu, (rgba >> 8) & 0xFFu);
+}
+
+/* Reads `edit_id`'s current text as a color, falling back to `fallback` while
+   the field is mid-edit and does not parse yet. */
+static uint32_t hex_field_rgba(HWND hdlg, int edit_id, uint32_t fallback) {
+    char text[7];
+    uint8_t r, g, b;
+    GetDlgItemTextA(hdlg, edit_id, text, sizeof(text));
+    return parse_hex_rgb(text, &r, &g, &b) ? RGBA_PACK(r, g, b) : fallback;
+}
+
+/* Draws the IDC_COLOR_PREVIEW swatch: preview_sprite rendered exactly the way
+   render_framebuffer renders the real LCD, in whatever colors the three hex
+   fields currently hold. This is the dialog's answer to "what do these three
+   look like together", which is the actual question a color picker leaves
+   unanswered. */
+static void draw_color_preview(HWND hdlg, const DRAWITEMSTRUCT *dis) {
+    advanced_colors_dialog_data_t *data = (advanced_colors_dialog_data_t *)GetWindowLongPtrA(hdlg, GWLP_USERDATA);
+    uint32_t bg_rgba = hex_field_rgba(hdlg, IDC_BG_HEX, DISPLAY_BG_CLASSIC);
+    uint32_t pixel_rgba = hex_field_rgba(hdlg, IDC_PIXEL_HEX, DISPLAY_PIXEL_CLASSIC);
+    uint32_t shadow_rgba = hex_field_rgba(hdlg, IDC_SHADOW_HEX, DISPLAY_SHADOW_COLOR);
+    RECT rc = dis->rcItem;
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    /* 8 sprite rows plus the ghosting row below them, with the rest of the
+       height left as margin so the background reads as a screen. */
+    int cell = height / 12;
+    int origin_x, origin_y, row, col;
+    HBRUSH bg_brush, pixel_brush, shadow_brush;
+    int show_shadows = data ? data->show_shadows : 0;
+
+    if (cell < 1) {
+        cell = 1;
+    }
+    origin_x = rc.left + (width - cell * 8) / 2;
+    origin_y = rc.top + (height - cell * 9) / 2;
+
+    bg_brush = CreateSolidBrush(rgba_to_colorref(bg_rgba));
+    pixel_brush = CreateSolidBrush(rgba_to_colorref(pixel_rgba));
+    shadow_brush = CreateSolidBrush(rgba_to_colorref(shadow_rgba));
+    FillRect(dis->hDC, &rc, bg_brush);
+    for (row = 0; row < 8; row++) {
+        for (col = 0; col < 8; col++) {
+            RECT cell_rc;
+            int lit = (preview_sprite[row] >> (7 - col)) & 1;
+            int lit_below = row < 7 ? (preview_sprite[row + 1] >> (7 - col)) & 1 : 0;
+            int draw_row;
+            if (!lit) {
+                continue;
+            }
+            /* Same two cases as render_framebuffer's second pass: the ghost
+               lands one row below a lit pixel, and only where that row is
+               dark, so two stacked lit pixels never dim each other. */
+            for (draw_row = 0; draw_row < 2; draw_row++) {
+                if (draw_row == 1 && (lit_below || !show_shadows)) {
+                    continue;
+                }
+                cell_rc.left = origin_x + col * cell;
+                cell_rc.top = origin_y + (row + draw_row) * cell;
+                cell_rc.right = cell_rc.left + cell;
+                cell_rc.bottom = cell_rc.top + cell;
+                FillRect(dis->hDC, &cell_rc, draw_row == 0 ? pixel_brush : shadow_brush);
+            }
+        }
+    }
+    DeleteObject(bg_brush);
+    DeleteObject(pixel_brush);
+    DeleteObject(shadow_brush);
+}
+
+/* Refills the active pixel and sprite shadow fields from whatever IDC_BG_HEX
+   currently holds. Only IDC_SCREEN_CHOOSE and IDC_REMATCH call this, so a
+   color set by hand is never overwritten behind the user's back.
+   A field that does not parse is left alone rather than treated as an error:
+   there is nothing to derive from a half-typed hex code, and the user is
+   mid-edit, not mistaken. */
+static void rematch_derived_fields(HWND hdlg) {
+    char text[7], hex[7];
+    uint8_t r, g, b;
+    uint32_t pixel_rgba, shadow_rgba;
+    GetDlgItemTextA(hdlg, IDC_BG_HEX, text, sizeof(text));
+    if (!parse_hex_rgb(text, &r, &g, &b)) {
+        return;
+    }
+    derive_theme_colors(RGBA_PACK(r, g, b), &pixel_rgba, &shadow_rgba);
+    format_rgba_hex(pixel_rgba, hex, sizeof(hex));
+    SetDlgItemTextA(hdlg, IDC_PIXEL_HEX, hex);
+    format_rgba_hex(shadow_rgba, hex, sizeof(hex));
+    SetDlgItemTextA(hdlg, IDC_SHADOW_HEX, hex);
+}
+
+static void set_custom_colors_visible(HWND hdlg, advanced_colors_dialog_data_t *data, int visible) {
+    RECT window_rect;
+    size_t i;
+    for (i = 0; i < sizeof(advanced_colors_custom_ids) / sizeof(advanced_colors_custom_ids[0]); i++) {
+        ShowWindow(GetDlgItem(hdlg, advanced_colors_custom_ids[i]), visible ? SW_SHOW : SW_HIDE);
+    }
+    SetDlgItemTextA(hdlg, IDC_CUSTOM_TOGGLE, visible ? "Custom Colors <<" : "Custom Colors >>");
+    GetWindowRect(hdlg, &window_rect);
+    SetWindowPos(hdlg, NULL, 0, 0, window_rect.right - window_rect.left,
+        visible ? data->expanded_height : data->collapsed_height, SWP_NOMOVE | SWP_NOZORDER);
+    data->custom_visible = visible;
+}
+
+static INT_PTR CALLBACK advanced_colors_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam) {
     switch (msg) {
     case WM_INITDIALOG: {
-        custom_colors_dialog_data_t *data = (custom_colors_dialog_data_t *)lparam;
+        advanced_colors_dialog_data_t *data = (advanced_colors_dialog_data_t *)lparam;
+        RECT window_rect, client, toggle, margin = {0, 0, 0, 7};
         SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)data);
-        SetDlgItemTextA(hdlg, IDC_PIXEL_HEX, data->pixel_hex);
+
+        /* Measure before anything is hidden or resized: the template is
+           authored at its expanded size (see resource.rc). The collapsed size
+           ends one dialog-unit margin below the Custom Colors toggle row,
+           which is read back off the live control instead of hardcoded again
+           here. */
+        GetWindowRect(hdlg, &window_rect);
+        data->expanded_height = window_rect.bottom - window_rect.top;
+        GetClientRect(hdlg, &client);
+        GetWindowRect(GetDlgItem(hdlg, IDC_CUSTOM_TOGGLE), &toggle);
+        MapWindowPoints(NULL, hdlg, (POINT *)&toggle, 2);
+        MapDialogRect(hdlg, &margin);
+        data->collapsed_height =
+            (data->expanded_height - (client.bottom - client.top)) + toggle.bottom + margin.bottom;
+
         SetDlgItemTextA(hdlg, IDC_BG_HEX, data->bg_hex);
-        SendDlgItemMessageA(hdlg, IDC_PIXEL_HEX, EM_SETLIMITTEXT, 6, 0);
+        SetDlgItemTextA(hdlg, IDC_PIXEL_HEX, data->pixel_hex);
+        SetDlgItemTextA(hdlg, IDC_SHADOW_HEX, data->shadow_hex);
         SendDlgItemMessageA(hdlg, IDC_BG_HEX, EM_SETLIMITTEXT, 6, 0);
+        SendDlgItemMessageA(hdlg, IDC_PIXEL_HEX, EM_SETLIMITTEXT, 6, 0);
+        SendDlgItemMessageA(hdlg, IDC_SHADOW_HEX, EM_SETLIMITTEXT, 6, 0);
+        CheckDlgButton(hdlg, IDC_SHADOWS_ENABLE, data->show_shadows ? BST_CHECKED : BST_UNCHECKED);
+        /* Always opens collapsed. The whole point of matching the other two
+           colors is that the common case is one decision, not three. */
+        set_custom_colors_visible(hdlg, data, 0);
         return TRUE;
     }
-    case WM_COMMAND:
+    case WM_DRAWITEM: {
+        const DRAWITEMSTRUCT *dis = (const DRAWITEMSTRUCT *)lparam;
+        if (dis->CtlID == IDC_COLOR_PREVIEW) {
+            draw_color_preview(hdlg, dis);
+            return TRUE;
+        }
+        break;
+    }
+    case WM_COMMAND: {
+        advanced_colors_dialog_data_t *data = (advanced_colors_dialog_data_t *)GetWindowLongPtrA(hdlg, GWLP_USERDATA);
+        if (HIWORD(wparam) == EN_CHANGE) {
+            int edit_id = LOWORD(wparam);
+            if (edit_id != IDC_BG_HEX && edit_id != IDC_PIXEL_HEX && edit_id != IDC_SHADOW_HEX) {
+                break;
+            }
+            /* Typing a color only repaints the preview. Editing the screen
+               color by hand deliberately does *not* re-derive the other two:
+               inside the Custom Colors group all three fields are the user's,
+               and IDC_REMATCH is there to re-match them on request. */
+            InvalidateRect(GetDlgItem(hdlg, IDC_COLOR_PREVIEW), NULL, TRUE);
+            return TRUE;
+        }
         switch (LOWORD(wparam)) {
+        case IDC_SCREEN_CHOOSE:
+            /* The one-color path: pick a screen color and take the matching
+               pixel and shadow colors with it. Nothing happens on a cancelled
+               pick, so this can never quietly discard hand-set colors. */
+            if (choose_color_into_hex_field(hdlg, IDC_BG_HEX)) {
+                rematch_derived_fields(hdlg);
+            }
+            return TRUE;
+        case IDC_BG_CHOOSE:
+            /* Each of these writes its own field with SetDlgItemTextA, so the
+               EN_CHANGE path above is what repaints the preview. */
+            choose_color_into_hex_field(hdlg, IDC_BG_HEX);
+            return TRUE;
         case IDC_PIXEL_CHOOSE:
             choose_color_into_hex_field(hdlg, IDC_PIXEL_HEX);
             return TRUE;
-        case IDC_BG_CHOOSE:
-            choose_color_into_hex_field(hdlg, IDC_BG_HEX);
+        case IDC_SHADOW_CHOOSE:
+            choose_color_into_hex_field(hdlg, IDC_SHADOW_HEX);
+            return TRUE;
+        case IDC_REMATCH:
+            rematch_derived_fields(hdlg);
+            return TRUE;
+        case IDC_SHADOWS_ENABLE:
+            /* AUTOCHECKBOX has already flipped its own state by the time this
+               arrives; this just mirrors it so the preview matches. */
+            data->show_shadows = IsDlgButtonChecked(hdlg, IDC_SHADOWS_ENABLE) == BST_CHECKED;
+            InvalidateRect(GetDlgItem(hdlg, IDC_COLOR_PREVIEW), NULL, TRUE);
+            return TRUE;
+        case IDC_CUSTOM_TOGGLE:
+            set_custom_colors_visible(hdlg, data, !data->custom_visible);
             return TRUE;
         case IDOK: {
-            custom_colors_dialog_data_t *data = (custom_colors_dialog_data_t *)GetWindowLongPtrA(hdlg, GWLP_USERDATA);
-            char pixel_text[7], bg_text[7];
-            uint8_t px_r, px_g, px_b, bg_r, bg_g, bg_b;
+            char pixel_text[7], bg_text[7], shadow_text[7];
+            uint8_t px_r, px_g, px_b, bg_r, bg_g, bg_b, sh_r, sh_g, sh_b;
             GetDlgItemTextA(hdlg, IDC_PIXEL_HEX, pixel_text, sizeof(pixel_text));
             GetDlgItemTextA(hdlg, IDC_BG_HEX, bg_text, sizeof(bg_text));
-            if (!parse_hex_rgb(pixel_text, &px_r, &px_g, &px_b) || !parse_hex_rgb(bg_text, &bg_r, &bg_g, &bg_b)) {
-                MessageBoxA(hdlg, "Both colors need exactly 6 hex digits (0-9, A-F), e.g. \"1A2B3C\".",
+            GetDlgItemTextA(hdlg, IDC_SHADOW_HEX, shadow_text, sizeof(shadow_text));
+            if (!parse_hex_rgb(pixel_text, &px_r, &px_g, &px_b) || !parse_hex_rgb(bg_text, &bg_r, &bg_g, &bg_b)
+                || !parse_hex_rgb(shadow_text, &sh_r, &sh_g, &sh_b)) {
+                MessageBoxA(hdlg, "Every color needs exactly 6 hex digits (0-9, A-F), e.g. \"1A2B3C\".",
                     "pokketstation", MB_ICONERROR);
                 return TRUE;
             }
             data->parsed_pixel_rgba = RGBA_PACK(px_r, px_g, px_b);
             data->parsed_bg_rgba = RGBA_PACK(bg_r, bg_g, bg_b);
+            data->parsed_shadow_rgba = RGBA_PACK(sh_r, sh_g, sh_b);
             EndDialog(hdlg, IDOK);
             return TRUE;
         }
@@ -921,82 +1363,27 @@ static INT_PTR CALLBACK custom_colors_dialog_proc(HWND hdlg, UINT msg, WPARAM wp
         }
         break;
     }
+    }
     return FALSE;
 }
 
-static void prompt_custom_colors(menu_context_t *ctx) {
-    custom_colors_dialog_data_t data;
+static void prompt_advanced_colors(menu_context_t *ctx) {
+    advanced_colors_dialog_data_t data;
+    memset(&data, 0, sizeof(data));
     format_rgba_hex(*ctx->pixel_rgba, data.pixel_hex, sizeof(data.pixel_hex));
     format_rgba_hex(*ctx->bg_rgba, data.bg_hex, sizeof(data.bg_hex));
-    if (DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_CUSTOM_COLORS), ctx->hwnd,
-            custom_colors_dialog_proc, (LPARAM)&data) == IDOK) {
-        apply_display_colors(ctx, data.parsed_pixel_rgba, data.parsed_bg_rgba);
-    }
-}
-
-/* lParam payload for shadow_color_dialog_proc.
-   Same pattern as custom_colors_dialog_data_t, but with one color instead of two. */
-typedef struct {
-    char shadow_hex[7];
-    uint32_t parsed_shadow_rgba;
-} shadow_color_dialog_data_t;
-
-static INT_PTR CALLBACK shadow_color_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam) {
-    switch (msg) {
-    case WM_INITDIALOG: {
-        shadow_color_dialog_data_t *data = (shadow_color_dialog_data_t *)lparam;
-        SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)data);
-        SetDlgItemTextA(hdlg, IDC_SHADOW_HEX, data->shadow_hex);
-        SendDlgItemMessageA(hdlg, IDC_SHADOW_HEX, EM_SETLIMITTEXT, 6, 0);
-        return TRUE;
-    }
-    case WM_COMMAND:
-        switch (LOWORD(wparam)) {
-        case IDC_SHADOW_CHOOSE:
-            choose_color_into_hex_field(hdlg, IDC_SHADOW_HEX);
-            return TRUE;
-        case IDC_SHADOW_RESET: {
-            /* This resets only the field's displayed text, not the live setting.
-               OK still must be clicked to apply and persist it, the same as any other
-               edit in this dialog.
-               Reset-then-Cancel is a no-op. */
-            char default_hex[7];
-            format_rgba_hex(DISPLAY_SHADOW_COLOR, default_hex, sizeof(default_hex));
-            SetDlgItemTextA(hdlg, IDC_SHADOW_HEX, default_hex);
-            return TRUE;
-        }
-        case IDOK: {
-            shadow_color_dialog_data_t *data = (shadow_color_dialog_data_t *)GetWindowLongPtrA(hdlg, GWLP_USERDATA);
-            char text[7];
-            uint8_t r, g, b;
-            GetDlgItemTextA(hdlg, IDC_SHADOW_HEX, text, sizeof(text));
-            if (!parse_hex_rgb(text, &r, &g, &b)) {
-                MessageBoxA(hdlg, "Expected exactly 6 hex digits (0-9, A-F), e.g. \"1A2B3C\".", "pokketstation",
-                    MB_ICONERROR);
-                return TRUE;
-            }
-            data->parsed_shadow_rgba = RGBA_PACK(r, g, b);
-            EndDialog(hdlg, IDOK);
-            return TRUE;
-        }
-        case IDCANCEL:
-            EndDialog(hdlg, IDCANCEL);
-            return TRUE;
-        }
-        break;
-    }
-    return FALSE;
-}
-
-static void prompt_shadow_color(menu_context_t *ctx) {
-    shadow_color_dialog_data_t data;
     format_rgba_hex(*ctx->shadow_rgba, data.shadow_hex, sizeof(data.shadow_hex));
-    if (DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_SHADOW_COLOR), ctx->hwnd,
-            shadow_color_dialog_proc, (LPARAM)&data) == IDOK) {
-        *ctx->shadow_rgba = data.parsed_shadow_rgba;
-        format_rgba_hex(data.parsed_shadow_rgba, ctx->settings->shadow_color, sizeof(ctx->settings->shadow_color));
-        save_settings(ctx->settings, ctx->settings_path);
+    data.show_shadows = *ctx->show_shadows;
+    if (DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_ADVANCED_COLORS), ctx->hwnd,
+            advanced_colors_dialog_proc, (LPARAM)&data) != IDOK) {
+        return;
     }
+    /* The sprite shadow toggle is set here rather than through a helper of
+       its own so that all four values this dialog owns land in one
+       save_settings, instead of writing settings.cfg twice for one OK. */
+    *ctx->show_shadows = data.show_shadows;
+    ctx->settings->show_shadows = data.show_shadows;
+    apply_display_colors_full(ctx, data.parsed_pixel_rgba, data.parsed_bg_rgba, data.parsed_shadow_rgba);
 }
 
 /* IDD_CAPTURE_PROMPT is purely a static text display.
@@ -1253,17 +1640,8 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
     case ID_COLORS_CLASSIC:
         apply_display_colors(ctx, DISPLAY_PIXEL_CLASSIC, DISPLAY_BG_CLASSIC);
         break;
-    case ID_COLORS_CUSTOM:
-        prompt_custom_colors(ctx);
-        break;
-    case ID_VIEW_SHADOWS_ENABLE:
-        set_sprite_shadows(ctx, 1);
-        break;
-    case ID_VIEW_SHADOWS_DISABLE:
-        set_sprite_shadows(ctx, 0);
-        break;
-    case ID_VIEW_SHADOW_COLOR:
-        prompt_shadow_color(ctx);
+    case ID_COLORS_ADVANCED:
+        prompt_advanced_colors(ctx);
         break;
     case ID_HELP_ABOUT:
         show_about(ctx);
@@ -1306,8 +1684,9 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels, uint32_t pix
     /* Approximates the faint "ghosting" a real late-90s STN/passive-matrix LCD
        shows trailing a lit pixel.
        This ghosting comes from slow crystal response, not a real drop shadow.
-       This draws shadow_rgba (DISPLAY_SHADOW_COLOR by default, user-configurable
-       via View > Sprite Shadows > Shadow Color...) one row below each lit pixel.
+       This draws shadow_rgba (matched to the active color scheme, and settable
+       by hand from View > Colors > Advanced Colors...) one row below each lit
+       pixel.
        This runs as a second pass, so it never overwrites an actually-lit pixel.
        This checks against `fb` directly, not the just-written output.
        Two adjacent lit source pixels must never dim each other. */
@@ -1467,7 +1846,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Colors > Light/Dark/Classic/Custom Colors... all funnel through here on
+    /* Colors > Light/Dark/Classic/Advanced Colors... all funnel through here on
        the next launch (see save_settings above).
        load_settings always fills in a real value for both fields (Classic, on
        a fresh settings.cfg).

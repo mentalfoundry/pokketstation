@@ -5,8 +5,10 @@
 
 #define IDR_MAINMENU 201
 #define IDD_HWID 202
-#define IDD_CUSTOM_COLORS 203
-#define IDD_SHADOW_COLOR 204
+#define IDD_ADVANCED_COLORS 203
+/* 204 was IDD_SHADOW_COLOR, a dialog for the sprite shadow color alone. That
+   color is now one of the three IDD_ADVANCED_COLORS edits, since it only ever
+   made sense picked against the scheme it sits on. */
 #define IDD_REMAP_CONTROLS 205
 #define IDD_CAPTURE_PROMPT 206
 #define IDD_ABOUT 207
@@ -18,7 +20,7 @@
 #define IDC_BG_CHOOSE 1005
 #define IDC_SHADOW_HEX 1006
 #define IDC_SHADOW_CHOOSE 1007
-#define IDC_SHADOW_RESET 1008
+/* 1008 was IDC_SHADOW_RESET, which belonged to the retired IDD_SHADOW_COLOR. */
 #define IDC_CAPTURE_PROMPT_TEXT 1009
 /* IDC_REMAP_LABEL_BASE and IDC_REMAP_CHANGE_BASE each reserve 9 consecutive
    IDs, one per remappable action.
@@ -36,6 +38,20 @@
 #define IDC_ABOUT_LINK 1030
 #define IDC_ABOUT_VERSION 1031
 #define IDC_ABOUT_LICENSE_LINK 1032
+/* IDD_ADVANCED_COLORS' controls, beyond the three IDC_*_HEX/IDC_*_CHOOSE
+   pairs above that make up its collapsible Custom Colors group.
+   IDC_SCREEN_CHOOSE is the always-visible one-color pick; it writes the same
+   IDC_BG_HEX field the group's own Choose button does, and additionally
+   re-derives the other two colors from it. */
+#define IDC_CUSTOM_TOGGLE 1033
+#define IDC_CUSTOM_GROUP 1034
+#define IDC_CUSTOM_PIXEL_LABEL 1035
+#define IDC_CUSTOM_SHADOW_LABEL 1036
+#define IDC_COLOR_PREVIEW 1037
+#define IDC_REMATCH 1038
+#define IDC_CUSTOM_BG_LABEL 1039
+#define IDC_SCREEN_CHOOSE 1040
+#define IDC_SHADOWS_ENABLE 1041
 
 #define ID_FILE_OPEN_BIOS 1101
 #define ID_FILE_OPEN_APP 1102
@@ -48,10 +64,10 @@
 #define ID_COLORS_STANDARD 1108
 #define ID_COLORS_REVERSED 1109
 #define ID_COLORS_CLASSIC 1110
-#define ID_COLORS_CUSTOM 1111
-#define ID_VIEW_SHADOWS_ENABLE 1112
-#define ID_VIEW_SHADOWS_DISABLE 1113
-#define ID_VIEW_SHADOW_COLOR 1114
+#define ID_COLORS_ADVANCED 1111
+/* 1112-1114 were the View > Sprite Shadows submenu (Enable, Disable, Shadow
+   Color...). That submenu is gone: the toggle is a checkbox in
+   IDD_ADVANCED_COLORS and the color is one of its three edits. */
 #define ID_FILE_RESET 1116
 #define ID_FILE_QUICK_SAVE 1117
 #define ID_FILE_QUICK_LOAD 1118
