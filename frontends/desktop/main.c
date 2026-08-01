@@ -35,7 +35,7 @@
    This is deliberately not wired up to git or CMake automatically.
    This string is the one spot to edit for a new release.
    A source zip build has no git available, so an automatic value could silently drift. */
-#define POKKETSTATION_VERSION "v1.8.1"
+#define POKKETSTATION_VERSION "v1.9.0"
 
 /* Returns the directory the running executable lives in.
    This derives the directory from argv[0], not an OS-specific "current module path" API.
