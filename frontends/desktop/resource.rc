@@ -29,20 +29,41 @@ BEGIN
            stays usable on any BIOS. It also replaces what used to be a Volume
            Override group here: forcing the emulated machine's own volume byte
            only ever bought three coarse steps that this covers better. */
+        /* Two sides of the same thing, so they sit at the same level: Volume is
+           how loud the output is, Speaker is how it is voiced. The eleven
+           volume steps are behind their own header rather than listed here
+           directly - inlined, they buried Speaker under a wall of percentages
+           and made it easy to miss that it existed at all. */
         POPUP "&Sound"
         BEGIN
-            MENUITEM "&Mute",   ID_TOOLS_SOUND_BASE + 0
-            MENUITEM SEPARATOR
-            MENUITEM "10%",     ID_TOOLS_SOUND_BASE + 1
-            MENUITEM "20%",     ID_TOOLS_SOUND_BASE + 2
-            MENUITEM "30%",     ID_TOOLS_SOUND_BASE + 3
-            MENUITEM "40%",     ID_TOOLS_SOUND_BASE + 4
-            MENUITEM "50%",     ID_TOOLS_SOUND_BASE + 5
-            MENUITEM "60%",     ID_TOOLS_SOUND_BASE + 6
-            MENUITEM "70%",     ID_TOOLS_SOUND_BASE + 7
-            MENUITEM "80%",     ID_TOOLS_SOUND_BASE + 8
-            MENUITEM "90%",     ID_TOOLS_SOUND_BASE + 9
-            MENUITEM "&Full",   ID_TOOLS_SOUND_BASE + 10
+            POPUP "&Volume"
+            BEGIN
+                MENUITEM "&Mute",   ID_TOOLS_SOUND_BASE + 0
+                MENUITEM SEPARATOR
+                MENUITEM "10%",     ID_TOOLS_SOUND_BASE + 1
+                MENUITEM "20%",     ID_TOOLS_SOUND_BASE + 2
+                MENUITEM "30%",     ID_TOOLS_SOUND_BASE + 3
+                MENUITEM "40%",     ID_TOOLS_SOUND_BASE + 4
+                MENUITEM "50%",     ID_TOOLS_SOUND_BASE + 5
+                MENUITEM "60%",     ID_TOOLS_SOUND_BASE + 6
+                MENUITEM "70%",     ID_TOOLS_SOUND_BASE + 7
+                MENUITEM "80%",     ID_TOOLS_SOUND_BASE + 8
+                MENUITEM "90%",     ID_TOOLS_SOUND_BASE + 9
+                MENUITEM "&Full",   ID_TOOLS_SOUND_BASE + 10
+            END
+            /* How the output is voiced, as opposed to how loud it is. The
+               real unit's speaker is tiny and reproduces very little low end;
+               a PC speaker reproduces all of it, which is what makes the raw
+               output sound muddy next to hardware. See SPEAKER_SIM_PRESETS in
+               main.c. */
+            POPUP "&Speaker"
+            BEGIN
+                MENUITEM "F&ull Range (raw DAC output)", ID_TOOLS_SPEAKER_BASE + 0
+                MENUITEM SEPARATOR
+                MENUITEM "&Light",                       ID_TOOLS_SPEAKER_BASE + 1
+                MENUITEM "&PocketStation Speaker",       ID_TOOLS_SPEAKER_BASE + 2
+                MENUITEM "&Tinny",                       ID_TOOLS_SPEAKER_BASE + 3
+            END
         END
         MENUITEM SEPARATOR
         POPUP "Date/&Time Override"

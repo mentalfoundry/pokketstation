@@ -78,19 +78,27 @@
    "Default" means the frontend does not interfere, so the BIOS's own system
    menus work normally.
    1122-1125 were ID_TOOLS_VOLUME_DEFAULT/LOUD/SOFT/MUTE, a matching group that
-   pinned the PocketStation's own volume byte. Tools > Sound below replaced it:
-   an application-level volume covers what anyone actually wanted from it,
-   without reaching into emulated RAM or needing a BIOS this project has
-   traced. */
+   pinned the PocketStation's own volume byte. Tools > Sound > Volume below
+   replaced it: an application-level volume covers what anyone actually wanted
+   from it, without reaching into emulated RAM or needing a BIOS this project
+   has traced. */
 #define ID_TOOLS_DATETIME_DEFAULT 1126
 #define ID_TOOLS_DATETIME_OS 1127
-/* Tools > Sound: this application's own output level, applied by the frontend
-   to the PCM it queues, so it works on any BIOS.
+/* Tools > Sound > Volume: this application's own output level, applied by the
+   frontend to the PCM it queues, so it works on any BIOS.
    11 consecutive IDs, one per 10% step: ID_TOOLS_SOUND_BASE + percent / 10,
    with +0 (Mute) and +10 (100%) as the ends. Held as a range rather than named
    IDs so main.c converts both ways with arithmetic and no lookup table, the
    same shape as IDC_REMAP_LABEL_BASE above. */
 #define ID_TOOLS_SOUND_BASE 1128
 #define ID_TOOLS_SOUND_LAST 1138
+/* Tools > Sound > Speaker, the sibling of Volume above: which small-speaker
+   response the frontend filters the DAC's output through, so it sounds like the
+   hardware's own tiny speaker rather than like the raw signal on a full-range
+   PC speaker. See SPEAKER_SIM_PRESETS in main.c.
+   A contiguous range again, one ID per preset in SPEAKER_SIM_* order:
+   ID_TOOLS_SPEAKER_BASE + preset, with +0 (Full Range) meaning no filtering. */
+#define ID_TOOLS_SPEAKER_BASE 1139
+#define ID_TOOLS_SPEAKER_LAST 1142
 
 #endif

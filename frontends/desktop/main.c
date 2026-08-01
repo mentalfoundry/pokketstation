@@ -233,7 +233,7 @@ typedef struct {
        normally. Otherwise it is re-applied every frame, which is what makes it
        stick against the BIOS menu writing its own value. */
     int datetime_override;
-    /* Tools > Sound. 0-100, in whole percent. This is the emulator's own output
+    /* Tools > Sound > Volume. 0-100, in whole percent. This is the emulator's own output
        level and nothing the emulated machine can see: it scales the PCM on its
        way to the audio device, after the core has already applied the
        PocketStation's own volume setting. The two therefore multiply.
@@ -243,12 +243,17 @@ typedef struct {
        better on any of them. A volume_override= line in an older settings.cfg
        is ignored and drops out at the next save. */
     int master_volume;
+    /* Tools > Sound > Speaker. One of the SPEAKER_SIM_* values below. Like
+       master_volume this is purely an output-side effect the emulated machine
+       cannot see, and it is applied before master_volume so the percentage
+       stays a plain loudness control on top of it. */
+    int speaker_sim;
 } app_settings_t;
 
 #define DATETIME_OVERRIDE_OFF 0
 #define DATETIME_OVERRIDE_OS 1
 
-/* Tools > Sound. The menu offers 10% steps, but the setting is stored as plain
+/* Tools > Sound > Volume. The menu offers 10% steps, but the setting is stored as plain
    percent so a finer control later (a slider, a hotkey nudge) needs no new
    format on disk - only a value the menu cannot currently produce, which
    sound_menu_id below rounds to the nearest step it can show. */
@@ -298,6 +303,202 @@ static void apply_master_volume(int16_t *samples, uint32_t count, int percent) {
     int32_t gain_q16 = (int32_t)(gain * 65536.0 + 0.5);
     for (uint32_t i = 0; i < count; i++) {
         samples[i] = (int16_t)(((int32_t)samples[i] * gain_q16) / 65536);
+    }
+}
+
+/* Tools > Sound > Speaker.
+
+   The core hands the frontend exactly what the DAC held, sample for sample
+   (see dac.c). That is the signal at the *terminals* of the PocketStation's
+   speaker, not the sound anyone ever heard come out of one. A real unit's
+   speaker is a ~1cm transducer in a plastic shell with no enclosure worth the
+   name: it reproduces almost nothing below its own resonance, somewhere in the
+   1-2kHz region, and falls away fast below that.
+
+   Feeding the raw signal to a laptop or desktop speaker instead - which does
+   have real low-end - reproduces everything the real device physically could
+   not, and the result sounds thick and muddy next to the hardware. The content
+   makes it worse: the DAC is bit-banged one held level at a time, so nearly
+   every tone an app plays is a square-ish wave whose lowest harmonics carry
+   most of the energy, plus whatever DC offset the last written DACV level left
+   sitting there.
+
+   So this filters what the real speaker would have filtered mechanically: a
+   second-order high-pass (RBJ cookbook biquad), which is the right shape
+   because a driver below its resonance rolls off at about 12dB per octave. Q
+   sets how pronounced the resonant peak at the corner is - a cheap small
+   speaker has an obvious one, which is a good part of why it sounds the way it
+   does.
+
+   Every preset ends up roughly 4dB quieter than the raw signal. That is not a
+   tuning choice to correct: the low end being removed is real energy, and a
+   speaker that cannot produce it is quieter, which is also true of the device.
+   Tools > Sound > Volume is right there if the result wants turning up.
+
+   These values are voiced by ear against how the hardware sounds, not measured
+   off a real unit's speaker. They are presets rather than a free cutoff
+   control because "which of these sounds most like the device on your
+   speakers" is the actual question; the numbers are here for anyone who wants
+   to retune them. */
+#define SPEAKER_SIM_OFF 0
+#define SPEAKER_SIM_LIGHT 1
+#define SPEAKER_SIM_POCKETSTATION 2
+#define SPEAKER_SIM_TINNY 3
+#define SPEAKER_SIM_COUNT 4
+/* Unlike master_volume, this does not default to "behave exactly as before".
+   The raw signal is the one that does not match the hardware, so a fresh
+   install gets the speaker it is emulating and Full Range is there for anyone
+   who would rather hear the DAC untouched. */
+#define SPEAKER_SIM_DEFAULT SPEAKER_SIM_POCKETSTATION
+
+/* Indexed by SPEAKER_SIM_*. `name` is the settings.cfg token, and the order
+   here is also the Tools > Sound > Speaker menu order (see the
+   ID_TOOLS_SPEAKER_BASE range in resource.h). The OFF row carries no
+   coefficients: nothing reads them, it is only here to keep the table indexable
+   by the same value everything else uses.
+
+   `trim` is a small level adjustment applied with the coefficients, not a
+   makeup gain trying to win back what the high-pass removed - pushing gain into
+   the limiter below only compresses. Its job is to leave the three presets
+   about equally loud as each other, which measures out at around -4dB from raw
+   for all three. */
+static const struct {
+    const char *name;
+    double cutoff_hz;
+    double q;
+    double trim;
+} SPEAKER_SIM_PRESETS[SPEAKER_SIM_COUNT] = {
+    {"off", 0.0, 0.0, 1.0},
+    /* Takes the boom off without changing the character much. For someone on
+       speakers that are already small, or who finds the other two thin. */
+    {"light", 500.0, 0.70, 1.10},
+    /* The device. Corner just under the resonance a transducer that size sits
+       at, with enough Q to leave the peak audible. */
+    {"pocketstation", 1100.0, 1.10, 1.20},
+    /* Further than the hardware goes, for big speakers or a subwoofer where
+       even the default still has more low end than the device ever had. */
+    {"tinny", 1800.0, 1.60, 1.10},
+};
+
+static int clamp_speaker_sim(int preset) {
+    if (preset < 0 || preset >= SPEAKER_SIM_COUNT) {
+        return SPEAKER_SIM_DEFAULT;
+    }
+    return preset;
+}
+
+/* Parses a settings.cfg speaker= token. An unrecognised one (hand-edited, or
+   written by a later version that grew a preset) falls back to the default
+   rather than to Off: an unreadable value should not silently turn the feature
+   off. */
+static int speaker_sim_from_name(const char *name) {
+    for (int i = 0; i < SPEAKER_SIM_COUNT; i++) {
+        if (strcmp(name, SPEAKER_SIM_PRESETS[i].name) == 0) {
+            return i;
+        }
+    }
+    return SPEAKER_SIM_DEFAULT;
+}
+
+/* Direct Form I biquad state, plus the preset its coefficients were built for.
+   The history has to live across frames: the main loop filters one frame's
+   worth of samples at a time, and a filter restarted at zero every 31ms would
+   click at every boundary. */
+typedef struct {
+    int preset; /* SPEAKER_SIM_*, or -1 before the first configure */
+    double b0, b1, b2, a1, a2;
+    double x1, x2, y1, y2;
+} speaker_filter_t;
+
+static void speaker_filter_init(speaker_filter_t *f) {
+    memset(f, 0, sizeof(*f));
+    f->preset = -1;
+}
+
+/* math.h's M_PI is not in standard C and MSVC only defines it behind
+   _USE_MATH_DEFINES, so the constant is spelled out here. */
+#define SPEAKER_TWO_PI 6.283185307179586
+
+/* Rebuilds the coefficients, and only when the preset actually changed - the
+   main loop calls this every frame with whatever the menu currently says.
+   The history is cleared on a change so a switch settles from silence instead
+   of from samples that belonged to the previous filter. */
+static void speaker_filter_configure(speaker_filter_t *f, int preset) {
+    if (f->preset == preset) {
+        return;
+    }
+    f->preset = preset;
+    f->x1 = f->x2 = f->y1 = f->y2 = 0.0;
+    if (preset == SPEAKER_SIM_OFF) {
+        return;
+    }
+    /* RBJ audio-EQ-cookbook high-pass, normalised by a0, with the trim folded
+       into the feed-forward half so it costs nothing per sample. */
+    double w0 = SPEAKER_TWO_PI * SPEAKER_SIM_PRESETS[preset].cutoff_hz / (double)PSEMU_AUDIO_SAMPLE_RATE_HZ;
+    double cos_w0 = cos(w0);
+    double alpha = sin(w0) / (2.0 * SPEAKER_SIM_PRESETS[preset].q);
+    double a0 = 1.0 + alpha;
+    double gain = SPEAKER_SIM_PRESETS[preset].trim;
+    f->b0 = gain * ((1.0 + cos_w0) / 2.0) / a0;
+    f->b1 = gain * (-(1.0 + cos_w0)) / a0;
+    f->b2 = f->b0;
+    f->a1 = (-2.0 * cos_w0) / a0;
+    f->a2 = (1.0 - alpha) / a0;
+}
+
+/* Where the soft limiter below stops being transparent, as a fraction of full
+   scale. Everything under this passes through untouched. */
+#define SPEAKER_LIMIT_KNEE 0.75
+
+/* A high-pass differentiates a step, so a full-scale square wave - which is
+   very nearly all this DAC ever produces (see dac.h) - comes out of the filter
+   overshooting to about twice full scale at every edge, before any gain is
+   applied at all. That is inherent to the filter shape, not something the
+   coefficients can be tuned out of, and it has to go somewhere.
+
+   Hard-clamping it would square those spikes off into exactly the kind of harsh
+   digital clipping this feature exists to avoid. Attenuating the whole signal
+   enough to fit them (about -6dB) would spend real loudness on transients one
+   or two samples wide.
+
+   So the peaks are folded over instead: linear below the knee, tanh above it,
+   which is asymptotic to full scale and therefore can never overflow. It is
+   also the more faithful of the three, because it is what the real speaker
+   does - a driver that small runs out of excursion and compresses peaks rather
+   than reproducing them. Measured over square waves from 220Hz to 2.2kHz this
+   costs under half a dB of level against no limiting at all, so nearly all of
+   the ~4dB the presets sit below raw is the high-pass, not this. */
+static double speaker_soft_limit(double y) {
+    double u = y / 32768.0;
+    double magnitude = fabs(u);
+    if (magnitude <= SPEAKER_LIMIT_KNEE) {
+        return y;
+    }
+    double over = (magnitude - SPEAKER_LIMIT_KNEE) / (1.0 - SPEAKER_LIMIT_KNEE);
+    double folded = SPEAKER_LIMIT_KNEE + (1.0 - SPEAKER_LIMIT_KNEE) * tanh(over);
+    return (u < 0.0 ? -folded : folded) * 32768.0;
+}
+
+/* Filters one frame's worth of samples in place. Off returns without touching
+   the buffer, so that path costs nothing beyond the preset comparison.
+   ~250 samples per frame at 8kHz makes the per-sample double math irrelevant
+   next to everything else a frame does. */
+static void apply_speaker_filter(speaker_filter_t *f, int16_t *samples, uint32_t count, int preset) {
+    speaker_filter_configure(f, clamp_speaker_sim(preset));
+    if (f->preset == SPEAKER_SIM_OFF) {
+        return;
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        double x = (double)samples[i];
+        double y = f->b0 * x + f->b1 * f->x1 + f->b2 * f->x2 - f->a1 * f->y1 - f->a2 * f->y2;
+        /* The pre-limiter y is what goes into the history, on purpose. Feeding
+           the limited value back would put the non-linearity inside the
+           recursion, where it is no longer a filter with a known response. */
+        f->x2 = f->x1;
+        f->x1 = x;
+        f->y2 = f->y1;
+        f->y1 = y;
+        samples[i] = (int16_t)speaker_soft_limit(y);
     }
 }
 
@@ -368,9 +569,12 @@ static int load_settings(app_settings_t *settings, const char *path) {
     /* Defaults to off, so a fresh install behaves exactly as it did before this
        override existed. */
     settings->datetime_override = DATETIME_OVERRIDE_OFF;
-    /* Full volume, so an install that has never touched Tools > Sound sounds
+    /* Full volume, so an install that has never touched Tools > Sound > Volume sounds
        exactly as it did before this setting existed. */
     settings->master_volume = MASTER_VOLUME_DEFAULT;
+    /* Unlike master_volume this default is not "as it was before" - see
+       SPEAKER_SIM_DEFAULT for why. */
+    settings->speaker_sim = SPEAKER_SIM_DEFAULT;
     if (f) {
         while (fgets(line, sizeof(line), f)) {
             size_t len = strlen(line);
@@ -413,6 +617,8 @@ static int load_settings(app_settings_t *settings, const char *path) {
                    it means "as loud as possible", and there is no wrong-enough
                    value here to be worth refusing to start over. */
                 settings->master_volume = clamp_master_volume(atoi(line + 14));
+            } else if (strncmp(line, "speaker=", 8) == 0) {
+                settings->speaker_sim = speaker_sim_from_name(line + 8);
             } else if (strncmp(line, "show_console=", 13) == 0) {
                 settings->show_console = atoi(line + 13) != 0;
             } else if (strncmp(line, "ir_link_diagnostics=", 20) == 0) {
@@ -495,6 +701,7 @@ static void save_settings(const app_settings_t *settings, const char *path) {
     fprintf(f, "key_quick_load=%s\n", settings->key_quick_load);
     fprintf(f, "datetime_override=%s\n", settings->datetime_override == DATETIME_OVERRIDE_OS ? "os" : "default");
     fprintf(f, "master_volume=%d\n", settings->master_volume);
+    fprintf(f, "speaker=%s\n", SPEAKER_SIM_PRESETS[clamp_speaker_sim(settings->speaker_sim)].name);
     fprintf(f, "show_console=%d\n", settings->show_console ? 1 : 0);
     fprintf(f, "ir_link_diagnostics=%d\n", settings->ir_link_diagnostics ? 1 : 0);
     fprintf(f, "show_shadows=%d\n", settings->show_shadows ? 1 : 0);
@@ -1798,16 +2005,27 @@ static void sync_menu_state(menu_context_t *ctx) {
             datetime_ids[ctx->settings->datetime_override], MF_BYCOMMAND);
     }
 
-    /* Tools > Sound is this application's own output level, so unlike the group
-       above it is never greyed: it works with no BIOS loaded at all.
+    /* Tools > Sound > Volume is this application's own output level, so unlike
+       the group above it is never greyed: it works with no BIOS loaded at all.
        A stored percent that is not a whole 10% step (only reachable by hand-
        editing settings.cfg) rounds to the nearest item the menu can show. The
        stored value itself is left alone - the menu just cannot draw it. */
-    HMENU sound_menu = find_menu_containing(root, ID_TOOLS_SOUND_BASE);
-    if (sound_menu != NULL) {
+    HMENU volume_menu = find_menu_containing(root, ID_TOOLS_SOUND_BASE);
+    if (volume_menu != NULL) {
         int step = (clamp_master_volume(ctx->settings->master_volume) + 5) / 10;
         CheckMenuRadioItem(
-            sound_menu, ID_TOOLS_SOUND_BASE, ID_TOOLS_SOUND_LAST, ID_TOOLS_SOUND_BASE + step, MF_BYCOMMAND);
+            volume_menu, ID_TOOLS_SOUND_BASE, ID_TOOLS_SOUND_LAST, ID_TOOLS_SOUND_BASE + step, MF_BYCOMMAND);
+    }
+
+    /* Tools > Sound > Speaker sits beside Volume rather than inside it, so it
+       needs its own lookup - find_menu_containing returns the popup that
+       directly holds the group, and these are two different popups. Never
+       greyed, for the same reason as Volume: it is this application's own
+       output filtering and needs no BIOS. */
+    HMENU speaker_menu = find_menu_containing(root, ID_TOOLS_SPEAKER_BASE);
+    if (speaker_menu != NULL) {
+        CheckMenuRadioItem(speaker_menu, ID_TOOLS_SPEAKER_BASE, ID_TOOLS_SPEAKER_LAST,
+            ID_TOOLS_SPEAKER_BASE + clamp_speaker_sim(ctx->settings->speaker_sim), MF_BYCOMMAND);
     }
 
     /* The radio range stops at ID_COLORS_CLASSIC so "Advanced Colors..." stays
@@ -1839,12 +2057,22 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
     if (message != WM_COMMAND) {
         return;
     }
-    /* Tools > Sound is one contiguous ID range rather than a named ID per step
+    /* Tools > Sound > Volume is one contiguous ID range rather than a named ID per step
        (see resource.h), so it is matched here instead of as eleven cases in the
        switch below. The main loop reads settings->master_volume every frame, so
        storing it is the whole of applying it. */
     if (LOWORD(wparam) >= ID_TOOLS_SOUND_BASE && LOWORD(wparam) <= ID_TOOLS_SOUND_LAST) {
         ctx->settings->master_volume = (int)(LOWORD(wparam) - ID_TOOLS_SOUND_BASE) * 10;
+        save_settings(ctx->settings, ctx->settings_path);
+        sync_menu_state(ctx);
+        return;
+    }
+    /* Tools > Sound > Speaker, matched the same way and for the same reason.
+       Storing it is likewise all of applying it: the main loop reads
+       settings->speaker_sim every frame, and the filter rebuilds itself when it
+       sees the value change (see apply_speaker_filter). */
+    if (LOWORD(wparam) >= ID_TOOLS_SPEAKER_BASE && LOWORD(wparam) <= ID_TOOLS_SPEAKER_LAST) {
+        ctx->settings->speaker_sim = (int)(LOWORD(wparam) - ID_TOOLS_SPEAKER_BASE);
         save_settings(ctx->settings, ctx->settings_path);
         sync_menu_state(ctx);
         return;
@@ -2303,6 +2531,10 @@ int main(int argc, char **argv) {
 
     uint32_t pixels[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
     int16_t audio_buf[1024];
+    /* Lives out here, not inside the loop: its history has to carry across
+       frames. See speaker_filter_t. */
+    speaker_filter_t speaker_filter;
+    speaker_filter_init(&speaker_filter);
     unsigned long frame = 0;
 
     /* Minimum number of frames a button reads as pressed, once detected.
@@ -2456,11 +2688,16 @@ int main(int argc, char **argv) {
         if (audio_dev != 0) {
             uint32_t n = psemu_get_audio_samples(ps, audio_buf, sizeof(audio_buf) / sizeof(audio_buf[0]));
             if (n > 0) {
-                /* Tools > Sound, read fresh each frame so a change takes effect
+                /* Tools > Sound > Volume, read fresh each frame so a change takes effect
                    on the next one. The core is always drained regardless, and
                    silence is still queued at 0%: skipping the queue instead
                    would leave whatever is already buffered playing on, and
-                   would drift this instance's audio clock against its frames. */
+                   would drift this instance's audio clock against its frames.
+                   The speaker filter runs first so the percentage stays a plain
+                   loudness control over whatever the speaker produced, rather
+                   than changing how hard the filter's makeup gain drives into
+                   its own clamp. */
+                apply_speaker_filter(&speaker_filter, audio_buf, n, settings.speaker_sim);
                 apply_master_volume(audio_buf, n, clamp_master_volume(settings.master_volume));
                 SDL_QueueAudio(audio_dev, audio_buf, n * sizeof(audio_buf[0]));
             }
