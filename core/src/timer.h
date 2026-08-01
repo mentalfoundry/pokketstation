@@ -36,6 +36,23 @@ struct intc;
 #define TIMER_CTRL_ENABLE (1u << 2)
 #define TIMER_CTRL_DIVIDER_MASK 0x3u
 
+/* period and count are 16-bit registers, not 32-bit.
+   Confirmed against real hardware: every raw `count` snapshot captured on a real unit had its
+   upper 16 bits at zero, and a counter read before/after a long loop came back numerically
+   larger, which only happens if the counter wrapped and reloaded at a 16-bit boundary.
+   See docs/hardware-notes.md, "Timers".
+
+   History: this emulator modeled both as full uint32_t. That silently broke any app whose
+   timer setup wrote a value wider than 16 bits, because the surviving upper bits stretched
+   the period enormously instead of being discarded.
+   Confirmed via Pop'n Music (testdata/popnmusic.mcr): its FIQ-driven audio timer (Timer2)
+   held period 0x03240353 under the 32-bit model, about 52.6 million ticks, so the audio
+   interrupt effectively never fired and the game played in complete silence with its DAC
+   gate open the whole time. Masking to the real 16-bit width leaves period 0x0353 (851),
+   matching Timer1's 0x34F (847) programmed alongside it, and the music plays.
+   See test_timer_registers_are_16_bit. */
+#define TIMER_REG_MASK 0xFFFFu
+
 typedef struct {
     uint32_t period;
     uint32_t count;

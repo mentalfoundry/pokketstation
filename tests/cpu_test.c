@@ -944,6 +944,38 @@ static void test_timer_clock_divisor(void) {
     printf("test_timer_clock_divisor OK\n");
 }
 
+static void test_timer_registers_are_16_bit(void) {
+    psemu_t *ps = make_arm_cpu();
+
+    /* period and count are 16-bit on real hardware; a wider store keeps only the low half
+       (see TIMER_REG_MASK in timer.h, and docs/hardware-notes.md, "Timers").
+       This emulator used to model both as full uint32_t. Pop'n Music's FIQ audio timer
+       programs Timer2 with a value whose upper half is nonzero; retaining it stretched the
+       period from 851 ticks to about 52.6 million, so the audio interrupt never fired and
+       the game ran silently. */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x20, 0x03240353u); /* Timer2 period */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x24, 0x0323B1FDu); /* Timer2 count */
+    assert(ps->timer.timers[2].period == 0x0353u);
+    assert(ps->timer.timers[2].count == 0xB1FDu);
+    assert(psemu_bus_read32(&ps->bus, PSEMU_TIMER_BASE + 0x20) == 0x0353u);
+
+    /* Enabling reloads count from the masked period, so a timer armed this way expires on
+       the real 851-tick schedule rather than never. */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x28, TIMER_CTRL_ENABLE);
+    assert(ps->timer.timers[2].count == 0x0353u);
+
+    /* The reload on expiry is masked too, so a state carried over from the old 32-bit model
+       converges instead of staying stuck at a huge count. */
+    ps->timer.timers[2].period = 0x00FF0010u;
+    ps->timer.timers[2].count = 0u;
+    ps->intc.enable |= INT_TIMER2;
+    timer_tick(&ps->timer, &ps->intc, 4u); /* /2 divisor: 2 ticks, enough to pass zero and reload */
+    assert(ps->timer.timers[2].count <= TIMER_REG_MASK);
+
+    psemu_destroy(ps);
+    printf("test_timer_registers_are_16_bit OK\n");
+}
+
 static void test_boot_ready_stub(void) {
     psemu_t *ps = make_arm_cpu();
 
@@ -1021,8 +1053,16 @@ static void test_timer_scales_with_clk_mode(void) {
        reloads/wraps) within this test's budget, at either CLK_MODE - so
        (initial count - final count), in ticks, cumulatively reflects
        total raw cycles fed, unlike cycle_accumulator (which is only the
-       sub-divisor remainder, not cumulative). */
-    uint32_t big = 100000000u;
+       sub-divisor remainder, not cumulative).
+       That means the largest period the hardware can actually hold: these
+       registers are 16-bit (see TIMER_REG_MASK in timer.h). This test used
+       to load 100000000, which no real timer can store; once the emulator
+       started masking to the real width that value wrapped almost
+       immediately and the tick arithmetic below became meaningless.
+       The budget is halved to match: at 0xFFFF and the /2 divisor, mode 7
+       accumulates ~50k of the 65535 available ticks over ~0.05s, so it
+       still never wraps. */
+    uint32_t big = TIMER_REG_MASK;
     psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x10, big); /* T1 period */
     psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x14, big); /* T1 count */
     psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x18, TIMER_CTRL_ENABLE);
@@ -1030,12 +1070,16 @@ static void test_timer_scales_with_clk_mode(void) {
     psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x14, big);
     psemu_bus_write32(&ps_max->bus, PSEMU_TIMER_BASE + 0x18, TIMER_CTRL_ENABLE);
 
-    uint32_t budget = PSEMU_ASSUMED_CPU_HZ / 10u; /* ~0.1 real second */
+    uint32_t budget = PSEMU_ASSUMED_CPU_HZ / 20u; /* ~0.05 real second */
     psemu_run(ps_idle, budget);
     psemu_run(ps_max, budget);
 
     uint32_t idle_ticks = big - ps_idle->timer.timers[1].count;
     uint32_t max_ticks = big - ps_max->timer.timers[1].count;
+
+    /* Neither run may have wrapped, or the subtraction above is not a tick count. */
+    assert(ps_idle->timer.timers[1].count <= big);
+    assert(ps_max->timer.timers[1].count <= big);
 
     /* Mode 7 is ~4MHz vs mode 0's ~32.768kHz - Timer1 should have ticked
        much further under the elevated clock. */
@@ -1871,6 +1915,7 @@ int main(void) {
     test_fiq_delivery_and_priority();
     test_fiq_takes_priority_over_irq();
     test_timer_clock_divisor();
+    test_timer_registers_are_16_bit();
     test_boot_ready_stub();
     test_clk_mode_scales_run_speed();
     test_timer_scales_with_clk_mode();

@@ -155,14 +155,18 @@ Measured directly on real hardware via `pk_timing_bench` screen 6 (raw values lo
 
 `core/src/timer.c` previously consumed exactly `count` ticks per reload, so every timer fired one tick early. This is now fixed; three timer expectations in `tests/cpu_test.c` had encoded the old behavior and were corrected with it.
 
-**Inferred: Timer0's `count` register is effectively 16-bit, not the full 32-bit free-running counter this emulator models.** This emulator's `timer->timers[i].count` and `period` fields (`core/src/timer.c`) are plain `uint32_t`.
+**Timer `period` and `count` are 16-bit registers, not the 32-bit counters this emulator originally modeled.** Now implemented: `timer_write8` masks both with `TIMER_REG_MASK` (`core/src/timer.h`), so the upper half of a wider store is discarded, and every reload masks too. See `test_timer_registers_are_16_bit`.
 
 Found via `pk_timing_bench` (this project's homebrew timing-benchmark app):
 
 - Every raw `count` snapshot captured on a real unit had its upper 16 bits at zero.
 - A measurement loop wrote `period`/`control` once, then read `count` before and after a long loop with no reconfiguration in between. When the loop ran long enough to accumulate more than 65536 raw ticks, the *after* reading came back numerically larger than the *before* reading. The only explanation: the counter wrapped past zero and reloaded partway through the loop, at a 16-bit boundary rather than a 32-bit one.
 
-This is inferred from real-hardware readings, not confirmed via BIOS disassembly like most facts in this section. Treat the 16-bit specifics as the current best explanation, not settled fact. The "before/after crossed a wrap boundary" observation itself is a direct, repeatable real-hardware result.
+The width was originally recorded here as an inference from those readings alone. **A real commercial app has since confirmed it independently.** Pop'n Music (`testdata/popnmusic.mcr`) drives its audio from Timer2, the FIQ-driven channel, and programs it with a value whose upper half is nonzero. Under the old 32-bit model the surviving upper bits stretched the period from 851 ticks to `0x03240353`, about 52.6 million — roughly 62,000x too long — so the audio interrupt never fired. The game opened its DAC gate (`DAC_CTRL`=1, IOP bit5 started), played an entire song with notes scrolling and a results screen, and wrote `DAC_DATA` exactly zero times: total silence with every gate open. Masking to the real 16-bit width leaves period `0x0353` (851), matching the `0x34F` (847) programmed into Timer1 alongside it, and the music plays.
+
+This also makes the failure mode worth remembering: a too-wide timer period does not announce itself. Nothing faults, the app runs normally, and the only symptom is a peripheral that silently never fires.
+
+`test_timer_scales_with_clk_mode` had encoded the old behavior, loading a period of 100000000 that no real timer can hold; it now uses the largest real 16-bit period, with a halved budget so the fast-clock case still never wraps.
 
 See `docs/app-notes.md`'s timing-benchmark writeup for the full before/after data.
 

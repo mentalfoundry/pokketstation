@@ -85,14 +85,16 @@ void timer_write8(timer_t *timer, uint32_t offset, uint8_t value) {
            Confirmed by disassembling that helper and by the receive handler's own arithmetic, which reads
            elapsed time as (armed period - current count). */
         if (!was_enabled && (timer->timers[index].control & TIMER_CTRL_ENABLE)) {
-            timer->timers[index].count = timer->timers[index].period;
+            timer->timers[index].count = timer->timers[index].period & TIMER_REG_MASK;
         }
         return;
     }
     default:
         return;
     }
-    *reg = (*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    /* period and count are 16-bit on real hardware (see TIMER_REG_MASK in timer.h), so the
+       upper half of a wider store is discarded rather than retained. */
+    *reg = ((*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift)) & TIMER_REG_MASK;
 }
 
 void timer_tick(timer_t *timer, struct intc *intc, uint32_t cycles) {
@@ -133,7 +135,7 @@ void timer_tick(timer_t *timer, struct intc *intc, uint32_t cycles) {
         while (ticks > 0) {
             if (ticks > t->count) {
                 ticks -= t->count + 1u;
-                t->count = t->period;
+                t->count = t->period & TIMER_REG_MASK;
                 intc_set_line(intc, int_lines[i], 1);
             } else {
                 t->count -= ticks;
