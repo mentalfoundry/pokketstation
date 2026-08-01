@@ -76,16 +76,29 @@ static uint32_t fnv1a_hash(const uint8_t *data, size_t size) {
     return hash;
 }
 
-/* Save State/Load State use one file per loaded app/card.
+/* How many save slots File > Save State/Load State offer.
+   Slot 0 is the quick slot, the only one with key bindings (see
+   button_scancodes). Slots 1 and 2 are reachable from the menu alone, so a
+   state parked in one cannot be lost to a mistyped hotkey - which is the whole
+   point of having them. Raising this number needs matching menu items and a
+   wider ID_FILE_SAVE_SLOT_BASE/ID_FILE_LOAD_SLOT_BASE range in resource.h/rc;
+   nothing else here is fixed at 3. */
+#define SAVE_SLOT_COUNT 3
+
+/* Save State/Load State use one file per loaded app/card per slot.
    The file name is the app/card's own file name plus extension, so a user
-   browsing the exe's folder can tell at a glance which quicksave goes with
+   browsing the exe's folder can tell at a glance which save goes with
    which app/card. It is derived from app_path rather than cached, because
    the loaded app can change mid-session.
+   Slot 0 keeps the bare "<name>.sav" the single slot always used, so saves
+   written before the slots existed still load. Slots 1 and 2 append "_1"/"_2"
+   after the extension ("chocobo.mcr_1.sav"), which sorts them next to slot 0's
+   file rather than scattering them by extension.
    Two different apps/cards that happen to share a file name (e.g. loaded
-   from different folders) will share a quicksave file; the app_size/app_hash
+   from different folders) will share a save file; the app_size/app_hash
    check in the header (below) still refuses to load a mismatched one, so this
-   can only cost you a quicksave, never load the wrong state. */
-static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, const char *app_path) {
+   can only cost you a save, never load the wrong state. */
+static void get_save_slot_path(char *out, size_t out_size, const char *exe_dir, const char *app_path, int slot) {
     const char *base = app_path;
     const char *slash;
     char name[1024];
@@ -94,8 +107,20 @@ static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, 
             base = slash + 1;
         }
     }
-    snprintf(name, sizeof(name), "%s.sav", base);
+    if (slot == 0) {
+        snprintf(name, sizeof(name), "%s.sav", base);
+    } else {
+        snprintf(name, sizeof(name), "%s_%d.sav", base, slot);
+    }
     join_path(out, out_size, exe_dir, name);
+}
+
+/* Names a slot for the message boxes below, so a failure says which of the
+   three it was about rather than just "the save state". Reads as part of a
+   sentence ("...found in the quick slot..."), hence the lower case. */
+static const char *save_slot_label(int slot) {
+    static const char *const labels[SAVE_SLOT_COUNT] = {"the quick slot", "slot 1", "slot 2"};
+    return (slot >= 0 && slot < SAVE_SLOT_COUNT) ? labels[slot] : "an unknown slot";
 }
 
 #define QUICKSAVE_MAGIC "PKQS"
@@ -221,8 +246,9 @@ typedef struct {
     /* Not a PocketStation button. Triggers write_diagnostic_report on demand
        (see button_scancodes in main). */
     char key_debug_log[32];
-    /* Not PocketStation buttons. Trigger reset_emulation/quick_save_state/
-       quick_load_state on demand (see button_scancodes in main). */
+    /* Not PocketStation buttons. Trigger reset_emulation, and the quick slot's
+       save_state_to_slot/load_state_from_slot, on demand (see button_scancodes
+       in main). */
     char key_reset[32];
     char key_quick_save[32];
     char key_quick_load[32];
@@ -995,9 +1021,10 @@ static void reset_emulation(menu_context_t *ctx) {
     *ctx->cpu_faulted_reported = 0;
 }
 
-static void quick_save_state(menu_context_t *ctx) {
+static void save_state_to_slot(menu_context_t *ctx, int slot) {
     char path[1024];
-    get_quicksave_path(path, sizeof(path), ctx->exe_dir, ctx->app_path);
+    char msg[256];
+    get_save_slot_path(path, sizeof(path), ctx->exe_dir, ctx->app_path, slot);
 
     size_t state_size = psemu_state_size(ctx->ps);
     size_t total_size = sizeof(quicksave_header_t) + state_size;
@@ -1017,7 +1044,8 @@ static void quick_save_state(menu_context_t *ctx) {
 
     FILE *f = fopen(path, "wb");
     if (!f || fwrite(buf, 1, total_size, f) != total_size) {
-        MessageBoxA(ctx->hwnd, "Couldn't write the quicksave file.", "pokketstation", MB_ICONERROR);
+        snprintf(msg, sizeof(msg), "Couldn't write the save state file for %s.", save_slot_label(slot));
+        MessageBoxA(ctx->hwnd, msg, "pokketstation", MB_ICONERROR);
     }
     if (f) {
         fclose(f);
@@ -1025,29 +1053,32 @@ static void quick_save_state(menu_context_t *ctx) {
     free(buf);
 }
 
-static void quick_load_state(menu_context_t *ctx) {
+static void load_state_from_slot(menu_context_t *ctx, int slot) {
     char path[1024];
-    get_quicksave_path(path, sizeof(path), ctx->exe_dir, ctx->app_path);
+    char msg[256];
+    get_save_slot_path(path, sizeof(path), ctx->exe_dir, ctx->app_path, slot);
 
     FILE *f = fopen(path, "rb");
     if (!f) {
-        MessageBoxA(ctx->hwnd, "No quicksave found for the currently loaded app/card.", "pokketstation",
-            MB_ICONWARNING);
+        snprintf(msg, sizeof(msg), "No save state in %s for the currently loaded app/card.", save_slot_label(slot));
+        MessageBoxA(ctx->hwnd, msg, "pokketstation", MB_ICONWARNING);
         return;
     }
 
     quicksave_header_t header;
     if (fread(&header, 1, sizeof(header), f) != sizeof(header) || memcmp(header.magic, QUICKSAVE_MAGIC, 4) != 0 ||
         header.version != QUICKSAVE_VERSION) {
-        MessageBoxA(ctx->hwnd, "Not a valid quicksave file.", "pokketstation", MB_ICONERROR);
+        snprintf(msg, sizeof(msg), "The file for %s isn't a valid save state.", save_slot_label(slot));
+        MessageBoxA(ctx->hwnd, msg, "pokketstation", MB_ICONERROR);
         fclose(f);
         return;
     }
 
     uint32_t current_hash = fnv1a_hash(*ctx->app, *ctx->app_size);
     if (header.app_size != (uint32_t)*ctx->app_size || header.app_hash != current_hash) {
-        MessageBoxA(ctx->hwnd, "This quicksave doesn't match the currently loaded app/card.", "pokketstation",
-            MB_ICONERROR);
+        snprintf(msg, sizeof(msg), "The save state in %s doesn't match the currently loaded app/card.",
+            save_slot_label(slot));
+        MessageBoxA(ctx->hwnd, msg, "pokketstation", MB_ICONERROR);
         fclose(f);
         return;
     }
@@ -1065,20 +1096,25 @@ static void quick_load_state(menu_context_t *ctx) {
        this check does not depend on anyone remembering. */
     long body_start = ftell(f);
     if (body_start < 0 || fseek(f, 0, SEEK_END) != 0) {
-        MessageBoxA(ctx->hwnd, "Couldn't read the quicksave.", "pokketstation", MB_ICONERROR);
+        snprintf(msg, sizeof(msg), "Couldn't read the save state in %s.", save_slot_label(slot));
+        MessageBoxA(ctx->hwnd, msg, "pokketstation", MB_ICONERROR);
         fclose(f);
         return;
     }
     long body_size = ftell(f) - body_start;
     if (body_size != (long)state_size || fseek(f, body_start, SEEK_SET) != 0) {
-        MessageBoxA(ctx->hwnd, "Couldn't load the quicksave (wrong build/version?).", "pokketstation", MB_ICONERROR);
+        snprintf(msg, sizeof(msg), "Couldn't load the save state in %s (wrong build/version?).",
+            save_slot_label(slot));
+        MessageBoxA(ctx->hwnd, msg, "pokketstation", MB_ICONERROR);
         fclose(f);
         return;
     }
 
     uint8_t *buf = (uint8_t *)malloc(state_size);
     if (!buf || fread(buf, 1, state_size, f) != state_size || psemu_load_state(ctx->ps, buf, state_size) != PSEMU_OK) {
-        MessageBoxA(ctx->hwnd, "Couldn't load the quicksave (wrong build/version?).", "pokketstation", MB_ICONERROR);
+        snprintf(msg, sizeof(msg), "Couldn't load the save state in %s (wrong build/version?).",
+            save_slot_label(slot));
+        MessageBoxA(ctx->hwnd, msg, "pokketstation", MB_ICONERROR);
         free(buf);
         fclose(f);
         return;
@@ -2077,6 +2113,18 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         sync_menu_state(ctx);
         return;
     }
+    /* File > Save State and File > Load State, one contiguous ID range each
+       (see resource.h), matched the same way as the two Sound groups above.
+       Slot 0 of each is the quick slot, so these two checks also cover what
+       the Save State/Load State hotkeys do. */
+    if (LOWORD(wparam) >= ID_FILE_SAVE_SLOT_BASE && LOWORD(wparam) <= ID_FILE_SAVE_SLOT_LAST) {
+        save_state_to_slot(ctx, (int)(LOWORD(wparam) - ID_FILE_SAVE_SLOT_BASE));
+        return;
+    }
+    if (LOWORD(wparam) >= ID_FILE_LOAD_SLOT_BASE && LOWORD(wparam) <= ID_FILE_LOAD_SLOT_LAST) {
+        load_state_from_slot(ctx, (int)(LOWORD(wparam) - ID_FILE_LOAD_SLOT_BASE));
+        return;
+    }
     switch (LOWORD(wparam)) {
     case ID_FILE_OPEN_BIOS:
         prompt_open_bios(ctx);
@@ -2086,12 +2134,6 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         break;
     case ID_FILE_RESET:
         reset_emulation(ctx);
-        break;
-    case ID_FILE_QUICK_SAVE:
-        quick_save_state(ctx);
-        break;
-    case ID_FILE_QUICK_LOAD:
-        quick_load_state(ctx);
         break;
     case ID_FILE_EXIT:
         *ctx->running = 0;
@@ -2571,11 +2613,13 @@ int main(int argc, char **argv) {
                 /* Remappable via Tools > Remap Controls..., default F8. See button_scancodes above. */
                 reset_emulation(&menu_ctx);
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[7].scancode) {
-                /* Remappable via Tools > Remap Controls..., default F5. See button_scancodes above. */
-                quick_save_state(&menu_ctx);
+                /* Remappable via Tools > Remap Controls..., default F5. See button_scancodes above.
+                   Slot 0, the quick slot: only it has key bindings, so slots 1
+                   and 2 cannot be overwritten by a stray keypress. */
+                save_state_to_slot(&menu_ctx, 0);
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[8].scancode) {
                 /* Remappable via Tools > Remap Controls..., default F9. See button_scancodes above. */
-                quick_load_state(&menu_ctx);
+                load_state_from_slot(&menu_ctx, 0);
             }
         }
 

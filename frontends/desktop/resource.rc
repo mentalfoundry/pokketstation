@@ -15,8 +15,27 @@ BEGIN
         MENUITEM "Open &App/Card...",   ID_FILE_OPEN_APP
         MENUITEM "&Reset",              ID_FILE_RESET
         MENUITEM SEPARATOR
-        MENUITEM "&Save State",         ID_FILE_QUICK_SAVE
-        MENUITEM "&Load State",         ID_FILE_QUICK_LOAD
+        /* Quick Slot is what the remappable Save State/Load State keys act on,
+           so it stays first and keeps the plain "<app/card name>.sav" file the
+           single slot always used. Slots 1 and 2 have no keys of their own, on
+           purpose: they are for parking a state you want to come back to
+           repeatedly, which the quick slot cannot be while a hotkey can
+           overwrite it by accident. No ellipsis on either popup - nothing here
+           opens a dialog, and the submenu arrow already says it expands. */
+        POPUP "&Save State"
+        BEGIN
+            MENUITEM "&Quick Slot",     ID_FILE_SAVE_SLOT_BASE + 0
+            MENUITEM SEPARATOR
+            MENUITEM "Slot &1",         ID_FILE_SAVE_SLOT_BASE + 1
+            MENUITEM "Slot &2",         ID_FILE_SAVE_SLOT_BASE + 2
+        END
+        POPUP "&Load State"
+        BEGIN
+            MENUITEM "&Quick Slot",     ID_FILE_LOAD_SLOT_BASE + 0
+            MENUITEM SEPARATOR
+            MENUITEM "Slot &1",         ID_FILE_LOAD_SLOT_BASE + 1
+            MENUITEM "Slot &2",         ID_FILE_LOAD_SLOT_BASE + 2
+        END
         MENUITEM SEPARATOR
         MENUITEM "E&xit",               ID_FILE_EXIT
     END

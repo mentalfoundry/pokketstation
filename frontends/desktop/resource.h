@@ -69,8 +69,9 @@
    Color...). That submenu is gone: the toggle is a checkbox in
    IDD_ADVANCED_COLORS and the color is one of its three edits. */
 #define ID_FILE_RESET 1116
-#define ID_FILE_QUICK_SAVE 1117
-#define ID_FILE_QUICK_LOAD 1118
+/* 1117/1118 were ID_FILE_QUICK_SAVE/ID_FILE_QUICK_LOAD, back when there was a
+   single save slot. The two ranges at the end of this file replaced them; the
+   quick slot is now slot 0 of each. */
 #define ID_IR_HOST 1119
 #define ID_IR_CONNECT 1120
 #define ID_IR_DISCONNECT 1121
@@ -100,5 +101,15 @@
    ID_TOOLS_SPEAKER_BASE + preset, with +0 (Full Range) meaning no filtering. */
 #define ID_TOOLS_SPEAKER_BASE 1139
 #define ID_TOOLS_SPEAKER_LAST 1142
+/* File > Save State and File > Load State, one ID per slot in each:
+   ID_FILE_SAVE_SLOT_BASE + slot and ID_FILE_LOAD_SLOT_BASE + slot, for slot
+   0..SAVE_SLOT_COUNT-1 (see main.c). Slot 0 is the quick slot, the one the
+   remappable Save State/Load State keys act on; slots 1 and 2 are menu-only.
+   Contiguous ranges rather than named IDs, the same shape as the two Sound
+   groups above, so main.c converts an ID to a slot number with arithmetic. */
+#define ID_FILE_SAVE_SLOT_BASE 1143
+#define ID_FILE_SAVE_SLOT_LAST 1145
+#define ID_FILE_LOAD_SLOT_BASE 1146
+#define ID_FILE_LOAD_SLOT_LAST 1148
 
 #endif
