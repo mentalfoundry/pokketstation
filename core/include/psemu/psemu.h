@@ -209,6 +209,27 @@ int psemu_set_datetime(psemu_t *ps, int year, int month, int day, int hour, int 
    returns 0, rather than write and hope. Returns 0 when no BIOS is loaded. */
 int psemu_settings_offsets_known(const psemu_t *ps);
 
+/* Nonzero while a dispatched app - rather than the BIOS shell - owns the
+   machine. Tracked by psemu_run from where instructions are actually fetched:
+   an app runs out of the FLASH1 window, and the BIOS never does.
+
+   This exists to scope the settings overrides above. Their addresses are
+   BIOS-owned RAM only while the BIOS shell is running. The moment the BIOS
+   dispatches an app off the card, that RAM is the app's, and a frontend still
+   re-applying an override once per frame is writing into a running app's
+   memory 32 times a second. That corrupts app state: with a real card loaded
+   it is enough to make an app reject its own save data as invalid.
+
+   So: guard any per-frame override on this returning 0, in addition to
+   psemu_settings_offsets_known. Overrides then hold across the BIOS shell as
+   before, stop for the duration of an app, and resume once control comes back.
+
+   Returns to 0 shortly after the app stops executing, not instantly - a
+   running app is inside the BIOS for the length of every SWI it issues, and
+   those excursions must not read as "the app exited". A psemu_reset clears it
+   immediately. */
+int psemu_app_running(const psemu_t *ps);
+
 /* 1bpp, row-major, PSEMU_LCD_STRIDE bytes per row, bit0 = leftmost pixel. */
 const uint8_t *psemu_get_framebuffer(const psemu_t *ps);
 

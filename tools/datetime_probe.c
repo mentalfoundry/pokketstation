@@ -21,9 +21,16 @@
      reads - every RAM read issued from a given PC range, to find what the
              reset decision actually consults.
      dump  - final contents of the candidate date/time RAM blocks.
+     browse - whether anything outside the clock screen reads the two century
+             bytes a frontend can pin (0x426 and 0x0CF). Boots a real card,
+             navigates to the app-browse screen, seeds both bytes with
+             sentinels, and reports every read with its PC. `noseed` reruns
+             without the sentinels, as the control: identical screens between
+             the two runs is what proves nothing on screen depends on them.
 
    usage: datetime_probe <bios.bin> boot [max_instr]
           datetime_probe <bios.bin> reads <pc_lo_hex> <pc_hi_hex> [max_instr]
+          datetime_probe <bios.bin> browse <card.mcr> [max_instr] [noseed]
           datetime_probe <bios.bin> dump [max_instr] */
 
 #include <stdio.h>
@@ -638,14 +645,196 @@ static int run_warm(psemu_t *ps, int poke_ram, long max_instr, const char *card_
     return 0;
 }
 
+/* Does anything on the BIOS's app-browse screen touch the two century bytes?
+
+   The two overridable date bytes are 0x426 (the clock display's century) and
+   0x0CF (the century GetBcdDate hands to apps). A frontend that pins the clock
+   re-applies them once per frame, so anything else that reads them is
+   something that override silently corrupts.
+
+   "Where the date/time settings actually live" above established the readers
+   on the CLOCK screen: 0x426 from the clock-display routine only, 0x0CF from
+   GetBcdDate. That trace never left the clock screen, which leaves the browse
+   screen - the one that renders each card app's icon and animates it -
+   untested. 0x426 in particular sits in the 0x200-0x7FF range the memory map
+   calls user RAM, next door to the volume byte at 0x290 that has its own open
+   question of exactly this shape.
+
+   So: boot with a real multi-app card loaded, navigate past the date screen
+   and then Right onto the browse screen, and sit there while the icon
+   animates. Every read of either byte is reported with its PC. Both bytes are
+   also re-seeded with sentinels once navigation is done, so a write from the
+   browse screen shows up as the value changing underneath. */
+#define BROWSE_SENTINEL_426 0x5Au
+#define BROWSE_SENTINEL_0CF 0xA5u
+
+/* The clock-display routine, the one reader of 0x426 that "Where the date/time
+   settings actually live" already accounts for. Any other PC reading 0x426 is
+   the thing this mode is looking for, so the screen gets dumped when one turns
+   up - a reader is only actionable if you know which screen it belongs to. */
+#define BROWSE_CLOCK_DISPLAY_PC 0x04002542u
+static int g_browse_dump_screen = 0;
+
+static long g_browse_instr = 0;
+static long g_browse_reads_426 = 0;
+static long g_browse_reads_0cf = 0;
+static uint32_t g_browse_pcs[32];
+static long g_browse_pc_addrs[32];
+static int g_browse_pc_count = 0;
+
+static void browse_watch_cb(uint32_t addr, uint8_t value, uint32_t pc) {
+    if (addr != 0x426u && addr != 0x0CFu) {
+        return;
+    }
+    if (addr == 0x426u) {
+        g_browse_reads_426++;
+    } else {
+        g_browse_reads_0cf++;
+    }
+    for (int i = 0; i < g_browse_pc_count; i++) {
+        if (g_browse_pcs[i] == pc && g_browse_pc_addrs[i] == (long)addr) {
+            return;
+        }
+    }
+    if (g_browse_pc_count < (int)(sizeof(g_browse_pcs) / sizeof(g_browse_pcs[0]))) {
+        g_browse_pcs[g_browse_pc_count] = pc;
+        g_browse_pc_addrs[g_browse_pc_count] = (long)addr;
+        g_browse_pc_count++;
+        printf(
+            "  read  0x%03X  instr #%-10ld pc=0x%08X value=0x%02X%s  (first read from this PC)\n", addr,
+            g_browse_instr, pc, value,
+            (pc >= PSEMU_FLASH1_BASE && pc < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) ? "  <== FLASH1 (app code)" : "");
+        if (addr == 0x426u && pc != BROWSE_CLOCK_DISPLAY_PC) {
+            g_browse_dump_screen = 1;
+        }
+    }
+}
+
+/* Navigation is tools/inspect.c's button_sim==3 - the real-hardware-confirmed
+   power-on sequence - with its final Action removed, so the run parks on the
+   browse screen instead of launching: Down, Action, Right.
+
+   The windows are instruction-indexed rather than frame-indexed on purpose.
+   The boot animation and screen transitions are paced by the emulated
+   machine's own work, and instructions-per-frame varies with CLK_MODE, so a
+   frame-timed script drifts straight past them - which is exactly what an
+   earlier version of this mode did, sitting on the date screen for its whole
+   run while looking like it had navigated.
+
+   One pass is not enough. A single-pass version of this mode sat on the date
+   screen for a whole 8M-instruction run: the BIOS ignored its Down/Action
+   entirely. So the cycle repeats, exactly as button_sim==3 does.
+
+   That repeat does eventually launch the app - the next pass's Action lands on
+   the entry the previous pass's Right selected, at around instruction 5.66M on
+   this card - so the useful window is between the first post-clock screen and
+   that launch. The FLASH1 counter in the summary says whether a given run
+   stayed inside it, and the screen dumps below say which screen each read came
+   from, so neither has to be assumed. */
+#define BROWSE_NAV_CYCLE 2500000
+static void drive_browse_buttons(psemu_t *ps, long i) {
+    long phase = i % BROWSE_NAV_CYCLE;
+    uint32_t buttons = 0;
+    if (phase >= 200000 && phase < 350000) {
+        buttons = PSEMU_BUTTON_DOWN;
+    } else if (phase >= 500000 && phase < 650000) {
+        buttons = PSEMU_BUTTON_FIRE;
+    } else if (phase >= 900000 && phase < 1050000) {
+        buttons = PSEMU_BUTTON_RIGHT;
+    }
+    psemu_set_buttons(ps, buttons);
+}
+
+static int run_browse(psemu_t *ps, const char *card_path, long max_instr, int seed) {
+    size_t card_size = 0;
+    uint8_t *card = read_file(card_path, &card_size);
+    if (!card) {
+        fprintf(stderr, "failed to read card %s\n", card_path);
+        return 1;
+    }
+    psemu_status st = psemu_load_flash_image(ps, card, card_size);
+    free(card);
+    if (st != PSEMU_OK) {
+        fprintf(stderr, "card load failed: %d\n", st);
+        return 1;
+    }
+    psemu_reset(ps);
+
+    printf("=== browse screen: watching RAM 0x426 and 0x0CF for %ld instructions ===\n", max_instr);
+    printf("card %s (%zu bytes)\n", card_path, card_size);
+
+    /* Seeding waits until the Right press has settled, so the sentinels sit in
+       memory for the browse screen specifically, rather than being overwritten
+       by the boot path's own single write to 0x426 or by whatever the clock
+       screen was still doing. */
+    long seeded_at = -1;
+    uint8_t last_426 = ps->bus.ram[0x426];
+    uint8_t last_0cf = ps->bus.ram[0x0CF];
+    long flash1_instr = 0;
+    psemu_bus_read_trace_cb = browse_watch_cb;
+
+    for (long i = 0; i < max_instr; i++) {
+        drive_browse_buttons(ps, i);
+        g_browse_instr = i;
+        uint32_t pc = ps->cpu.r[15];
+        if (pc >= PSEMU_FLASH1_BASE && pc < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) {
+            flash1_instr++;
+        }
+        step(ps);
+
+        /* One full nav cycle in: past the boot path's own single write to
+           0x426, and past the first pass's Right. */
+        if (seed && i == BROWSE_NAV_CYCLE) {
+            ps->bus.ram[0x426] = BROWSE_SENTINEL_426;
+            ps->bus.ram[0x0CF] = BROWSE_SENTINEL_0CF;
+            last_426 = BROWSE_SENTINEL_426;
+            last_0cf = BROWSE_SENTINEL_0CF;
+            seeded_at = i;
+            printf("instr #%ld: seeded 0x426=0x%02X 0x0CF=0x%02X\n", i, last_426, last_0cf);
+        }
+        if (ps->bus.ram[0x426] != last_426) {
+            printf("instr #%-10ld [0x426] 0x%02X -> 0x%02X%s\n", i, last_426, ps->bus.ram[0x426],
+                   seeded_at >= 0 ? "   <== WRITTEN AFTER SEEDING" : "");
+            last_426 = ps->bus.ram[0x426];
+        }
+        if (ps->bus.ram[0x0CF] != last_0cf) {
+            printf("instr #%-10ld [0x0CF] 0x%02X -> 0x%02X%s\n", i, last_0cf, ps->bus.ram[0x0CF],
+                   seeded_at >= 0 ? "   <== WRITTEN AFTER SEEDING" : "");
+            last_0cf = ps->bus.ram[0x0CF];
+        }
+        if (g_browse_dump_screen) {
+            g_browse_dump_screen = 0;
+            printf("instr #%ld: screen at the moment of that non-clock read of 0x426:\n", i);
+            print_framebuffer(ps);
+        }
+        if (i % (max_instr / 4) == 0) {
+            printf("instr #%ld: framebuffer:\n", i);
+            print_framebuffer(ps);
+        }
+    }
+
+    psemu_bus_read_trace_cb = NULL;
+    printf("instr #%ld: final framebuffer:\n", max_instr);
+    print_framebuffer(ps);
+    printf(
+        "\nFLASH1 (app code) executed %ld instruction(s) - nonzero means the run launched an app rather than\n"
+        "staying on the browse screen, so any read below could be the app's rather than the browse screen's.\n",
+        flash1_instr);
+    printf(
+        "total reads: 0x426 %ld, 0x0CF %ld, from %d distinct (pc, addr) pairs\n", g_browse_reads_426,
+        g_browse_reads_0cf, g_browse_pc_count);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) {
         fprintf(
             stderr,
             "usage: %s <bios.bin> boot [max_instr]\n"
             "       %s <bios.bin> reads <pc_lo_hex> <pc_hi_hex> [max_instr]\n"
+            "       %s <bios.bin> browse <card.mcr> [frames]\n"
             "       %s <bios.bin> dump [max_instr]\n",
-            argv[0], argv[0], argv[0]);
+            argv[0], argv[0], argv[0], argv[0]);
         return 1;
     }
 
@@ -682,6 +871,8 @@ int main(int argc, char **argv) {
         rc = run_warm(
             ps, argc >= 4 && strcmp(argv[3], "ram") == 0, argc >= 5 ? atol(argv[4]) : 60000,
             argc >= 6 ? argv[5] : NULL);
+    } else if (strcmp(argv[2], "browse") == 0 && argc >= 4) {
+        rc = run_browse(ps, argv[3], argc >= 5 ? atol(argv[4]) : 6000000, !(argc >= 6 && strcmp(argv[5], "noseed") == 0));
     } else if (strcmp(argv[2], "dump") == 0) {
         rc = run_dump(ps, argc >= 4 ? atol(argv[3]) : 3000000);
     } else {

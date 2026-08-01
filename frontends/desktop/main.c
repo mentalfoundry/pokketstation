@@ -101,8 +101,13 @@ static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, 
 #define QUICKSAVE_MAGIC "PKQS"
 /* 2: psemu_t gained the RAM write lock behind psemu_set_volume_override, so
    the raw state blob changed size. Version-1 files are rejected outright
-   rather than read as a truncated version-2 state. */
-#define QUICKSAVE_VERSION 2u
+   rather than read as a truncated version-2 state.
+   3: psemu_t gained the app-execution tracking behind psemu_app_running, so
+   the blob changed size again. The state blob is a raw struct dump
+   (psemu_state_size is sizeof(psemu_t)), so every field added to psemu_t
+   needs a bump here - the size check in psemu_load_state only catches a
+   state that got smaller, never one that grew. */
+#define QUICKSAVE_VERSION 3u
 
 /* app_size/app_hash guard against loading a state saved under a different
    app/card. The per-app filename already makes that unlikely to even be
@@ -841,6 +846,29 @@ static void quick_load_state(menu_context_t *ctx) {
     }
 
     size_t state_size = psemu_state_size(ctx->ps);
+
+    /* The blob has to be exactly one state for THIS build, and only the file's
+       own length can say so. psemu_load_state cannot: its size argument comes
+       from psemu_state_size right here, so it is always exactly sizeof(psemu_t)
+       and its own check can never fire. A blob saved by a build whose psemu_t
+       was smaller is caught by the short read below; one saved by a build whose
+       psemu_t was larger is not - the fread succeeds on the leading bytes and
+       loads a silently misaligned state. QUICKSAVE_VERSION is meant to catch
+       both, but it only works if every psemu_t change remembers to bump it, and
+       this check does not depend on anyone remembering. */
+    long body_start = ftell(f);
+    if (body_start < 0 || fseek(f, 0, SEEK_END) != 0) {
+        MessageBoxA(ctx->hwnd, "Couldn't read the quicksave.", "pokketstation", MB_ICONERROR);
+        fclose(f);
+        return;
+    }
+    long body_size = ftell(f) - body_start;
+    if (body_size != (long)state_size || fseek(f, body_start, SEEK_SET) != 0) {
+        MessageBoxA(ctx->hwnd, "Couldn't load the quicksave (wrong build/version?).", "pokketstation", MB_ICONERROR);
+        fclose(f);
+        return;
+    }
+
     uint8_t *buf = (uint8_t *)malloc(state_size);
     if (!buf || fread(buf, 1, state_size, f) != state_size || psemu_load_state(ctx->ps, buf, state_size) != PSEMU_OK) {
         MessageBoxA(ctx->hwnd, "Couldn't load the quicksave (wrong build/version?).", "pokketstation", MB_ICONERROR);
@@ -2375,8 +2403,18 @@ int main(int argc, char **argv) {
            frame already emulates.
 
            Guarded on psemu_settings_offsets_known so an untraced BIOS revision
-           is left alone entirely, matching the greyed-out menu items. */
-        if (psemu_settings_offsets_known(ps) && settings.datetime_override == DATETIME_OVERRIDE_OS) {
+           is left alone entirely, matching the greyed-out menu items.
+
+           Also guarded on psemu_app_running, because "re-apply every frame" is
+           only correct while the BIOS shell owns that RAM. Once the BIOS
+           dispatches an app off the card, those two bytes belong to the app,
+           and continuing to stamp them 32 times a second corrupts it: with
+           testdata/YGO_jap.mcr this was enough to make the app reject the PS1
+           save on the card and drop to its "ODD DATA" screen, which is how the
+           bug was found. The override resumes on its own once the app hands
+           control back. */
+        if (psemu_settings_offsets_known(ps) && settings.datetime_override == DATETIME_OVERRIDE_OS &&
+            !psemu_app_running(ps)) {
             SYSTEMTIME now;
             GetLocalTime(&now);
             /* SYSTEMTIME's wDayOfWeek is 0=Sunday; the RTC's field is

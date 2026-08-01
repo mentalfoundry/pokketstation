@@ -32,6 +32,12 @@ struct psemu {
     double real_time_cycle_carry;
     uint32_t buttons; /* last-set PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;
+    /* Whether a dispatched app currently owns WRAM. See psemu_app_running.
+       app_exec_idle_cycles counts executed cycles since the last instruction
+       fetched from the FLASH1 window, and only advances while app_running is
+       set. */
+    int app_running;
+    uint32_t app_exec_idle_cycles;
 };
 
 #endif

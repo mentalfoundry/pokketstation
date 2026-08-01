@@ -2048,6 +2048,56 @@ static void test_settings_offsets_unknown_without_a_known_bios(void) {
     printf("test_settings_offsets_unknown_without_a_known_bios OK\n");
 }
 
+/* The per-frame settings overrides above are only safe while the BIOS shell
+   owns its RAM. psemu_app_running is what tells a frontend when it no longer
+   does. See its comment in psemu/psemu.h for the bug that made it necessary. */
+static void test_app_running_follows_flash1_execution(void) {
+    psemu_t *ps = psemu_create();
+    ps->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
+
+    /* Nothing has run yet, so the BIOS shell is presumed to own the machine. */
+    assert(psemu_app_running(ps) == 0);
+
+    /* Park an app in FLASH1 that just spins: B . at the window's base, plus
+       the same instruction one bank in, so bank resolution is not what this
+       test depends on. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 0, 0xEAFFFFFEu);
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 8, 1u); /* F_BANK_FLG: enable block 0 */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u); /* commit */
+    assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH1_BASE) == 0xEAFFFFFEu);
+
+    /* Executing from the FLASH1 window is what "an app is running" means. */
+    arm7tdmi_reset(&ps->cpu, PSEMU_FLASH1_BASE);
+    psemu_run(ps, 1000u);
+    assert(psemu_app_running(ps) == 1);
+
+    /* An app sits in the BIOS for the length of every SWI it issues. A short
+       excursion must not read as "the app exited", or the frontend resumes
+       stamping its overrides into the app's RAM mid-call. */
+    put32(ps, 0, 0xEAFFFFFEu); /* B . in RAM, standing in for a BIOS routine */
+    arm7tdmi_reset(&ps->cpu, 0);
+    psemu_run(ps, 1000u);
+    assert(psemu_app_running(ps) == 1);
+
+    /* Staying away long enough is a real handover back to the BIOS shell. The
+       grace period is a real-time duration at the reference rate, so a budget
+       in the same unit clears it at any CLK_MODE - which is the property that
+       makes this tractable to assert at all. */
+    psemu_run(ps, 4u * (uint32_t)PSEMU_ASSUMED_CPU_HZ);
+    assert(psemu_app_running(ps) == 0);
+
+    /* A reset drops it immediately - no grace period, since a reset really is
+       an instant return to the BIOS. */
+    arm7tdmi_reset(&ps->cpu, PSEMU_FLASH1_BASE);
+    psemu_run(ps, 1000u);
+    assert(psemu_app_running(ps) == 1);
+    psemu_reset(ps);
+    assert(psemu_app_running(ps) == 0);
+
+    psemu_destroy(ps);
+    printf("test_app_running_follows_flash1_execution OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -2103,6 +2153,7 @@ int main(void) {
     test_set_datetime_refuses_while_rtc_in_program_mode();
     test_set_datetime_rejects_out_of_range_arguments();
     test_settings_offsets_unknown_without_a_known_bios();
+    test_app_running_follows_flash1_execution();
     printf("all cpu tests passed\n");
     return 0;
 }

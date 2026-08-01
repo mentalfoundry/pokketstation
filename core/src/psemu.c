@@ -26,6 +26,8 @@ psemu_t *psemu_create(void) {
     ps->buttons = 0;
     ps->has_bios = 0;
     ps->real_time_cycle_carry = 0.0;
+    ps->app_running = 0;
+    ps->app_exec_idle_cycles = 0;
     return ps;
 }
 
@@ -72,6 +74,9 @@ void psemu_reset(psemu_t *ps) {
     flash_reset_registers(&ps->flash);
     ps->buttons = 0;
     ps->real_time_cycle_carry = 0.0;
+    /* A reset returns to the BIOS, so whatever app was dispatched is gone. */
+    ps->app_running = 0;
+    ps->app_exec_idle_cycles = 0;
     arm7tdmi_reset(&ps->cpu, BIOS_RESET_VECTOR);
 }
 
@@ -238,6 +243,51 @@ void psemu_set_buttons(psemu_t *ps, uint32_t buttons) {
     ps->buttons = buttons;
 }
 
+/* How long the CPU must go without executing a FLASH1 instruction before a
+   dispatched app counts as gone. See psemu_app_running in psemu/psemu.h.
+
+   A running app spends real stretches inside the BIOS: every SWI it issues
+   executes from the BIOS window until it returns. A single "PC is not in
+   FLASH1" sample therefore means nothing, and this has to be a timeout rather
+   than an instantaneous test.
+
+   The unit is real elapsed time, expressed at the PSEMU_ASSUMED_CPU_HZ
+   reference rate - the same accumulator psemu_run already feeds to RTC and
+   DAC, and the same unit as a frontend's per-frame cycle budget. A raw
+   step_cycles count would not do: those scale with CLK_MODE, whose table spans
+   over two orders of magnitude, so any fixed value would mean seconds at the
+   idle clock and milliseconds at the fastest one.
+
+   One second is deliberately far longer than it needs to be. Getting this
+   wrong in the "app already exited" direction costs a frontend nothing it can
+   see - an override resumes a few frames later than it could have. Getting it
+   wrong the other way puts back exactly the bug psemu_app_running exists to
+   prevent. So it is sized to outlast any plausible BIOS call rather than to be
+   responsive. */
+#define APP_EXEC_GRACE_CYCLES ((uint32_t)PSEMU_ASSUMED_CPU_HZ)
+
+/* FLASH1 is the windowed view of card flash that a dispatched app executes
+   from (see flash.h). The BIOS itself never runs from it. */
+static void psemu_track_app_execution(psemu_t *ps, uint32_t pc, uint32_t real_time_cycles) {
+    if (pc >= PSEMU_FLASH1_BASE && pc < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) {
+        ps->app_running = 1;
+        ps->app_exec_idle_cycles = 0;
+        return;
+    }
+    if (!ps->app_running) {
+        return;
+    }
+    ps->app_exec_idle_cycles += real_time_cycles;
+    if (ps->app_exec_idle_cycles >= APP_EXEC_GRACE_CYCLES) {
+        ps->app_running = 0;
+        ps->app_exec_idle_cycles = 0;
+    }
+}
+
+int psemu_app_running(const psemu_t *ps) {
+    return ps->app_running;
+}
+
 uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     if (!ps->has_bios) {
         return 0;
@@ -279,6 +329,7 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     double elapsed_seconds = 0.0;
     uint32_t ran = 0;
     while (elapsed_seconds < budget_seconds) {
+        uint32_t pc = ps->cpu.r[15];
         uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
         double dt = (double)step_cycles / (double)clk_current_hz(&ps->clk);
         elapsed_seconds += dt;
@@ -286,6 +337,8 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
         ps->real_time_cycle_carry += dt * (double)PSEMU_ASSUMED_CPU_HZ;
         uint32_t real_time_cycles = (uint32_t)ps->real_time_cycle_carry;
         ps->real_time_cycle_carry -= (double)real_time_cycles;
+
+        psemu_track_app_execution(ps, pc, real_time_cycles);
 
         timer_tick(&ps->timer, &ps->intc, step_cycles);
         rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
