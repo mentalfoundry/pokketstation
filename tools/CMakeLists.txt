@@ -18,6 +18,21 @@ add_executable(bench_probe bench_probe.c)
 target_include_directories(bench_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(bench_probe PRIVATE psemu)
 
+# Links plain psemu on purpose: it measures what frontends pay.
+add_executable(core_bench core_bench.c)
+target_include_directories(core_bench PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(core_bench PRIVATE psemu)
+
+# These two need the bus read-trace hook, so they link psemu_trace rather
+# than psemu (see core/CMakeLists.txt).
+add_executable(volume_probe volume_probe.c)
+target_include_directories(volume_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(volume_probe PRIVATE psemu_trace)
+
+add_executable(datetime_probe datetime_probe.c)
+target_include_directories(datetime_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(datetime_probe PRIVATE psemu_trace)
+
 add_executable(pk_exit_test pk_exit_test.c)
 target_include_directories(pk_exit_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(pk_exit_test PRIVATE psemu)

@@ -135,6 +135,80 @@ void psemu_format_hardware_id(uint32_t id, char *buf, size_t buf_size);
 /* Runs for approximately `cycles` CPU cycles; returns cycles actually executed. */
 uint32_t psemu_run(psemu_t *ps, uint32_t cycles);
 
+/* BIOS-owned settings that live in RAM rather than in any hardware register.
+   Both are documented in docs/hardware-notes.md ("System sound volume setting",
+   "Where the date/time settings actually live"), and both were located by
+   tracing a real BIOS, not from any published register map.
+
+   A frontend uses these to hold a setting at a chosen value: the addresses
+   involved are ordinary RAM that the BIOS menus also write, so "forcing" a
+   value means re-applying it, typically once per rendered frame. That costs
+   a few byte stores against the tens of thousands of instructions a frame
+   already executes.
+
+   These functions never read the host clock or any other ambient state, so
+   the emulator stays deterministic. A caller that wants "current time" passes
+   it in. */
+
+/* The three values the BIOS sound menu itself cycles through. Larger values
+   attenuate further; 0x04 is special-cased by the BIOS to full silence. */
+#define PSEMU_VOLUME_LOUD 0x00u
+#define PSEMU_VOLUME_SOFT 0x02u
+#define PSEMU_VOLUME_MUTE 0x04u
+
+/* Writes the volume byte once, and reads it back. The BIOS sound menu and any
+   app are free to overwrite it afterwards. */
+void psemu_set_volume(psemu_t *ps, uint8_t level);
+uint8_t psemu_get_volume(const psemu_t *ps);
+
+/* Holds the volume at `level` until psemu_clear_volume_override: writes it
+   now, re-seeds it on every psemu_reset, and makes the byte read-only to
+   emulated code (the BIOS sound menu stops having any effect, which is what
+   an override means).
+
+   Re-applying once per frame is NOT enough for this particular setting, which
+   is why it needs its own call. The value has to be in place before the BIOS
+   reads it during sound init, and the BIOS clears RAM early in its own boot -
+   both inside the frontend's very first emulated frame, with the boot chime
+   already finished by the end of it. A per-frame write never gets a turn in
+   between, so the chime plays at full volume however often the frontend
+   writes. See docs/hardware-notes.md, "System sound volume setting".
+
+   On real hardware the byte survives because battery-backed SRAM holds it and
+   the BIOS treats it as already-present state. This emulator always cold-boots,
+   so the lock is what stands in for the battery.
+
+   Costs one compare on the RAM write path; nothing on the read or opcode-fetch
+   path. Guard calls on psemu_settings_offsets_known, as with psemu_set_volume. */
+void psemu_set_volume_override(psemu_t *ps, uint8_t level);
+void psemu_clear_volume_override(psemu_t *ps);
+
+/* Sets the clock the BIOS and apps will report.
+   `year` is a full year (for example 2026); `dow` is 1=Sunday..7=Saturday.
+
+   This writes the RTC's time and date registers, and BOTH century bytes: the
+   one the BIOS clock screen renders from, and the separate one GetBcdDate
+   (SWI 0Dh) returns to apps. Writing only one leaves the on-screen year and
+   the app-visible year disagreeing.
+
+   Returns 0 without changing anything if the arguments are out of range, or
+   if the RTC is currently in program mode (RTC_MODE bit 0, PRGSEL). The BIOS
+   programs the clock by issuing RTC_ADJUST increments in a loop until each
+   field reaches a target value, so overwriting the registers underneath that
+   loop can stop it ever converging. Callers are expected to simply try again
+   on the next frame. */
+int psemu_set_datetime(psemu_t *ps, int year, int month, int day, int hour, int minute, int second, int dow);
+
+/* Nonzero if the currently-loaded BIOS is a revision whose RAM layout this
+   emulator has actually verified.
+
+   The addresses psemu_set_volume and psemu_set_datetime write were traced
+   against specific BIOS revisions. On an unrecognized revision they are just
+   arbitrary kernel RAM, and writing them would corrupt unrelated state
+   silently. A frontend should disable any settings-override UI when this
+   returns 0, rather than write and hope. Returns 0 when no BIOS is loaded. */
+int psemu_settings_offsets_known(const psemu_t *ps);
+
 /* 1bpp, row-major, PSEMU_LCD_STRIDE bytes per row, bit0 = leftmost pixel. */
 const uint8_t *psemu_get_framebuffer(const psemu_t *ps);
 

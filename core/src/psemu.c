@@ -47,6 +47,15 @@ void psemu_reset(psemu_t *ps) {
        sitting underneath the newly-loaded content, which is what caused
        visible glitches on reload. */
     memset(ps->bus.ram, 0, sizeof(ps->bus.ram));
+    /* A frontend-held setting is deliberately not part of the power-on
+       state this function restores: it stands in for battery-backed SRAM,
+       which a reset is exactly what does NOT clear. Re-seed it after the
+       wipe so it is already in place for the BIOS's first read, rather
+       than only from the frontend's next frame. See
+       psemu_set_volume_override. */
+    if (ps->bus.ram_lock_addr < PSEMU_RAM_SIZE) {
+        ps->bus.ram[ps->bus.ram_lock_addr] = ps->bus.ram_lock_value;
+    }
     lcd_init(&ps->lcd);
     /* lcd_init clears dirty, correct for a fresh psemu_create where
        there is nothing on screen yet. A mid-session reset instead needs
@@ -379,6 +388,94 @@ int psemu_framebuffer_dirty(psemu_t *ps) {
     int was_dirty = ps->lcd.dirty;
     ps->lcd.dirty = 0;
     return was_dirty;
+}
+
+/* BIOS-owned settings that live in RAM. See docs/hardware-notes.md for how
+   each address was found; none of this comes from a published register map.
+
+   PSEMU_RAM_VOLUME: the sound setting. The BIOS reads it but never writes it
+   at boot, so on real hardware it survives purely because the battery holds
+   SRAM up.
+   PSEMU_RAM_CENTURY_SCREEN: the century the BIOS clock screen renders.
+   PSEMU_RAM_CENTURY_SWI: the century GetBcdDate (SWI 0Dh) returns to apps.
+   These two really are separate bytes, and a test confirms they can disagree:
+   the SWI reported 2026 while the screen rendered 1926. */
+#define PSEMU_RAM_VOLUME 0x290u
+#define PSEMU_RAM_CENTURY_SCREEN 0x426u
+#define PSEMU_RAM_CENTURY_SWI 0x0CFu
+
+void psemu_set_volume(psemu_t *ps, uint8_t level) {
+    ps->bus.ram[PSEMU_RAM_VOLUME] = level;
+}
+
+uint8_t psemu_get_volume(const psemu_t *ps) {
+    return ps->bus.ram[PSEMU_RAM_VOLUME];
+}
+
+void psemu_set_volume_override(psemu_t *ps, uint8_t level) {
+    ps->bus.ram[PSEMU_RAM_VOLUME] = level;
+    ps->bus.ram_lock_addr = PSEMU_RAM_VOLUME;
+    ps->bus.ram_lock_value = level;
+}
+
+void psemu_clear_volume_override(psemu_t *ps) {
+    ps->bus.ram_lock_addr = PSEMU_RAM_SIZE;
+    ps->bus.ram_lock_value = 0;
+}
+
+static uint8_t to_bcd(int value) {
+    return (uint8_t)(((value / 10) << 4) | (value % 10));
+}
+
+int psemu_set_datetime(psemu_t *ps, int year, int month, int day, int hour, int minute, int second, int dow) {
+    if (year < 0 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31 || hour < 0 || hour > 23 ||
+        minute < 0 || minute > 59 || second < 0 || second > 59 || dow < 1 || dow > 7) {
+        return 0;
+    }
+    /* PRGSEL: the BIOS is mid-way through stepping the clock with
+       RTC_ADJUST increments. Writing the registers now can stop its loop
+       converging. See this function's comment in psemu/psemu.h. */
+    if (ps->rtc.mode & 1u) {
+        return 0;
+    }
+
+    /* RTC_DATE packs day, month, year from the LSB up; RTC_TIME packs
+       seconds, minutes, hours, day-of-week. See core/src/rtc.h. */
+    ps->rtc.date = ((uint32_t)to_bcd(year % 100) << 16) | ((uint32_t)to_bcd(month) << 8) | to_bcd(day);
+    ps->rtc.time = ((uint32_t)to_bcd(dow) << 24) | ((uint32_t)to_bcd(hour) << 16) | ((uint32_t)to_bcd(minute) << 8) |
+                   to_bcd(second);
+
+    uint8_t century = to_bcd(year / 100);
+    ps->bus.ram[PSEMU_RAM_CENTURY_SCREEN] = century;
+    ps->bus.ram[PSEMU_RAM_CENTURY_SWI] = century;
+    return 1;
+}
+
+/* FNV-1a over the whole 16KB BIOS image. Any revision whose RAM layout has
+   actually been traced goes in this table. A hash rather than a signature
+   scan because it fails closed: an unknown or modified image simply turns
+   the feature off, instead of writing to addresses that mean something else
+   there. Add entries only after re-verifying the addresses above against
+   that revision. */
+static const uint32_t known_bios_hashes[] = {
+    0xB2E46838u, /* J110 (retail, docs/hardware-notes.md "BIOS/kernel revisions") */
+};
+
+int psemu_settings_offsets_known(const psemu_t *ps) {
+    if (!ps->has_bios) {
+        return 0;
+    }
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < PSEMU_BIOS_SIZE; i++) {
+        hash ^= ps->bus.bios[i];
+        hash *= 16777619u;
+    }
+    for (size_t i = 0; i < sizeof(known_bios_hashes) / sizeof(known_bios_hashes[0]); i++) {
+        if (hash == known_bios_hashes[i]) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 size_t psemu_state_size(const psemu_t *ps) {

@@ -65,6 +65,22 @@ typedef struct psemu_bus {
        afterward as that step's true cost. See "Memory access timing"
        in docs/hardware-notes.md. */
     uint32_t pending_cycles;
+    /* One RAM byte held read-only against emulated code, or
+       PSEMU_RAM_SIZE for "none" - a sentinel no RAM address can equal, so
+       the guard in bus_write8_raw is a single compare that never matches
+       while the feature is off.
+
+       This exists because a frontend cannot hold a BIOS-owned RAM setting
+       by re-applying it between frames. The BIOS clears RAM early in its
+       boot (pc 0x04000060, ~instr #696) and the boot chime is already over
+       by the end of that same frame, so a per-frame write is never given a
+       turn in between. See psemu_set_volume_override, and
+       docs/hardware-notes.md, "System sound volume setting".
+
+       Only writes issued by emulated code are blocked. psemu_reset and the
+       core's own settings writers touch bus->ram directly. */
+    uint32_t ram_lock_addr;
+    uint8_t ram_lock_value;
 } psemu_bus_t;
 
 void psemu_bus_init(
@@ -95,5 +111,12 @@ uint32_t psemu_region_fetch_cycles(uint32_t addr, int thumb);
 
 /* TEMPORARY diagnostic flag - see memory.c. */
 extern int psemu_clk_trace_enabled;
+
+/* Diagnostic hook: called on every bus read while non-NULL. Compiled in
+   only for the psemu_trace library target, because it is not free on the
+   hot path - see memory.c. */
+#ifdef PSEMU_TRACE_HOOKS
+extern void (*psemu_bus_read_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc);
+#endif
 
 #endif

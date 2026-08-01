@@ -24,6 +24,33 @@ BEGIN
     BEGIN
         MENUITEM "Edit &Hardware ID...", ID_TOOLS_EDIT_HWID
         MENUITEM "&Remap Controls...", ID_TOOLS_REMAP_CONTROLS
+        MENUITEM SEPARATOR
+        /* This emulator's own output level, not a PocketStation setting, so it
+           stays usable on any BIOS. It also replaces what used to be a Volume
+           Override group here: forcing the emulated machine's own volume byte
+           only ever bought three coarse steps that this covers better. */
+        POPUP "&Sound"
+        BEGIN
+            MENUITEM "&Mute",   ID_TOOLS_SOUND_BASE + 0
+            MENUITEM SEPARATOR
+            MENUITEM "10%",     ID_TOOLS_SOUND_BASE + 1
+            MENUITEM "20%",     ID_TOOLS_SOUND_BASE + 2
+            MENUITEM "30%",     ID_TOOLS_SOUND_BASE + 3
+            MENUITEM "40%",     ID_TOOLS_SOUND_BASE + 4
+            MENUITEM "50%",     ID_TOOLS_SOUND_BASE + 5
+            MENUITEM "60%",     ID_TOOLS_SOUND_BASE + 6
+            MENUITEM "70%",     ID_TOOLS_SOUND_BASE + 7
+            MENUITEM "80%",     ID_TOOLS_SOUND_BASE + 8
+            MENUITEM "90%",     ID_TOOLS_SOUND_BASE + 9
+            MENUITEM "&Full",   ID_TOOLS_SOUND_BASE + 10
+        END
+        MENUITEM SEPARATOR
+        POPUP "Date/&Time Override"
+        BEGIN
+            MENUITEM "&Default (set in system menu)", ID_TOOLS_DATETIME_DEFAULT
+            MENUITEM SEPARATOR
+            MENUITEM "&OS Date/Time", ID_TOOLS_DATETIME_OS
+        END
     END
     POPUP "&IR Link"
     BEGIN

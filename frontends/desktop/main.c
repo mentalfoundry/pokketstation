@@ -35,7 +35,7 @@
    This is deliberately not wired up to git or CMake automatically.
    This string is the one spot to edit for a new release.
    A source zip build has no git available, so an automatic value could silently drift. */
-#define POKKETSTATION_VERSION "v1.7.0"
+#define POKKETSTATION_VERSION "v1.8.0"
 
 /* Returns the directory the running executable lives in.
    This derives the directory from argv[0], not an OS-specific "current module path" API.
@@ -99,7 +99,10 @@ static void get_quicksave_path(char *out, size_t out_size, const char *exe_dir, 
 }
 
 #define QUICKSAVE_MAGIC "PKQS"
-#define QUICKSAVE_VERSION 1u
+/* 2: psemu_t gained the RAM write lock behind psemu_set_volume_override, so
+   the raw state blob changed size. Version-1 files are rejected outright
+   rather than read as a truncated version-2 state. */
+#define QUICKSAVE_VERSION 2u
 
 /* app_size/app_hash guard against loading a state saved under a different
    app/card. The per-app filename already makes that unlikely to even be
@@ -218,7 +221,80 @@ typedef struct {
     char key_reset[32];
     char key_quick_save[32];
     char key_quick_load[32];
+    /* Tools > Date/Time Override.
+       This holds a BIOS setting that lives in emulated RAM rather than in any
+       hardware register (see docs/hardware-notes.md). DATETIME_OVERRIDE_OFF
+       means "don't interfere", so the PocketStation's own system menus behave
+       normally. Otherwise it is re-applied every frame, which is what makes it
+       stick against the BIOS menu writing its own value. */
+    int datetime_override;
+    /* Tools > Sound. 0-100, in whole percent. This is the emulator's own output
+       level and nothing the emulated machine can see: it scales the PCM on its
+       way to the audio device, after the core has already applied the
+       PocketStation's own volume setting. The two therefore multiply.
+       There was once a volume_override here too, pinning that PocketStation
+       setting the same way datetime_override pins the clock. It is gone: it
+       bought three coarse steps, only on a traced BIOS, to do a job this does
+       better on any of them. A volume_override= line in an older settings.cfg
+       is ignored and drops out at the next save. */
+    int master_volume;
 } app_settings_t;
+
+#define DATETIME_OVERRIDE_OFF 0
+#define DATETIME_OVERRIDE_OS 1
+
+/* Tools > Sound. The menu offers 10% steps, but the setting is stored as plain
+   percent so a finer control later (a slider, a hotkey nudge) needs no new
+   format on disk - only a value the menu cannot currently produce, which
+   sound_menu_id below rounds to the nearest step it can show. */
+#define MASTER_VOLUME_MAX 100
+#define MASTER_VOLUME_DEFAULT 100
+
+static int clamp_master_volume(int percent) {
+    if (percent < 0) {
+        return 0;
+    }
+    if (percent > MASTER_VOLUME_MAX) {
+        return MASTER_VOLUME_MAX;
+    }
+    return percent;
+}
+
+/* The percentage is a loudness, not an amplitude, so it is not what the samples
+   are multiplied by.
+   Hearing is logarithmic: perceived loudness roughly halves for every 10 dB of
+   attenuation. Multiplying the samples by 0.5 is only -6 dB, which still sounds
+   around two thirds as loud - a "50%" that plainly is not half. Half as loud
+   needs -10 dB, an amplitude of 0.316.
+   Solving "each halving of the percentage costs 10 dB" gives
+       amplitude = p ^ (log2(10) / 2) = p ^ 1.660964,  p = percent / 100
+   which is the exponent below. It lands 100% at 0 dB, 50% at -10 dB (half as
+   loud), 25% at -20 dB (a quarter), and 10% at -33 dB.
+   There is room for this: the DAC's 10-bit field is rescaled to the full int16
+   range before it ever reaches here (see dac.c), so even the -33 dB step still
+   leaves a ~700-count waveform rather than dithering itself apart. */
+#define MASTER_VOLUME_LOUDNESS_EXPONENT 1.6609640474436813
+
+/* Attenuates one frame's worth of samples in place.
+   The 100% case returns without touching the buffer, so the default path costs
+   nothing. */
+static void apply_master_volume(int16_t *samples, uint32_t count, int percent) {
+    if (percent >= MASTER_VOLUME_MAX) {
+        return;
+    }
+    if (percent <= 0) {
+        memset(samples, 0, (size_t)count * sizeof(samples[0]));
+        return;
+    }
+    /* pow() once per frame, then integer math per sample. Q16.16: the gain is
+       below 1.0 on every path that reaches here, so gain_q16 <= 65535 and the
+       product of it with a full-scale sample stays inside int32. */
+    double gain = pow((double)percent / (double)MASTER_VOLUME_MAX, MASTER_VOLUME_LOUDNESS_EXPONENT);
+    int32_t gain_q16 = (int32_t)(gain * 65536.0 + 0.5);
+    for (uint32_t i = 0; i < count; i++) {
+        samples[i] = (int16_t)(((int32_t)samples[i] * gain_q16) / 65536);
+    }
+}
 
 /* Packs 8-bit R/G/B into the same 0xRRGGBBAA layout render_framebuffer writes
    into the pixel buffer. See render_framebuffer's own comment on
@@ -284,6 +360,12 @@ static int load_settings(app_settings_t *settings, const char *path) {
     settings->show_console = 0;
     settings->ir_link_diagnostics = 0;
     settings->show_shadows = 0;
+    /* Defaults to off, so a fresh install behaves exactly as it did before this
+       override existed. */
+    settings->datetime_override = DATETIME_OVERRIDE_OFF;
+    /* Full volume, so an install that has never touched Tools > Sound sounds
+       exactly as it did before this setting existed. */
+    settings->master_volume = MASTER_VOLUME_DEFAULT;
     if (f) {
         while (fgets(line, sizeof(line), f)) {
             size_t len = strlen(line);
@@ -318,6 +400,14 @@ static int load_settings(app_settings_t *settings, const char *path) {
                 snprintf(settings->key_quick_save, sizeof(settings->key_quick_save), "%s", line + 15);
             } else if (strncmp(line, "key_quick_load=", 15) == 0) {
                 snprintf(settings->key_quick_load, sizeof(settings->key_quick_load), "%s", line + 15);
+            } else if (strncmp(line, "datetime_override=", 18) == 0) {
+                settings->datetime_override =
+                    strcmp(line + 18, "os") == 0 ? DATETIME_OVERRIDE_OS : DATETIME_OVERRIDE_OFF;
+            } else if (strncmp(line, "master_volume=", 14) == 0) {
+                /* Clamped rather than rejected: a hand-edited file with 150 in
+                   it means "as loud as possible", and there is no wrong-enough
+                   value here to be worth refusing to start over. */
+                settings->master_volume = clamp_master_volume(atoi(line + 14));
             } else if (strncmp(line, "show_console=", 13) == 0) {
                 settings->show_console = atoi(line + 13) != 0;
             } else if (strncmp(line, "ir_link_diagnostics=", 20) == 0) {
@@ -398,6 +488,8 @@ static void save_settings(const app_settings_t *settings, const char *path) {
     fprintf(f, "key_reset=%s\n", settings->key_reset);
     fprintf(f, "key_quick_save=%s\n", settings->key_quick_save);
     fprintf(f, "key_quick_load=%s\n", settings->key_quick_load);
+    fprintf(f, "datetime_override=%s\n", settings->datetime_override == DATETIME_OVERRIDE_OS ? "os" : "default");
+    fprintf(f, "master_volume=%d\n", settings->master_volume);
     fprintf(f, "show_console=%d\n", settings->show_console ? 1 : 0);
     fprintf(f, "ir_link_diagnostics=%d\n", settings->ir_link_diagnostics ? 1 : 0);
     fprintf(f, "show_shadows=%d\n", settings->show_shadows ? 1 : 0);
@@ -1588,6 +1680,125 @@ static void ir_link_disconnect_from_menu(menu_context_t *ctx) {
     ir_link_refresh_title(ctx);
 }
 
+/* Which of the three color presets is currently in effect, as its menu
+   command ID, or 0 for none.
+
+   There is no stored "current scheme" to read: a scheme is just the three
+   colors it produced, and Advanced Colors... can leave those at any values at
+   all. So the active preset is recovered by asking which preset, if applied
+   right now, would produce exactly what is already in effect. The shadow is
+   part of that comparison because a preset sets all three (see
+   apply_display_colors) - a hand-picked shadow over Classic's ink and
+   background is no longer Classic, and should not claim to be.
+
+   Returning 0 for a custom scheme is deliberate: the menu then shows no
+   preset checked, which is honest, rather than checking whichever one the
+   colors were last derived from. */
+static int active_color_preset_id(const menu_context_t *ctx) {
+    static const struct {
+        int id;
+        uint32_t pixel;
+        uint32_t bg;
+    } presets[] = {
+        {ID_COLORS_CLASSIC, DISPLAY_PIXEL_CLASSIC, DISPLAY_BG_CLASSIC},
+        {ID_COLORS_STANDARD, DISPLAY_PIXEL_LIGHT, DISPLAY_BG_LIGHT},
+        {ID_COLORS_REVERSED, DISPLAY_PIXEL_DARK, DISPLAY_BG_DARK},
+    };
+    for (int i = 0; i < (int)(sizeof(presets) / sizeof(presets[0])); i++) {
+        if (*ctx->pixel_rgba == presets[i].pixel && *ctx->bg_rgba == presets[i].bg &&
+            *ctx->shadow_rgba == theme_shadow_for(presets[i].bg, presets[i].pixel)) {
+            return presets[i].id;
+        }
+    }
+    return 0;
+}
+
+/* CheckMenuRadioItem wants the menu that directly contains the group, and
+   both override groups plus Colors live in nested popups. Rather than hard-code
+   submenu positions, which would break the moment the menu is reordered, find
+   the containing popup by command ID. */
+static HMENU find_menu_containing(HMENU menu, UINT id) {
+    int count = GetMenuItemCount(menu);
+    for (int i = 0; i < count; i++) {
+        HMENU sub = GetSubMenu(menu, i);
+        if (sub != NULL) {
+            HMENU found = find_menu_containing(sub, id);
+            if (found != NULL) {
+                return found;
+            }
+        } else if (GetMenuItemID(menu, i) == id) {
+            return menu;
+        }
+    }
+    return NULL;
+}
+
+/* Brings every checkable menu item in line with the current state.
+
+   This is called after each menu command rather than from WM_INITMENUPOPUP,
+   which would be the natural place for it. SDL2 invokes its Windows message
+   hook from inside its own PeekMessage loop, so the hook only ever sees
+   POSTED messages. WM_COMMAND from a menu is posted, which is why the command
+   handlers work; WM_INITMENUPOPUP is sent straight to the window procedure by
+   the menu system and never enters the queue, so a handler for it there never
+   runs at all. Catching it would mean subclassing the window.
+
+   Syncing eagerly is enough because nothing changes this state except the
+   commands below: the overrides are set from the menu, the color scheme is set
+   from the menu or from the dialog one of those commands opens, and whether
+   the override groups are usable at all depends on the loaded BIOS, which also
+   only changes via a menu command. */
+static void sync_menu_state(menu_context_t *ctx) {
+    HMENU root = GetMenu(ctx->hwnd);
+    if (root == NULL) {
+        return;
+    }
+
+    /* The override addresses are only valid on a BIOS revision this project
+       has traced; on anything else the group is greyed rather than left
+       clickable (see psemu_settings_offsets_known). */
+    int usable = psemu_settings_offsets_known(ctx->ps);
+    static const int datetime_ids[] = {ID_TOOLS_DATETIME_DEFAULT, ID_TOOLS_DATETIME_OS};
+
+    HMENU datetime_menu = find_menu_containing(root, ID_TOOLS_DATETIME_DEFAULT);
+    if (datetime_menu != NULL) {
+        for (int i = 0; i < (int)(sizeof(datetime_ids) / sizeof(datetime_ids[0])); i++) {
+            EnableMenuItem(datetime_menu, datetime_ids[i], MF_BYCOMMAND | (usable ? MF_ENABLED : MF_GRAYED));
+        }
+        CheckMenuRadioItem(
+            datetime_menu, ID_TOOLS_DATETIME_DEFAULT, ID_TOOLS_DATETIME_OS,
+            datetime_ids[ctx->settings->datetime_override], MF_BYCOMMAND);
+    }
+
+    /* Tools > Sound is this application's own output level, so unlike the group
+       above it is never greyed: it works with no BIOS loaded at all.
+       A stored percent that is not a whole 10% step (only reachable by hand-
+       editing settings.cfg) rounds to the nearest item the menu can show. The
+       stored value itself is left alone - the menu just cannot draw it. */
+    HMENU sound_menu = find_menu_containing(root, ID_TOOLS_SOUND_BASE);
+    if (sound_menu != NULL) {
+        int step = (clamp_master_volume(ctx->settings->master_volume) + 5) / 10;
+        CheckMenuRadioItem(
+            sound_menu, ID_TOOLS_SOUND_BASE, ID_TOOLS_SOUND_LAST, ID_TOOLS_SOUND_BASE + step, MF_BYCOMMAND);
+    }
+
+    /* The radio range stops at ID_COLORS_CLASSIC so "Advanced Colors..." stays
+       an action item rather than joining the group - it opens a dialog, it is
+       not a scheme you can be "on". A custom scheme checks nothing, so every
+       preset is cleared first instead of leaving whichever was last checked. */
+    HMENU colors_menu = find_menu_containing(root, ID_COLORS_CLASSIC);
+    if (colors_menu != NULL) {
+        static const int color_ids[] = {ID_COLORS_CLASSIC, ID_COLORS_STANDARD, ID_COLORS_REVERSED};
+        for (int i = 0; i < (int)(sizeof(color_ids) / sizeof(color_ids[0])); i++) {
+            CheckMenuItem(colors_menu, color_ids[i], MF_BYCOMMAND | MF_UNCHECKED);
+        }
+        int preset = active_color_preset_id(ctx);
+        if (preset != 0) {
+            CheckMenuRadioItem(colors_menu, ID_COLORS_STANDARD, ID_COLORS_CLASSIC, preset, MF_BYCOMMAND);
+        }
+    }
+}
+
 /* Installed via SDL_SetWindowsMessageHook.
    Fires synchronously from within SDL_PollEvent's own message pump, on
    the same thread, so no locking is needed.
@@ -1598,6 +1809,16 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
     (void)lparam;
     menu_context_t *ctx = (menu_context_t *)userdata;
     if (message != WM_COMMAND) {
+        return;
+    }
+    /* Tools > Sound is one contiguous ID range rather than a named ID per step
+       (see resource.h), so it is matched here instead of as eleven cases in the
+       switch below. The main loop reads settings->master_volume every frame, so
+       storing it is the whole of applying it. */
+    if (LOWORD(wparam) >= ID_TOOLS_SOUND_BASE && LOWORD(wparam) <= ID_TOOLS_SOUND_LAST) {
+        ctx->settings->master_volume = (int)(LOWORD(wparam) - ID_TOOLS_SOUND_BASE) * 10;
+        save_settings(ctx->settings, ctx->settings_path);
+        sync_menu_state(ctx);
         return;
     }
     switch (LOWORD(wparam)) {
@@ -1624,6 +1845,14 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         break;
     case ID_TOOLS_REMAP_CONTROLS:
         prompt_remap_controls(ctx);
+        break;
+    /* Switching to Default just stops the frontend re-applying its value.
+       Whatever the BIOS last had stays put, and its system menus work
+       normally again from that point on. */
+    case ID_TOOLS_DATETIME_DEFAULT:
+    case ID_TOOLS_DATETIME_OS:
+        ctx->settings->datetime_override = (int)(LOWORD(wparam) - ID_TOOLS_DATETIME_DEFAULT);
+        save_settings(ctx->settings, ctx->settings_path);
         break;
     case ID_VIEW_NATIVE_SIZE:
         resize_client_to_scale(ctx->hwnd, 1);
@@ -1656,6 +1885,12 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         ir_link_disconnect_from_menu(ctx);
         break;
     }
+    /* Every command that can change a checkable item's state runs through the
+       switch above, so one sync here covers all of them - including the color
+       scheme changing inside the Advanced Colors... dialog, and the override
+       groups becoming usable after a BIOS is loaded. See sync_menu_state for
+       why this is not done from WM_INITMENUPOPUP. */
+    sync_menu_state(ctx);
 }
 
 static int lcd_bit_on(const uint8_t *fb, int row, int col) {
@@ -2053,6 +2288,11 @@ int main(int argc, char **argv) {
 #define BUTTON_LATCH_FRAMES 5
     int latch_frames_remaining[sizeof(button_scancodes) / sizeof(button_scancodes[0])] = {0};
 
+    /* Reflect the settings just loaded from settings.cfg before the menu is
+       ever opened. Afterwards each command keeps it in step; see
+       sync_menu_state. */
+    sync_menu_state(&menu_ctx);
+
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -2124,6 +2364,29 @@ int main(int argc, char **argv) {
            Do not silently continue feeding the CPU garbage forever.
            Before this fix, that silent continuation looked to a player like an
            unexplained hang or crash with zero diagnostic information. */
+        /* Tools > Date/Time Override.
+           This setting lives in emulated RAM that the BIOS's own system menus
+           also write, so holding a value means re-applying it rather than
+           setting it once. Re-applying here, every frame, also covers reset,
+           startup and state load with no extra hooks: there is no event to
+           miss, because the next frame corrects whatever changed.
+
+           This is a handful of byte stores against the ~26,500 instructions a
+           frame already emulates.
+
+           Guarded on psemu_settings_offsets_known so an untraced BIOS revision
+           is left alone entirely, matching the greyed-out menu items. */
+        if (psemu_settings_offsets_known(ps) && settings.datetime_override == DATETIME_OVERRIDE_OS) {
+            SYSTEMTIME now;
+            GetLocalTime(&now);
+            /* SYSTEMTIME's wDayOfWeek is 0=Sunday; the RTC's field is
+               1=Sunday. psemu_set_datetime declines while the BIOS is
+               mid-way through programming the clock, and the next frame
+               simply tries again. */
+            psemu_set_datetime(
+                ps, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, (int)now.wDayOfWeek + 1);
+        }
+
         if (!psemu_cpu_faulted(ps)) {
             psemu_run(ps, 33000);
         } else if (!cpu_faulted_reported) {
@@ -2155,6 +2418,12 @@ int main(int argc, char **argv) {
         if (audio_dev != 0) {
             uint32_t n = psemu_get_audio_samples(ps, audio_buf, sizeof(audio_buf) / sizeof(audio_buf[0]));
             if (n > 0) {
+                /* Tools > Sound, read fresh each frame so a change takes effect
+                   on the next one. The core is always drained regardless, and
+                   silence is still queued at 0%: skipping the queue instead
+                   would leave whatever is already buffered playing on, and
+                   would drift this instance's audio clock against its frames. */
+                apply_master_volume(audio_buf, n, clamp_master_volume(settings.master_volume));
                 SDL_QueueAudio(audio_dev, audio_buf, n * sizeof(audio_buf[0]));
             }
         }

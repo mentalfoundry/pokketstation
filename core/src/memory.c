@@ -21,6 +21,24 @@
    infrastructure. */
 int psemu_clk_trace_enabled = 0;
 
+#ifdef PSEMU_TRACE_HOOKS
+/* Diagnostic hook. When set, every bus read reports its address, value,
+   and the real PC that issued it. Reads are the half of bus access that a
+   snapshot-diff probe cannot see: that is what tools/volume_probe.c
+   needed to find which RAM the BIOS's audio code consults, and what
+   tools/datetime_probe.c needs to see which registers the BIOS checks
+   before resetting the clock. Callbacks filter by address themselves.
+
+   Unlike psemu_clk_trace_enabled above, this one is compiled out by
+   default rather than merely switched off at runtime. It sits on the
+   hottest path there is - once per byte of every bus read, opcode fetches
+   included - and even an always-false check costs about 20% on a fixed
+   6.5M instruction workload. Only the psemu_trace library target defines
+   PSEMU_TRACE_HOOKS (see core/CMakeLists.txt); frontends link plain
+   psemu and pay nothing. */
+void (*psemu_bus_read_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc) = NULL;
+#endif
+
 void psemu_bus_init(
     psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
     struct rtc *rtc, struct dac *dac, struct clk *clk, struct iop *iop) {
@@ -36,6 +54,8 @@ void psemu_bus_init(
     bus->clk = clk;
     bus->iop = iop;
     bus->pending_cycles = 0;
+    bus->ram_lock_addr = PSEMU_RAM_SIZE; /* no byte locked */
+    bus->ram_lock_value = 0;
 }
 
 /* Real per-region data-access wait-state cost (the documented "Memory
@@ -118,7 +138,7 @@ uint32_t psemu_region_fetch_cycles(uint32_t addr, int thumb) {
    below, which add the region's wait-state cost exactly once per
    logical call. Never call this directly. Otherwise accesses go
    uncounted. */
-static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
+static uint8_t bus_read8_untraced(psemu_bus_t *bus, uint32_t addr) {
     if (addr < PSEMU_RAM_SIZE) {
         return bus->ram[addr];
     }
@@ -166,10 +186,30 @@ static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
     return 0;
 }
 
+#ifdef PSEMU_TRACE_HOOKS
+/* Reads exactly once, then reports that same value to the trace hook.
+   Several regions have read side effects, so the value must not be
+   re-fetched just to trace it. */
+static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
+    uint8_t value = bus_read8_untraced(bus, addr);
+    if (psemu_bus_read_trace_cb) {
+        psemu_bus_read_trace_cb(addr, value, psemu_debug_current_pc);
+    }
+    return value;
+}
+#else
+#define bus_read8_raw bus_read8_untraced
+#endif
+
 /* Raw, uncosted 8-bit write - see bus_read8_raw. */
 static void bus_write8_raw(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
     if (addr < PSEMU_RAM_SIZE) {
-        bus->ram[addr] = value;
+        /* One compare, on the RAM-write path only. Unlike the read hook
+           above, this is not on the opcode-fetch path. See ram_lock_addr
+           in memory.h. */
+        if (addr != bus->ram_lock_addr) {
+            bus->ram[addr] = value;
+        }
         return;
     }
     if (addr >= PSEMU_FLASH1_BASE && addr < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) {

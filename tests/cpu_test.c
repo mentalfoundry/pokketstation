@@ -1892,6 +1892,162 @@ static void test_psemu_reset_restores_defaults_and_preserves_content(void) {
     printf("test_psemu_reset_restores_defaults_and_preserves_content OK\n");
 }
 
+/* The BIOS-owned settings that live in RAM rather than in a register.
+   See docs/hardware-notes.md, "System sound volume setting" and "Where the
+   date/time settings actually live", for how these addresses were traced. */
+static void test_volume_override_writes_bios_setting_byte(void) {
+    psemu_t *ps = psemu_create();
+
+    /* A fresh machine reads as Loud, because reset zeroes RAM and the BIOS
+       never initializes this byte itself. */
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_LOUD);
+
+    psemu_set_volume(ps, PSEMU_VOLUME_SOFT);
+    assert(ps->bus.ram[0x290] == 0x02);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_SOFT);
+
+    psemu_set_volume(ps, PSEMU_VOLUME_MUTE);
+    assert(ps->bus.ram[0x290] == 0x04);
+
+    psemu_destroy(ps);
+    printf("test_volume_override_writes_bios_setting_byte OK\n");
+}
+
+/* psemu_set_volume alone is not enough to hold the setting, because emulated
+   code overwrites the byte - the BIOS clears RAM early in its own boot, before
+   it reads the volume during sound init, so a frontend that only writes
+   between frames is always too late and the boot chime plays at full volume.
+   psemu_set_volume_override closes that window by making the byte read-only to
+   emulated code and re-seeding it across resets. */
+static void test_volume_override_survives_emulated_writes_and_reset(void) {
+    psemu_t *ps = psemu_create();
+
+    /* Without the override, emulated code owns the byte. */
+    psemu_set_volume(ps, PSEMU_VOLUME_MUTE);
+    psemu_bus_write8(&ps->bus, 0x290, 0x00);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_LOUD);
+
+    /* With it, the same write is ignored - at every access width, since the
+       BIOS's RAM clear need not be a byte store. */
+    psemu_set_volume_override(ps, PSEMU_VOLUME_MUTE);
+    psemu_bus_write8(&ps->bus, 0x290, 0x00);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_MUTE);
+    psemu_bus_write16(&ps->bus, 0x290, 0x0000);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_MUTE);
+    psemu_bus_write32(&ps->bus, 0x290, 0x00000000u);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_MUTE);
+
+    /* Only the locked byte is protected; the rest of the word it sits in is
+       ordinary RAM. */
+    assert(ps->bus.ram[0x291] == 0x00 && ps->bus.ram[0x292] == 0x00);
+    psemu_bus_write8(&ps->bus, 0x291, 0xAB);
+    assert(ps->bus.ram[0x291] == 0xAB);
+
+    /* A reset stands in for a power cycle, which on real hardware is exactly
+       what the battery-backed byte survives. */
+    psemu_reset(ps);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_MUTE);
+    assert(ps->bus.ram[0x291] == 0x00); /* unlocked RAM still wiped */
+
+    /* Clearing hands the byte back to the BIOS's own sound menu. */
+    psemu_clear_volume_override(ps);
+    psemu_bus_write8(&ps->bus, 0x290, PSEMU_VOLUME_SOFT);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_SOFT);
+    psemu_reset(ps);
+    assert(psemu_get_volume(ps) == PSEMU_VOLUME_LOUD);
+
+    psemu_destroy(ps);
+    printf("test_volume_override_survives_emulated_writes_and_reset OK\n");
+}
+
+static void test_set_datetime_writes_rtc_and_both_century_bytes(void) {
+    psemu_t *ps = psemu_create();
+
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 12, 45, 30, 7) == 1);
+
+    /* RTC_DATE packs day, month, year from the LSB up; RTC_TIME packs
+       seconds, minutes, hours, day-of-week. All BCD. */
+    assert(ps->rtc.date == 0x00260801u);
+    assert(ps->rtc.time == 0x07124530u);
+
+    /* Both century bytes, not just one: the clock screen reads 0x426 and
+       GetBcdDate reads 0x0CF, and they are genuinely independent. */
+    assert(ps->bus.ram[0x426] == 0x20);
+    assert(ps->bus.ram[0x0CF] == 0x20);
+
+    /* A year in the 1900s, to be sure the century is computed rather than
+       hardcoded to 0x20. */
+    assert(psemu_set_datetime(ps, 1999, 1, 1, 0, 0, 0, 6) == 1);
+    assert(ps->rtc.date == 0x00990101u);
+    assert(ps->bus.ram[0x426] == 0x19);
+    assert(ps->bus.ram[0x0CF] == 0x19);
+
+    psemu_destroy(ps);
+    printf("test_set_datetime_writes_rtc_and_both_century_bytes OK\n");
+}
+
+/* The BIOS sets the clock by issuing RTC_ADJUST increments in a loop until
+   each field reaches a target. Overwriting the registers underneath that
+   loop can stop it converging, so the setter has to stay out of the way
+   while PRGSEL is set and let the caller retry later. */
+static void test_set_datetime_refuses_while_rtc_in_program_mode(void) {
+    psemu_t *ps = psemu_create();
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 12, 45, 30, 7) == 1);
+    uint32_t date_before = ps->rtc.date;
+    uint32_t time_before = ps->rtc.time;
+
+    ps->rtc.mode |= 1u; /* PRGSEL */
+    assert(psemu_set_datetime(ps, 1999, 1, 1, 0, 0, 0, 6) == 0);
+    assert(ps->rtc.date == date_before);
+    assert(ps->rtc.time == time_before);
+    assert(ps->bus.ram[0x426] == 0x20);
+
+    /* Once the BIOS leaves program mode, the same call goes through. */
+    ps->rtc.mode &= ~1u;
+    assert(psemu_set_datetime(ps, 1999, 1, 1, 0, 0, 0, 6) == 1);
+    assert(ps->rtc.date == 0x00990101u);
+
+    psemu_destroy(ps);
+    printf("test_set_datetime_refuses_while_rtc_in_program_mode OK\n");
+}
+
+static void test_set_datetime_rejects_out_of_range_arguments(void) {
+    psemu_t *ps = psemu_create();
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 12, 0, 0, 7) == 1);
+    uint32_t date_before = ps->rtc.date;
+
+    assert(psemu_set_datetime(ps, 2026, 13, 1, 0, 0, 0, 1) == 0);  /* month */
+    assert(psemu_set_datetime(ps, 2026, 0, 1, 0, 0, 0, 1) == 0);   /* month */
+    assert(psemu_set_datetime(ps, 2026, 8, 32, 0, 0, 0, 1) == 0);  /* day */
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 24, 0, 0, 1) == 0);  /* hour */
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 0, 60, 0, 1) == 0);  /* minute */
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 0, 0, 60, 1) == 0);  /* second */
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 0, 0, 0, 0) == 0);   /* day-of-week */
+    assert(psemu_set_datetime(ps, 2026, 8, 1, 0, 0, 0, 8) == 0);   /* day-of-week */
+
+    /* A rejected call must not have written anything partway through. */
+    assert(ps->rtc.date == date_before);
+
+    psemu_destroy(ps);
+    printf("test_set_datetime_rejects_out_of_range_arguments OK\n");
+}
+
+/* The override addresses are only meaningful on BIOS revisions this project
+   has actually traced. Anything else has to fail closed, so a frontend can
+   disable the UI instead of corrupting unrelated kernel RAM. */
+static void test_settings_offsets_unknown_without_a_known_bios(void) {
+    psemu_t *ps = psemu_create();
+    assert(psemu_settings_offsets_known(ps) == 0); /* no BIOS loaded at all */
+
+    static uint8_t fake_bios[PSEMU_BIOS_SIZE];
+    memset(fake_bios, 0xA5, sizeof(fake_bios));
+    assert(psemu_load_bios(ps, fake_bios, sizeof(fake_bios)) == PSEMU_OK);
+    assert(psemu_settings_offsets_known(ps) == 0);
+
+    psemu_destroy(ps);
+    printf("test_settings_offsets_unknown_without_a_known_bios OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -1941,6 +2097,12 @@ int main(void) {
     test_iop_sound_gate_mutes_dac();
     test_iop_stop_start_take_effect_via_single_byte_writes();
     test_psemu_reset_restores_defaults_and_preserves_content();
+    test_volume_override_writes_bios_setting_byte();
+    test_volume_override_survives_emulated_writes_and_reset();
+    test_set_datetime_writes_rtc_and_both_century_bytes();
+    test_set_datetime_refuses_while_rtc_in_program_mode();
+    test_set_datetime_rejects_out_of_range_arguments();
+    test_settings_offsets_unknown_without_a_known_bios();
     printf("all cpu tests passed\n");
     return 0;
 }

@@ -187,6 +187,59 @@ RTC ticks at a fixed 1Hz in Run mode, regardless of `CLK_MODE`. It runs from a s
 
 The BIOS resets the clock to Jan 1 1999 in a documented condition Sony calls "The RTC Problem", a software workaround for inaccurate clock hardware. This reset is a software action, performed via the normal `RTC_ADJUST` mechanism. This emulator's own reset state does not build in this behavior.
 
+### Where the date/time settings actually live
+
+Traced with `tools/datetime_probe.c`. The settings are split across the RTC registers and several RAM shadows, and none of it reaches flash:
+
+| Location | Holds | Written by | Role |
+|---|---|---|---|
+| `RTC_TIME`/`RTC_DATE` | seconds, minutes, hours, day-of-week; day, month, year (BCD) | `RTC_ADJUST` increments from `0x0400055A`, `0x04000580` and neighbours | drives the clock display |
+| RAM `0x426` | century, BCD `0x19` | `0x0400330C`, once at boot | drives the clock display |
+| RAM `0x0CF` | century, BCD `0x19` | `0x04000350` | derived from the RTC year, not an input |
+| RAM `0x0CD` | year, BCD `0x99` | `0x04000668` | derived, as above |
+| RAM `0x120`-`0x123`, `0x128`-`0x12B` | a date, `01 01 99 19` | `0x040003D4`, `0x04000498` | boot-time working copies; nothing observable reads them back |
+
+**The century exists only in RAM.** `RTC_DATE` has no century field, which is why `GetBcdDate` is the only way to read it back.
+
+**Which byte is the century was established by experiment, and it is `0x426`, not `0x0CF`.** `tools/datetime_probe.c`'s `screen` mode boots to the clock screen, pokes a chosen combination of these locations after the boot reset has finished, and dumps the LCD so the rendered digits can be read directly. The screen renders the date as `YYYY/MM/DD` (the day is cut off at 32px). Results, all with the RTC set to 2026-08-01:
+
+- RTC registers alone: renders `1926/08/`. The RTC supplies month and the two low year digits; the century does not follow.
+- Plus `0x0CF`/`0x0CD`: still `1926/08/`. Poking them changes nothing on screen.
+- Plus the `0x120`/`0x128` working copies: still `1926/08/`.
+- Plus `0x426`: renders `2026/08/`.
+
+`0x426` is written exactly once, at boot, from `0x0400330C`, and thereafter only read - 251 times across 3M instructions, all from `0x04002542`, the clock-display routine.
+
+**`0x0CF` and `0x0CD` are outputs, not inputs.** In the RTC-only run above, the BIOS itself moved `0x0CF` from `0x19` to `0x20` and `0x0CD` to `0x26` in response to the RTC year becoming 26, without either being poked. So the BIOS derives a century from the two-digit year through some windowing rule, and caches it there.
+
+**There are two independent century bytes, and they can disagree.** `GetBcdDate` reads `0x0CF`; the clock screen reads `0x426`. Confirmed by calling the SWI directly (see below) with `RTC = 2026-08-01`, `0x0CF = 0x20` and `0x426` left at `0x19`: the SWI returned `0x20260801` while the screen rendered `1926/08/`. Anything that overrides the date has to write both, or apps and the BIOS's own clock will report different years.
+
+### SWI dispatch table (J110)
+
+`tools/datetime_probe.c`'s `swi` mode calls every entry of the kernel dispatch table in isolation, from a post-boot state snapshot, with a sentinel return address and a poisoned scratch buffer, restoring state between entries. The table base is at RAM `0x0E0` and reads `0x04001688`.
+
+| SWI | Entry | Returns |
+|---|---|---|
+| 10 (`0Ah`) | `0x040017A5` | `FlashReadSerial` - returned `0x410000D3`, this emulator's default `F_SN`, confirming the documented mapping |
+| 13 (`0Dh`) | `0x04000369` | `GetBcdDate` - `r0` = BCD `CCYYMMDD`. Returned `0x19990101` at boot, `0x20260801` with the RTC and `0x0CF` moved |
+| 14 (`0Eh`) | `0x04000391` | `GetBcdTime` - `r0` = BCD, day-of-week/hours/minutes/seconds, matching `RTC_TIME` exactly |
+
+Both date SWIs return their value in `r0` rather than writing through a caller-supplied buffer; the scratch buffer passed in `r0` came back untouched. `GetBcdDate` composes its result from two sources: the century byte at RAM `0x0CF`, and the day/month/year from `RTC_DATE`.
+
+Entries 2, 9, 12 and 15 never reached the sentinel within 20000 instructions, so nothing is claimed about them; entry 12 (`0x04000519`) sits inside the boot date-setting routine and reads `0x0CF`, which makes `SetBcdDate` a reasonable guess worth confirming separately.
+
+**The boot path writes the date unconditionally.** At around instruction 14686 the BIOS fills the RAM shadow with 1999-01-01, then switches the RTC to program mode (`PRGSEL=1`) and walks each field with `RTC_ADJUST` increments until the hardware clock matches. It reads `RTC_DATE` first (at `0x0400036E`/`0x04000372`, returning the power-on-reset `0x00980101`), but no RAM date byte is ever read before it is written, so the decision is not gated on RAM contents.
+
+**Three separate attempts to reach a warm-boot path all failed.** In each case the RAM shadow still ended at 1999-01-01 and the RTC was still walked to match:
+
+- Preloading `RTC_DATE`/`RTC_TIME` with a valid later date (2007-06-15).
+- The same, plus preloading every RAM shadow and the century byte.
+- The same, plus loading a real 128KB memory card image (the BIOS reads `FLASH2` offset 0 shortly before the decision, so card contents were the last untested input).
+
+**This is a milder version of the same shape as the volume setting.** Volume (`0x290`) is also cleared on every boot this emulator can produce, and is also expected to survive on real hardware because the battery holds SRAM up — but it is cleared once, early, and never rewritten afterwards, so pinning the byte is enough (see "System sound volume setting"). Date/time is walked to a target by the BIOS over many instructions, so there is nothing equivalent to pin. `psemu_reset` is equivalent to inserting a fresh battery, and no other boot path exists here, so the Jan-1999 reset may well be faithful to that specific situation rather than a bug. What is not established is whether real hardware has a warm path at all, and what gates it.
+
+Consequence for persistence: preloading registers before boot cannot work for date/time, because the BIOS overwrites them afterwards. The options are to restore a full save state (which bypasses the boot path entirely, and already works), or to re-apply the wanted date after boot through the same `RTC_ADJUST` walk the BIOS itself uses.
+
 ## IR / IR Link
 
 `0x0C800000`: `IRDA_MODE` (`+0x0`) bit0 `IFMODE` (0=Receive, 1=Transmit), bit1 `STDBY` (0=Active, 1=Stand-by), bit2 `BGEN` (0=Enable 40kHz carrier generator, 1=Disable), bit3 `BFLT` (0=Enable filter, 1=Disable). `IRDA_DATA` (`+0x4`) bit0 `LED`: in transmit, the value software bit-bangs (0=off, 1=on); in receive, this emulator's own read-back of the current demodulated level. That receive-side meaning is inferred, not confirmed. See below. `IRDA_MISC` (`+0xC`) is unknown or reserved. This emulator reads it back as 0 and ignores writes. This is the same stub treatment as `BATT_CTRL` below.
@@ -307,6 +360,38 @@ Audio output also requires `IOP_STOP`/`IOP_START` bit 5 ("Sound Enable", `0x0D80
 
 `IOP_STOP` ORs bits into a shared mask; `IOP_START` ANDs them out. Real code writes these registers via single-byte stores, not always a full 32-bit store. Both registers apply each byte's effect immediately, rather than deferring to a full-word write. See `test_iop_sound_gate_mutes_dac`, `test_iop_stop_start_take_effect_via_single_byte_writes`.
 
+### System sound volume setting (RAM `0x290`)
+
+**The BIOS system menu's three-level sound setting is a single byte of RAM at `0x290`.** There is no hardware volume control to hold it: the DAC exposes only an enable bit and a `DACV` level, and the only other audio gate (`IOP` bit 5) is binary. The setting is therefore applied entirely in software, by scaling the `DACV` amplitude the BIOS writes.
+
+| `0x290` | Menu setting | Beep amplitude |
+|---|---|---|
+| `0x00` | Loud | `DACV` -500..496 |
+| `0x02` | Quiet | `DACV` -125..124 |
+| `0x04` | Mute | no `DACV` writes at all |
+
+Pressing Up on the sound-setting screen cycles `0x04` -> `0x02` -> `0x00` -> `0x04`. Every such change is written by BIOS `0x04002994`, the only writer ever observed.
+
+**The BIOS clears this byte early in its boot, at `0x04000060`, ~instr #696.** It is read from four sites: `0x040032F4` and `0x04003020` during sound init (immediately around the `DAC_CTRL` enable at `0x0400304E`), `0x04003910` inside the tone loop, and `0x04002BC6` in the menu. Outside that boot-time clear it is only ever read, never written except by the menu's own writer at `0x04002994` — so the BIOS does treat it as already-present state, which on real hardware is what battery-backed SRAM provides. What is not established is whether real hardware skips the clear on a warm boot; this emulator only ever cold-boots, which is the same limitation recorded above for date/time.
+
+This was originally written up here as "the BIOS never initializes this byte", which was wrong, and the mistake is worth keeping visible because it is easy to repeat. `volume_probe`'s `watch` mode detects writes by comparing the byte before and after each instruction, and it starts from a `psemu_reset`, where RAM is already all zeroes. A clear that writes `0x00` over `0x00` produces no difference to observe, so 12 million instructions of watching reported no writer. Pre-loading a non-zero value first (`volume_probe <bios> boot 04 0`) makes it visible immediately. **Any prev-vs-now memory watch is blind to a write that stores the value already there** — seed the watched location with something the code under test would not write.
+
+**The setting is never committed to flash.** Byte-comparing the full 128KB card image across all three settings shows no change. It lives only in RAM.
+
+Between the menu's three values, the byte behaves as a power-of-two attenuation on `DACV`: `0`, `1`, `2`, `3` give roughly full, half, quarter, and eighth amplitude, and `5` through `8` continue halving down to silence at `9` and above. `4` breaks that ramp and is special-cased to full silence, which is how the menu encodes Mute. Whether the underlying implementation is a shift or a small gain table is not disassembled; a poke of `0xFF` produces an amplitude that neither model predicts.
+
+**Consequence for this emulator:** `psemu_reset` zeroes all of RAM, and the BIOS then clears the byte again during its own boot, so `0x290` reads `0x00` and the emulated PocketStation is at full volume unless something holds the byte against both.
+
+A frontend cannot hold it by re-applying between frames, which is how every other RAM-backed setting here is held. The whole sequence — RAM clear at instr #696, sound init reading `0x290` at #14548, boot chime finished by #15405 — fits inside a single 33000-cycle frame, so the frame boundary never falls between the clear and the read. Re-applying per frame does silence everything *after* the boot chime, which is exactly what the original bug looked like: the setting appeared to work until the device was rebooted.
+
+`psemu_set_volume_override` is what actually holds it. It writes the byte, makes it read-only to emulated code (one compare on the RAM write path in `bus_write8_raw`, nothing on the read or opcode-fetch path), and re-seeds it on every `psemu_reset` — standing in for the battery that holds it on real hardware. `psemu_clear_volume_override` hands the byte back to the BIOS sound menu. `psemu_set_volume` remains the plain unheld write. Verified against a real boot with `volume_probe <bios> boot <level> 2`: Mute produces zero `DACV` writes and the BIOS never even enables `DAC_CTRL`; Quiet produces the documented `-125..124`.
+
+Save states preserve the override along with everything else, since `psemu_save_state` copies the whole `psemu_t`. The lock lives in `psemu_bus_t`, so adding it changed the state blob's size; the desktop frontend's quicksave version went to 2 to reject version-1 files.
+
+Found empirically with `tools/volume_probe.c`: a full-RAM poke sweep over the boot beep (replayed from a save state per candidate byte) isolated `0x290` as the only address that scales amplitude while leaving the beep's timing and write count untouched; a desktop quicksave parked on the sound-setting screen then confirmed the three real values. The read sites came from `psemu_bus_read_trace_cb` (`core/src/memory.c`), a diagnostic hook that reports every bus read with its real PC. Reads are the half of RAM access that a snapshot-diff probe cannot see, and the sweep alone was not enough to find this. That hook is compiled in only for the `psemu_trace` library target, which the diagnostic tools link instead of `psemu`: it sits on the hottest path in the emulator, and measured about 20% slower on a fixed 6.5M instruction workload even with the callback left NULL. Frontends link plain `psemu` and are unaffected.
+
+Note that `0x290` sits in the region the memory map above calls user RAM (`0x200`-`0x7FF`). The BIOS keeps a good deal of its own state there (`0x230`, `0x254`, `0x264`, `0x280`-`0x2A7`, `0x300`-`0x31F`, `0x3F0`, `0x410`), so that kernel/user split does not mark where BIOS-owned state ends. See "Known open questions" for what this implies about apps clobbering the setting.
+
 ## Diagnostics
 
 `arm7tdmi_t` keeps a 256-entry ring buffer of the most recently executed `(pc, cpsr)` pairs, plus a monotonic instruction counter. Every step updates both, regardless of caller.
@@ -377,6 +462,8 @@ A real ID-editing homebrew never calls `SWI 0Fh` anywhere in its code. Confirmed
 
   If revisited: watch RAM `0x332` for writes across a fresh `button_sim=6` run in `tools/inspect.c`. Check whether increments are tied to button input (supports the hypothesis) or to a timer/frame tick (would instead point to a timing-accuracy bug in this emulator).
 - **Unconfirmed: whether Chocobo World has in-game sound beyond a single ~17ms launch chime.** Over 200 million instructions of generic automated exploration, no DAC activity appeared after that one chime. This emulator's generic button-mashing exploration may not reach the gameplay states that gate further sound. Confirming this either way needs real interactive play, focused on deeper gameplay.
+- **Unconfirmed: whether real hardware has a warm-boot path that skips the Jan-1999 clock reset, and what gates it.** See "Where the date/time settings actually live" above for the three inputs already ruled out (RTC contents, RAM shadows, card contents). The leading remaining suspect is `BATT_CTRL` (`0x0D800020`), which is stubbed to read 0 here: a real unit that can distinguish "battery still good" from "battery just replaced" would have somewhere to read that from, and this emulator would always look like the latter. If revisited, model `BATT_CTRL` with a non-zero read and re-run `tools/datetime_probe.c`'s `warm` mode. Note also that the warm runs left `RTC_DATE` at `0x009A0101`, whose year byte is not valid BCD, where the cold run lands cleanly on `0x00990101` - the `RTC_ADJUST` walk appears to overshoot when it starts from a year other than the power-on value, which is worth checking against `rtc.c`'s BCD carry independently of the warm-boot question.
+- **Unconfirmed: whether a dispatched app can clobber the system sound volume setting.** The setting is a single byte at RAM `0x290` (see "System sound volume setting" above), which sits inside the `0x200`-`0x7FF` range the memory map calls user RAM. Outside its boot-time clear and its own menu writer, the BIOS never rewrites it, so an app that uses that byte as its own scratch would leave the user's choice silently changed until they set it again in the menu. Whether real apps actually reach it is untested; the check is to run the real apps in `testdata/` and watch `0x290` for writes from a FLASH1 PC (`tools/volume_probe.c`'s `watch` mode already reports the writing PC — seed the byte non-zero first, for the reason recorded under "System sound volume setting"). This also decides how much RAM a battery-backed-SRAM persistence feature would have to save and restore, and when. Note `psemu_set_volume_override` would make this moot by making the byte read-only to emulated code, but no frontend calls it any more - the desktop app's Volume Override menu was removed in favour of an application-level output volume, so in normal use nothing stops an app reaching the byte. The core API and its tests remain, and `tools/volume_probe.c` still exercises it.
 - **IR (`0x0C800000`+)**: see "IR / IR Link" above for the full model, including what the external reference cited there does and does not confirm. The `BFLT` debounce window is inferred, not confirmed. The same is true of the receive-side meaning of `IRDA_DATA` bit0. Neither is documented externally. No trace in this project's test corpus (over 200 million instructions) touched these registers. There is no second real PocketStation available to validate a modeled protocol against. `IRDA_MISC` (`+0xC`) is an unknown or reserved register externally too. This emulator stubs it. It reads 0 and ignores writes. It does not guess at behavior that neither source documents.
 - **Mostly resolved: a real IR-using app now completes a full bidirectional transfer in this emulator.** A verified two-instance exchange works (see the hardware-ID check further down this bullet). Two real emulator bugs were the blockers, both found by disassembling the app rather than by black-box probing: an inverted receive-line polarity, and a timer that did not load its counter when armed. The long investigation recorded below chased a different theory - a ~1% transmit-pulse shortfall - and is kept because its real-hardware measurements stand on their own and because the reasoning went wrong in instructive ways.
 
