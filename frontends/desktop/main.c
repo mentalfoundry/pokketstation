@@ -2579,16 +2579,50 @@ int main(int argc, char **argv) {
     speaker_filter_init(&speaker_filter);
     unsigned long frame = 0;
 
-    /* Minimum number of frames a button reads as pressed, once detected.
+    /* Minimum number of frames a button reads as pressed, counted from the
+       press itself.
        This stretches a quick real tap to match the duration confirmed, via
        scripted headless testing, to reliably register with the real BIOS.
        At 32Hz, a real ~40ms tap is only ~1.3 frames.
        If a tap lands awkwardly between two per-frame SDL_GetKeyboardState
        polls, this emulator could see it for only a small fraction of a frame.
        That fraction is too short for the BIOS's own input handling to count
-       it as a completed press. */
-#define BUTTON_LATCH_FRAMES 5
-    int latch_frames_remaining[sizeof(button_scancodes) / sizeof(button_scancodes[0])] = {0};
+       it as a completed press.
+
+       This is a *minimum*, not an extension: a key held longer than this is
+       released to the core the same frame the real key comes up, and nothing
+       is added on the end. That distinction is the whole point. This used to
+       reload a 5-frame counter on every frame the key was down, which made it
+       a fixed 5-frame tail after release rather than a minimum, and every
+       press - however long - ran 5 frames past the key.
+
+       The usable window is narrow, and both of its edges are measured by
+       tools/button_timing_probe.c against the real BIOS and a real app, in
+       emulated real time rather than frames:
+       - The BIOS browse screen ignores an Action press shorter than about
+         35ms. That is close to the ~40ms real hardware tap docs/app-notes.md
+         describes, so this is the real BIOS behaving normally, not a timing
+         error on this emulator's side.
+       - An app with an in-app exit screen hands control back to that browse
+         screen about 62-94ms after the press, varying with where the press
+         lands in the app's own tick. Action still asserted at that moment
+         reads to the browse screen as a fresh press on the app it is already
+         sitting on, and it relaunches immediately.
+       So a press has to last longer than ~35ms and be over inside ~62ms.
+
+       This loop can only express whole frames, and a frame is 31.25ms, so the
+       only durations available are 31ms, 62ms, 94ms and up. Exactly one of
+       them lands in the window, and the sweep confirms it end to end: at 2
+       frames the exit stays clean across all 64 timing offsets tested, while
+       3 frames survives only 27 of them and 4 frames just 1. Below 2 frames
+       the BIOS's own boot navigation (Down, Action, Right, Action) never
+       registers and never reaches an app at all.
+
+       Raising this is therefore not a free safety margin - it is what broke
+       the exit. See also tools/pk_exit_test.c, which covers the app-side half
+       of the same hazard. */
+#define BUTTON_MIN_PRESS_FRAMES 2
+    int frames_pressed[sizeof(button_scancodes) / sizeof(button_scancodes[0])] = {0};
 
     /* Reflect the settings just loaded from settings.cfg before the menu is
        ever opened. Afterwards each command keeps it in step; see
@@ -2628,13 +2662,19 @@ int main(int argc, char **argv) {
         size_t bi;
         for (bi = 0; bi < sizeof(button_scancodes) / sizeof(button_scancodes[0]); bi++) {
             int held = keys[button_scancodes[bi].scancode] != 0;
-            if (held) {
-                latch_frames_remaining[bi] = BUTTON_LATCH_FRAMES;
-            } else if (latch_frames_remaining[bi] > 0) {
-                latch_frames_remaining[bi]--;
-            }
-            if (held || latch_frames_remaining[bi] > 0) {
+            /* A press that has not yet reached the minimum keeps reading as
+               pressed. frames_pressed[bi] stays 0 until a real key-down is
+               seen, so a key that was never down is never synthesized, and it
+               saturates at the minimum, so a long hold adds nothing on
+               release. */
+            int pressed = held || (frames_pressed[bi] > 0 && frames_pressed[bi] < BUTTON_MIN_PRESS_FRAMES);
+            if (pressed) {
+                if (frames_pressed[bi] < BUTTON_MIN_PRESS_FRAMES) {
+                    frames_pressed[bi]++;
+                }
                 buttons |= button_scancodes[bi].bit;
+            } else {
+                frames_pressed[bi] = 0;
             }
         }
         psemu_set_buttons(ps, buttons);

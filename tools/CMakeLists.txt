@@ -36,6 +36,10 @@ add_executable(datetime_probe datetime_probe.c)
 target_include_directories(datetime_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(datetime_probe PRIVATE psemu_trace)
 
+add_executable(button_timing_probe button_timing_probe.c)
+target_include_directories(button_timing_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(button_timing_probe PRIVATE psemu)
+
 add_executable(pk_exit_test pk_exit_test.c)
 target_include_directories(pk_exit_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(pk_exit_test PRIVATE psemu)

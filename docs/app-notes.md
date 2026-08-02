@@ -60,6 +60,23 @@ This mirrors a real PS1 convention: a save bundling a PocketStation app replaces
 
 Real button taps are brief, approximately 40ms. A deliberate, clean press-and-release reads more reliably than mashing the button. The real BIOS's input handling sometimes needs more than one clean attempt to register a press; this is not a sign the sequence is wrong.
 
+### Leaving an app: the browse screen relaunches whatever is still held
+
+**An app that hands control back to the BIOS while `Action` is still asserted is relaunched immediately.** The browse screen acts on the *release* edge, and the app it is already sitting on is the one it launches, so a press that outlives the app's departure reads as a fresh press on that same app. From the user's side this looks like the app rebooting instead of exiting.
+
+This was originally reported on real hardware, and `pk_timing_bench` works around it in its own code by waiting for release before departing (see `tools/pk_exit_test.c`). It is now reproduced end-to-end in this emulator against the real BIOS's own browse screen, by `tools/button_timing_probe.c`, driving a real commercial app's in-app exit screen.
+
+**Commercial apps do not necessarily wait for release**, and one measured here does not. `tools/button_timing_probe.c` measures both ends of the window this leaves, in emulated real time:
+
+- The browse screen **ignores an Action press shorter than about 35ms.** This sits right next to the ~40ms real tap described above, so it is the real BIOS behaving normally rather than an emulation timing error.
+- That app's exit screen **departs about 62-94ms after the confirming press**, varying with where the press lands in the app's own tick.
+
+So a press has to outlast ~35ms and be over inside ~62ms. That window is about 27ms wide, and a real ~40ms hardware tap sits in the middle of it - which is exactly why this works on hardware and why holding the button deliberately does not.
+
+**A frontend that samples buttons once per rendered frame can only express whole 31.25ms steps**, so its available press durations are 31ms, 62ms, 94ms and up. Only one of those lands in the window. This is why the desktop frontend's `BUTTON_MIN_PRESS_FRAMES` is 2 and why raising it is not a free safety margin: at 2 frames the exit is clean across every timing offset tested, at 3 it survives well under half of them, and at 4 it essentially always relaunches.
+
+If you are writing an app, wait for `Action` to be released before departing. The window where this matters is small, but nothing about the BIOS side of it is under your control.
+
 ## How an app reaches the PS1 save on the same card
 
 **Many PocketStation apps are useless on their own: they exist to exchange data with the console game's own PS1 save, sitting in a different block of the same memory card.** Yu-Gi-Oh Forbidden Memories is one. This section documents the mechanism, reverse-engineered from that app's Japanese release (`testdata/YGO_jap.mcr`, gitignored); the English release uses byte-identical code at the same offsets.

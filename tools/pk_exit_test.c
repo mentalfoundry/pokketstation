@@ -4,9 +4,11 @@
 
    This exists because the bug it targets - departing while Action is still down, which made the real BIOS's
    browse screen read that as a fresh press and relaunch the app at once - was reported only on real hardware.
-   The fix could not be verified against that report directly (this emulator has no BIOS browse-screen model to
-   watch relaunch on), but the mechanism it depends on - button STATUS surviving an acknowledge, so a genuinely
-   held button keeps reading as held - is now real emulator behavior (see core/src/intc.h's INT_LEVEL_MASK).
+   That report has since been reproduced end-to-end in this emulator, against the real BIOS's own browse
+   screen: see tools/button_timing_probe.c, where an app that departs with Action still asserted is relaunched by
+   the browse screen on the release edge, exactly as described. The mechanism this test depends on - button
+   STATUS surviving an acknowledge, so a genuinely held button keeps reading as held - is real emulator
+   behavior (see core/src/intc.h's INT_LEVEL_MASK).
    This confirms that mechanism actually stops departure at the point that matters: while the button is still
    asserted, the CPU stays inside the small wait loop rather than reaching the departure SVC chain.
 
