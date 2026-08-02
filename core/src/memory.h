@@ -117,6 +117,10 @@ extern int psemu_clk_trace_enabled;
    hot path - see memory.c. */
 #ifdef PSEMU_TRACE_HOOKS
 extern void (*psemu_bus_read_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc);
+/* The write-side counterpart. Reports attempted writes, including ones a
+   region then drops, which a snapshot diff cannot distinguish from no write
+   at all - see memory.c. */
+extern void (*psemu_bus_write_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc);
 #endif
 
 #endif

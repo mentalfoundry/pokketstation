@@ -45,7 +45,21 @@ int psemu_ir_trace_enabled = 0;
    tools/ir_probe.c's own byte-for-byte buffer comparison caught this directly: specific bytes decoded
    wrong, and the raw Timer2-tick deltas at those positions did not match any single-pulse duration, only
    sums of two or three consecutive ones. 200 keeps sync inside its acceptance window with room to spare
-   (4268 against a 4200-5400 window) while keeping over 3x debounce margin on the shortest gap. */
+   (4268 against a 4200-5400 window) while keeping over 3x debounce margin on the shortest gap.
+
+   The stretch is additionally capped at the pulse's own ON duration (see enqueue_tx_edge). Everything above
+   was tuned against one app whose pulses are wide envelopes, where 200 cycles is a small additive
+   correction. It is not one for every app. Yu-Gi-Oh Forbidden Memories transmits ~7-cycle (6.6us) pulses
+   spaced 205 or 406 cycles apart, and encodes each bit in the gap length rather than in the pulse. Applying
+   a flat 200 there inverted the waveform outright: measured over a real transfer, 7-cycle ON / 205-cycle OFF
+   arrived as 207-cycle ON / 5-cycle OFF, and 272 gaps collapsed to exactly 0 cycles - the falling edge
+   landing on the next rising edge, merging two pulses into one continuous ON. Only the reordering guard
+   below kept that from going backwards outright, and a zero-length gap is already unrecoverable.
+   Capping at the ON duration keeps this a turn-off tail rather than fabricated signal. A tail longer than
+   the pulse that caused it is not a tail, and a receiver's AGC settles faster after less delivered energy,
+   so a short pulse earns a proportionally short stretch. The cap is inert for the app the constant was
+   tuned against, whose sync pulse is ~4068 cycles wide: min(200, 4068) is still 200, and its measured
+   4268-against-4200-5400 sync figure is unchanged. */
 #define IR_TX_FALL_STRETCH_CYCLES 200ull
 
 void ir_init(ir_t *ir) {
@@ -138,20 +152,43 @@ static const ir_edge_t *queue_peek(const ir_edge_queue_t *q) {
     return q->count ? &q->entries[q->head] : (void *)0;
 }
 
-/* Transmit is observable only under three conditions. IFMODE selects transmit, STDBY is clear, and the
-   carrier generator is enabled. BGEN uses inverted logic, so 0 enables it.
+/* Transmit is observable under two conditions. IFMODE selects transmit, and STDBY is clear.
    A write to IRDA_DATA outside those conditions still moves the register value, exactly like real hardware.
-   It produces no edge, because there is no carrier for it to modulate. */
+   It produces no edge, because the transmitter is not driving the LED at all.
+
+   BGEN is deliberately not part of this test, and that is a correction of an earlier model. BGEN selects
+   whether the hardware chops the LED's ON envelope into a 40kHz burst. It does not decide whether the LED
+   lights at all. This emulator relays only that ON/OFF envelope and explicitly does not model the
+   sub-carrier inside it (see ir.h's top comment), so BGEN has nothing left to gate here.
+
+   Two real, working apps settle this, and they disagree on BGEN while agreeing on everything else:
+     - Chocobo World transmits with IRDA_MODE=0x01: BGEN=0 (hardware carrier on), BFLT=0 (glitch filter on).
+       It sends wide envelope pulses and lets the hardware fill them with carrier.
+     - Yu-Gi-Oh Forbidden Memories transmits with IRDA_MODE=0x0D: BGEN=1 (hardware carrier off), BFLT=1
+       (glitch filter off). It drives the LED directly, in ~7-cycle (6.6us) pulses spaced 205 or 406 cycles
+       apart - pulse-distance modulation, where the gap carries the bit. Those pulses are far narrower than
+       IR_BFLT_DEBOUNCE_CYCLES, which is exactly why this app turns the glitch filter off in the same write.
+   Both transfer on real hardware. Gating emission on BGEN made the second app emit nothing at all: every
+   IRDA_DATA write was discarded, and tools/ir_probe.c reported "edges relayed: A->B 0" against a save state
+   sitting on its own transfer screen. */
 static int tx_emit_active(const ir_t *ir) {
-    return (ir->mode & IR_MODE_IFMODE) != 0u && (ir->mode & IR_MODE_STDBY) == 0u &&
-           (ir->mode & IR_MODE_BGEN) == 0u;
+    return (ir->mode & IR_MODE_IFMODE) != 0u && (ir->mode & IR_MODE_STDBY) == 0u;
 }
 
 static void enqueue_tx_edge(ir_t *ir, int level) {
-    /* See IR_TX_FALL_STRETCH_CYCLES above: only a falling edge (level 0, LED commanded off) is delayed. */
+    /* See IR_TX_FALL_STRETCH_CYCLES above: only a falling edge (level 0, LED commanded off) is delayed, and
+       never by more than the pulse's own ON duration. */
     uint64_t timestamp = ir->clock_cycles;
     if (level == 0) {
-        timestamp += IR_TX_FALL_STRETCH_CYCLES;
+        /* A falling edge always follows a rising one (handle_data_write only enqueues on a real change, and
+           handle_mode_write only forces 0 while tx_led_state is 1), and a rising edge is never stretched.
+           tx_last_edge_cycles therefore still holds this pulse's true rise time, so the ON duration is
+           available here without keeping a second timestamp. Deliberately so: ir_t is part of the raw
+           psemu_t struct dump a save state is made of, and an extra field there invalidates every existing
+           save. See QUICKSAVE_VERSION in frontends/desktop/main.c. */
+        uint64_t on_duration = ir->clock_cycles - ir->tx_last_edge_cycles;
+        uint64_t stretch = on_duration < IR_TX_FALL_STRETCH_CYCLES ? on_duration : IR_TX_FALL_STRETCH_CYCLES;
+        timestamp += stretch;
     }
     /* Guards against a stretched falling edge landing after the pulse that follows it. A real gap this
        short should not happen at the tuned constant above, but this makes that a compressed edge instead

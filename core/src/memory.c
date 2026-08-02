@@ -37,6 +37,29 @@ int psemu_clk_trace_enabled = 0;
    PSEMU_TRACE_HOOKS (see core/CMakeLists.txt); frontends link plain
    psemu and pay nothing. */
 void (*psemu_bus_read_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc) = NULL;
+
+/* The write-side counterpart, and it answers a question a snapshot diff
+   structurally cannot: whether a write was *attempted*. A diff sees only
+   the net change, so it reports nothing both when an app never writes and
+   when an app writes a value identical to what was already there - and
+   nothing at all when some layer between the app and storage silently
+   discards the write. Those three have very different causes and the same
+   evidence without this hook.
+
+   That distinction is not hypothetical here. The IR transmit path had
+   exactly this shape: an app bit-banged IRDA_DATA thousands of times while
+   a mode-bit test upstream discarded every one, so the app looked idle
+   when it was in fact working correctly (see ir.c's tx_emit_active).
+   tools/ir_probe.c uses this hook to tell the same three cases apart for
+   flash writes when investigating whether an app commits data to the PS1
+   save sharing its memory card.
+
+   Reports the value the write carried, before any region-specific handling
+   reinterprets or drops it. Same compile-out rules as the read hook: only
+   the psemu_trace target defines PSEMU_TRACE_HOOKS. This one sits on the
+   write path rather than the opcode-fetch path, so it is far cheaper than
+   the read hook, but it is gated identically for consistency. */
+void (*psemu_bus_write_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc) = NULL;
 #endif
 
 void psemu_bus_init(
@@ -203,6 +226,14 @@ static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
 
 /* Raw, uncosted 8-bit write - see bus_read8_raw. */
 static void bus_write8_raw(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
+#ifdef PSEMU_TRACE_HOOKS
+    /* Before any region dispatch below, so a write that a region then drops
+       is still reported as attempted. That is the whole point of the hook;
+       see psemu_bus_write_trace_cb. */
+    if (psemu_bus_write_trace_cb) {
+        psemu_bus_write_trace_cb(addr, value, psemu_debug_current_pc);
+    }
+#endif
     if (addr < PSEMU_RAM_SIZE) {
         /* One compare, on the RAM-write path only. Unlike the read hook
            above, this is not on the opcode-fetch path. See ram_lock_addr

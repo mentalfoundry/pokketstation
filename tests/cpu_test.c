@@ -1623,6 +1623,48 @@ static void test_flash_header_write_via_unlock_sequence(void) {
     printf("test_flash_header_write_via_unlock_sequence OK\n");
 }
 
+/* The path a PocketStation app uses to write the console game's PS1 save on the same card.
+
+   An app can read that save directly - FLASH2 is the whole card, memory-mapped and unwindowed - but it
+   cannot write it that way. Writes go through kernel SWI 0x10, one 128-byte frame at a time. Reverse
+   engineered from the J110 BIOS handler at 0x0400126C, which: sets F_WAIT2 (FLASH_CTRL+0x10) to 0x21, runs
+   the three-step unlock above, copies 0x40 halfwords to FLASH2 + frame*128, waits for F_WAIT2 bit 2 to read
+   back set, and then *verifies* by comparing 32 words and returning 0 for success or 1 for mismatch. Yu-Gi-Oh
+   Forbidden Memories drives it from 0x020028FA, deriving the frame number as (save_pointer >> 7) and
+   retrying up to 10 times per frame.
+
+   Every step of that has to work or the write fails silently: a retry loop that never succeeds simply gives
+   up, exactly like the mode-bit test that used to discard IR transmissions. This replays the sequence
+   directly rather than through the BIOS, so it needs no BIOS or app image and runs in CI. The readback
+   assertion is the same comparison the real handler makes to decide success. */
+static void test_flash_frame_write_lands_in_a_ps1_save_block(void) {
+    psemu_t *ps = make_arm_cpu();
+    /* Block 1 + 0x200: where a PS1 save's data starts, past its title/icon header. Frame 68 of the card. */
+    const uint32_t frame = (0x2000u + 0x200u) / 128u;
+    const uint32_t dest = PSEMU_FLASH2_BASE + frame * 128u;
+    int i;
+
+    /* Bit 2 of F_WAIT2 must read back set, or the BIOS's completion poll never exits. */
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x10, 0x21u);
+    assert((psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x10) & 0x04u) != 0u);
+
+    flash_perform_unlock_sequence(ps);
+    for (i = 0; i < 64; i++) {
+        psemu_bus_write16(&ps->bus, dest + (uint32_t)i * 2u, (uint16_t)(0xC0DEu + i));
+    }
+
+    /* The handler's own success test: read the frame back and compare. */
+    for (i = 0; i < 64; i++) {
+        assert(psemu_bus_read16(&ps->bus, dest + (uint32_t)i * 2u) == (uint16_t)(0xC0DEu + i));
+    }
+    /* The unlock must not have redirected save data into F_SN/F_CAL: those cover FLASH2 offsets 0/2/8, and
+       a frame this far into the card has to be stored as ordinary data instead. */
+    assert(psemu_get_hardware_id(ps) == PSEMU_DEFAULT_HARDWARE_ID);
+
+    psemu_destroy(ps);
+    printf("test_flash_frame_write_lands_in_a_ps1_save_block OK\n");
+}
+
 static void test_flash_header_write_requires_unlock_first(void) {
     /* The core safety property motivating the gated (not unconditional)
        design: physical offset 0/2/8 is ALSO ordinary card-data storage
@@ -2139,6 +2181,7 @@ int main(void) {
     test_psemu_load_content_dispatches_by_size();
     test_flash_key_addresses_are_not_data_storage();
     test_flash_header_write_via_unlock_sequence();
+    test_flash_frame_write_lands_in_a_ps1_save_block();
     test_flash_header_write_requires_unlock_first();
     test_flash_header_write_disarms_after_unrelated_write();
     test_flash_header_write_requires_correct_key_order();

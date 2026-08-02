@@ -41,17 +41,12 @@ static void test_tx_write_with_carrier_enabled_enqueues_edges(void) {
     printf("test_tx_write_with_carrier_enabled_enqueues_edges OK\n");
 }
 
-static void test_tx_write_without_carrier_produces_no_edge(void) {
+static void test_tx_write_while_not_driving_produces_no_edge(void) {
     psemu_t *ps = make_ps();
     ir_edge_t edge;
 
     /* Standby set: no emission even though IFMODE=transmit. */
     psemu_bus_write32(&ps->bus, IRDA_MODE, IR_MODE_IFMODE | IR_MODE_STDBY);
-    psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED);
-    assert(ir_pop_tx_edge(&ps->ir, &edge) == 0);
-
-    /* Carrier generator disabled (BGEN=1): no emission either. */
-    psemu_bus_write32(&ps->bus, IRDA_MODE, IR_MODE_IFMODE | IR_MODE_BGEN);
     psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED);
     assert(ir_pop_tx_edge(&ps->ir, &edge) == 0);
 
@@ -61,7 +56,31 @@ static void test_tx_write_without_carrier_produces_no_edge(void) {
     assert(ir_pop_tx_edge(&ps->ir, &edge) == 0);
 
     psemu_destroy(ps);
-    printf("test_tx_write_without_carrier_produces_no_edge OK\n");
+    printf("test_tx_write_while_not_driving_produces_no_edge OK\n");
+}
+
+/* BGEN does not gate emission, and this test used to assert the opposite.
+   BGEN selects whether the hardware chops the LED's ON envelope into a 40kHz burst. It does not decide
+   whether the LED lights. This emulator relays only that envelope and does not model the sub-carrier inside
+   it (see ir.h), so there is nothing for BGEN to gate.
+   Two real apps settle it. Chocobo World transmits with BGEN=0 and Yu-Gi-Oh Forbidden Memories transmits
+   with BGEN=1, and both complete a transfer on real hardware. While BGEN suppressed emission here, the
+   second app produced not one edge from a save state parked on its own transfer screen. */
+static void test_tx_emits_with_carrier_generator_disabled(void) {
+    psemu_t *ps = make_ps();
+    ir_edge_t edge;
+
+    psemu_bus_write32(&ps->bus, IRDA_MODE, IR_MODE_IFMODE | IR_MODE_BGEN | IR_MODE_BFLT);
+    psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED);
+    assert(ir_pop_tx_edge(&ps->ir, &edge) == 1);
+    assert(edge.level == 1);
+
+    psemu_bus_write32(&ps->bus, IRDA_DATA, 0);
+    assert(ir_pop_tx_edge(&ps->ir, &edge) == 1);
+    assert(edge.level == 0);
+
+    psemu_destroy(ps);
+    printf("test_tx_emits_with_carrier_generator_disabled OK\n");
 }
 
 static void test_leaving_tx_active_forces_led_off_edge(void) {
@@ -235,10 +254,18 @@ static void test_tx_falling_edge_lands_later_than_rising(void) {
     assert(edge.level == 1);
     assert(edge.timestamp_cycles == write_time); /* rising edges are never stretched */
 
-    psemu_bus_write32(&ps->bus, IRDA_DATA, 0); /* LED off: a falling edge, at the same clock_cycles */
+    /* The pulse needs a real ON duration for there to be anything to stretch, because the stretch is capped
+       at that duration (see enqueue_tx_edge). This test drives the bus directly, so no CPU steps and the IR
+       clock would otherwise never move between the two writes, making the pulse zero-width. Nothing on the
+       real path does that: psemu_run calls ir_tick once per instruction, and the narrowest real pulse this
+       project has measured (Yu-Gi-Oh Forbidden Memories) is still 7 cycles wide. */
+    ir_tick(&ps->ir, &ps->intc, 32u);
+
+    psemu_bus_write32(&ps->bus, IRDA_DATA, 0); /* LED off: a falling edge */
     assert(ir_pop_tx_edge(&ps->ir, &edge) == 1);
     assert(edge.level == 0);
-    assert(edge.timestamp_cycles > write_time); /* falling edges land later than when they were written */
+    /* Later than the moment it was written, which is now write_time + 32. */
+    assert(edge.timestamp_cycles > write_time + 32u);
 
     psemu_destroy(ps);
     printf("test_tx_falling_edge_lands_later_than_rising OK\n");
@@ -267,6 +294,46 @@ static void test_tx_short_pulse_keeps_edges_in_order(void) {
 
     psemu_destroy(ps);
     printf("test_tx_short_pulse_keeps_edges_in_order OK\n");
+}
+
+static void test_tx_narrow_pulse_stretch_never_eats_the_following_gap(void) {
+    /* The stretch is capped at the pulse's own ON duration (enqueue_tx_edge in ir.c). Without that cap a
+       flat IR_TX_FALL_STRETCH_CYCLES is applied to pulses far narrower than itself, which does not lengthen
+       a pulse so much as move it on top of the next one.
+       Yu-Gi-Oh Forbidden Memories is the real case: ~7-cycle pulses spaced 205 or 406 cycles apart, with the
+       bit carried in the gap rather than the pulse. Measured over a real transfer, the flat stretch turned
+       7-on/205-off into 207-on/5-off and collapsed 272 gaps to exactly 0 cycles - merging pulse pairs, and
+       with them the bits the gaps encoded.
+       This drives that shape directly: a pulse much shorter than the stretch, followed by a gap much longer
+       than it. The gap must still be a gap, and must still dominate the pulse. */
+    psemu_t *ps = make_ps();
+    ir_edge_t rise, fall, next_rise;
+    const uint32_t on_cycles = 7u;   /* the real app's measured pulse width */
+    const uint32_t off_cycles = 205u; /* and its measured short gap */
+
+    psemu_bus_write32(&ps->bus, IRDA_MODE, TX_ACTIVE_MODE);
+    psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED); /* rising */
+    ir_tick(&ps->ir, &ps->intc, on_cycles);
+    psemu_bus_write32(&ps->bus, IRDA_DATA, 0); /* falling, stretch capped at on_cycles */
+    ir_tick(&ps->ir, &ps->intc, off_cycles);
+    psemu_bus_write32(&ps->bus, IRDA_DATA, IR_DATA_LED); /* the next pulse's rising edge */
+
+    assert(ir_pop_tx_edge(&ps->ir, &rise) == 1 && rise.level == 1);
+    assert(ir_pop_tx_edge(&ps->ir, &fall) == 1 && fall.level == 0);
+    assert(ir_pop_tx_edge(&ps->ir, &next_rise) == 1 && next_rise.level == 1);
+
+    {
+        uint64_t on_width = fall.timestamp_cycles - rise.timestamp_cycles;
+        uint64_t gap = next_rise.timestamp_cycles - fall.timestamp_cycles;
+        /* Stretched, but by no more than the pulse itself: never beyond double its true width. */
+        assert(on_width >= on_cycles && on_width <= 2u * on_cycles);
+        /* The gap keeps almost all of its real duration, and stays far wider than the pulse. */
+        assert(gap >= off_cycles - on_cycles);
+        assert(gap > on_width);
+    }
+
+    psemu_destroy(ps);
+    printf("test_tx_narrow_pulse_stretch_never_eats_the_following_gap OK\n");
 }
 
 static void test_rx_queue_holds_a_full_message_without_dropping(void) {
@@ -301,7 +368,8 @@ static void test_rx_queue_holds_a_full_message_without_dropping(void) {
 
 int main(void) {
     test_tx_write_with_carrier_enabled_enqueues_edges();
-    test_tx_write_without_carrier_produces_no_edge();
+    test_tx_write_while_not_driving_produces_no_edge();
+    test_tx_emits_with_carrier_generator_disabled();
     test_leaving_tx_active_forces_led_off_edge();
     test_loopback_edge_asserts_irda();
     test_rx_ignored_while_not_listening();
@@ -312,6 +380,7 @@ int main(void) {
     test_irda_misc_is_a_reserved_stub();
     test_tx_falling_edge_lands_later_than_rising();
     test_tx_short_pulse_keeps_edges_in_order();
+    test_tx_narrow_pulse_stretch_never_eats_the_following_gap();
     test_rx_queue_holds_a_full_message_without_dropping();
     printf("All IR tests passed.\n");
     return 0;

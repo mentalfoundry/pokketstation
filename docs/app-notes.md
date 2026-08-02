@@ -60,6 +60,67 @@ This mirrors a real PS1 convention: a save bundling a PocketStation app replaces
 
 Real button taps are brief, approximately 40ms. A deliberate, clean press-and-release reads more reliably than mashing the button. The real BIOS's input handling sometimes needs more than one clean attempt to register a press; this is not a sign the sequence is wrong.
 
+## How an app reaches the PS1 save on the same card
+
+**Many PocketStation apps are useless on their own: they exist to exchange data with the console game's own PS1 save, sitting in a different block of the same memory card.** Yu-Gi-Oh Forbidden Memories is one. This section documents the mechanism, reverse-engineered from that app's Japanese release (`testdata/YGO_jap.mcr`, gitignored); the English release uses byte-identical code at the same offsets.
+
+The mechanism rests entirely on the **`FLASH1`/`FLASH2` split** already described under "App-selection and dispatch":
+
+- **`FLASH1` (`0x02000000`) is a banked window holding only the app's own blocks.** The kernel builds `F_BANK_FLG` from the app's directory chain, so an app cannot see anything outside itself here. Body offset 0 is `0x02000000`.
+- **`FLASH2` (`0x08000000`) is the whole physical card, unwindowed.** Every block is visible, including the card's own directory and every other file's data.
+
+`FLASH2` is the only route between the two files, and apps use it directly. There is no BIOS SWI for "find the game's save"; the app walks the card's directory itself, exactly the way the kernel does when dispatching an app.
+
+In Yu-Gi-Oh's app the routine is at `0x0200225E`-`0x020022A6` (Thumb), and it works like this:
+
+1. Write a `0x55555555` "not found" sentinel to RAM `0x6A4` and `0x6A8`.
+2. Walk directory frames 1 through 15, at `FLASH2 + 0x80*n` - the same 128-byte frames a PS1 memory card already uses.
+3. Skip any frame whose allocation state (offset `0x00`) is not `0x51`, that is, anything that is not the first block of a file.
+4. Compare the frame's **filename field at offset `0x0A`**, a halfword at a time, against a null-terminated ASCII key compiled into the app. In this app the key sits at `0x02002354` and reads `"BASLUS-01411-YUGIOH"` - the exact filename of the game's PS1 save in the card directory.
+5. On a match, compute the save's data address as **`0x08000200 + block_index * 0x2000`**. The `0x200` skips the PS1 save's own title/icon header (a `"SC"` title frame plus up to three 128-byte icon frames), landing on the game's real save data.
+6. Store that pointer at RAM `0x69C`, and cache the word at save data `+0x334` into RAM `0x6A0`.
+
+Two details are worth calling out for anyone writing an app:
+
+- **The key is the *filename*, not the product code.** Offset `0x0A` is the start of the directory frame's filename field, which is why this lines up with the `'P'`-at-offset-`0x10` rule above: `0x0A + 6 = 0x10`, so that rule is "byte 6 of the filename field" in both descriptions.
+- **The pairing is hardcoded, and region pairing can be surprising.** The Japanese-titled app (`BISLPMP86398-YUGIOH` in the directory) searches for the *US* save `BASLUS-01411-YUGIOH`, and both the Japanese and English cards in `testdata/` carry that same US save. An app looking for a save that is not on the card simply finds nothing and keeps its sentinel.
+
+### The write side: reads are memory-mapped, writes go through the kernel
+
+**An app can read the PS1 save directly through `FLASH2`, but it cannot write it that way.** Writes go through **kernel SWI `0x10`, one 128-byte frame at a time**. This asymmetry is the single most important fact in this section, and it is why the read path above is a handful of `ldr`s while the write path is a syscall with a retry loop.
+
+Yu-Gi-Oh's write routine is at `0x020028FA`:
+
+1. Call a gate at `0x02000C84` and bail out entirely if it returns carry set.
+2. Load the resolved save pointer from RAM `0x69C` and convert it to a **frame number** with `(pointer >> 7)` - 128-byte frames - then add the caller's starting frame offset.
+3. Per frame: up to **10 attempts** at `SWI 0x10` with the frame number in `r0` and a 128-byte source buffer in `r1`, retrying while it returns nonzero.
+4. On success, advance one frame and 128 source bytes, and repeat for the caller's frame count.
+
+The J110 kernel handler is at `0x0400126C`, and every step of it has to work or the write fails silently:
+
+1. `F_WAIT2` (`FLASH_CTRL+0x10`) `= 0x21`, enabling flash writes.
+2. The three-step unlock at `0x04001228`: `F_KEY2`(`FLASH2+0x55AA`)`=0xFFAA`, `F_KEY1`(`FLASH2+0x2A54`)`=0xFF55`, `F_KEY2`=`0xFFA0`. These are the same key offsets and order `core/src/flash.c` already models in `unlock_step`.
+3. Copy `0x40` halfwords (128 bytes) to **`FLASH2 + frame*128`**.
+4. The teardown at `0x04001250`: a fixed delay, then poll `F_WAIT2` until **bit 2 reads back set**, then clear `F_WAIT2`. This is exactly the busy-wait `flash.h` documents having fixed; an unmapped read returning 0 would spin here forever.
+5. **Verify**: compare 32 words of destination against source, returning `0` for success and `1` for mismatch - which is what drives the app's retry loop.
+
+This whole path is modelled correctly, and `test_flash_frame_write_lands_in_a_ps1_save_block` (in `tests/cpu_test.c`) replays the sequence directly - no BIOS or app image needed, so it runs in CI - and asserts the frame lands where the handler's own verify would look for it.
+
+### Nothing commits to flash during an IR transfer
+
+**No app this project can drive attempts a single flash write during an IR transfer** - not Yu-Gi-Oh, and not Chocobo World even on a fully verified bidirectional exchange. This is measured at the level of *attempted* writes, not inferred from a diff, which matters: a diff reports nothing whether the app never wrote, wrote a value identical to what was stored, or had its write discarded by some layer in between. `tools/ir_probe.c`'s `flashwatch` mode uses `psemu_bus_write_trace_cb` (`core/src/memory.c`) to separate those cases, and reports zero attempts to both FLASH1 and FLASH2.
+
+Two false leads are worth recording so they are not followed again:
+
+- **Diffing the loaded file against flash is not a write check.** `psemu_load_mcs` synthesizes a 16-frame directory and relocates the save's data to block 1, and `psemu_load_state` then overwrites flash again. Both happen before the first instruction. A file-vs-flash diff reported thousands of "written" bytes across every block for a `.mcs`-loaded app that had in fact written nothing. The baseline has to be flash as it stood once the run was set up.
+- **The only FLASH_CTRL traffic during a transfer is not a flash write.** Both apps generate writes to `F_WAIT1` (`+0x0C`) and `F_WAIT2` (`+0x10`) from BIOS `0x040017C6`/`0x040017C8`. That routine (entry `0x040017B6`, distinct from `FlashReadSerial` at `0x040017A5`) sets flash waitstates and then programs `CLK_MODE` and polls for the change to take effect: it is the **clock-speed change routine**, and it fires because both apps switch CLK_MODE for the duration of a transfer (measured: 507904Hz to 1998848Hz). `F_WAIT2` is also what a real flash-write routine polls, so this region is worth watching - but these particular writes are not a commit.
+
+So the received data reaches RAM and the screen, and the commit is gated on something none of these scenarios reach. Button scripts covering repeated confirmation presses, long `Action` holds, directional navigation, and 2500 frames (~78s emulated) of idle runtime all produced zero write attempts.
+
+**The two apps are not equivalent here, and the difference is the point.** Chocobo World's transfers move its own app state, which lives in its own blocks. Yu-Gi-Oh is the case that genuinely writes the console game's PS1 save, adding traded cards to it - so it is the app to drive when testing this path, and `SWI 0x10` reaching `FLASH2` block 1 is the signal to watch for.
+
+What is not yet located is the in-app trigger: which screen or confirmation makes `0x020028FA`'s gate at `0x02000C84` return carry clear and let the write proceed. That is a question about reaching the right app state, not about the emulator - the kernel path underneath it is modelled and tested. `tools/ir_probe.c`'s `flashwatch` mode reports `SWI 0x10` traffic the moment any scenario does reach it.
+
 ## Browse-screen icon/graphic
 
 **This entire section was reverse-engineered by directly tracing a real BIOS's execution against a real app, and validated by user testing.** It was not derived by decoding header fields and guessing at a format. Ground truth comes only from single-stepping the real BIOS and watching which memory it touched.

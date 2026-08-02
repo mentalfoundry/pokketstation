@@ -10,9 +10,12 @@ add_executable(date_screen_probe date_screen_probe.c)
 target_include_directories(date_screen_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(date_screen_probe PRIVATE psemu)
 
+# Links psemu_trace for the bus write-trace hook, which its "flashwatch" mode
+# uses to tell an attempted flash write from one that never happened (see
+# psemu_bus_write_trace_cb in core/src/memory.c).
 add_executable(ir_probe ir_probe.c)
 target_include_directories(ir_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
-target_link_libraries(ir_probe PRIVATE psemu)
+target_link_libraries(ir_probe PRIVATE psemu_trace)
 
 add_executable(bench_probe bench_probe.c)
 target_include_directories(bench_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)

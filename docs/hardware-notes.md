@@ -266,10 +266,39 @@ A register reference cannot answer that gap. Only measurement on real hardware c
 
 This emulator models IR as an **asynchronous edge relay between two independently-clocked instances**, not a lockstep timing simulation. This matches the real hardware directly: two separate PocketStations, two separate oscillators, linked only by an optical signal, with no shared clock. `core/src/ir.c`/`ir.h` implement the state machine:
 
-- Writes to `IRDA_DATA`'s LED bit, while actually in an emitting state (`IFMODE`=transmit, `STDBY`=active, `BGEN`=carrier enabled), enqueue a timestamped edge (level + this `ir_t`'s own local monotonic clock) onto a TX queue. Leaving the emitting state (standby, receive, or carrier disabled) forces one final "LED off" edge, so the LED can never appear stuck on to whatever is downstream.
+- Writes to `IRDA_DATA`'s LED bit, while actually in an emitting state (`IFMODE`=transmit, `STDBY`=active), enqueue a timestamped edge (level + this `ir_t`'s own local monotonic clock) onto a TX queue. Leaving the emitting state (standby or receive) forces one final "LED off" edge, so the LED can never appear stuck on to whatever is downstream. **`BGEN` is deliberately not part of that test** - see "Two transmit styles" below.
 - `ir_tick` (called once per CPU step from `psemu_run`, alongside `timer_tick`/`rtc_tick`/`dac_tick`) advances that local clock and resolves any RX-queue edges now due, applying a `BFLT` glitch-filter debounce and calling `intc_set_line(intc, INT_IRDA, 1)` on a qualifying edge while actively receiving (`IFMODE`=receive, `STDBY`=active) - dropped otherwise, the same way a real half-duplex transceiver simply doesn't see a pulse while transmitting.
 - `psemu_ir_pop_tx_edge`/`psemu_ir_push_rx_edge`/`psemu_ir_get_clock_us` (`psemu.h`) expose this as a pull/push edge queue, the same shape `psemu_get_audio_samples` already uses to let a frontend drive real I/O without core knowing about that I/O's transport. Core has no networking code and never will; timestamps only cross this API boundary in real microseconds (converted from the internal cycle-unit clock), everywhere else core stays in the same reference-rate cycle units every other peripheral already ticks in.
-- **A falling edge (LED digitally commanded off) is delayed by a fixed amount before it is enqueued.** This is a deliberate, documented concession, not a modeled physical effect: see `IR_TX_FALL_STRETCH_CYCLES` in `ir.c` for the full reasoning, and the "Unresolved" bullet below for the real-hardware testing behind it. A guard (`ir_t::tx_last_edge_cycles`) clamps this so a stretched falling edge can never land after the rising edge that follows it, keeping the TX queue's timestamps monotonic even for a pulse shorter than the stretch itself.
+- **A falling edge (LED digitally commanded off) is delayed by a fixed amount before it is enqueued, capped at the pulse's own ON duration.** This is a deliberate, documented concession, not a modeled physical effect: see `IR_TX_FALL_STRETCH_CYCLES` in `ir.c` for the full reasoning, and the "Unresolved" bullet below for the real-hardware testing behind it. A guard (`ir_t::tx_last_edge_cycles`) clamps this so a stretched falling edge can never land after the rising edge that follows it, keeping the TX queue's timestamps monotonic even for a pulse shorter than the stretch itself. **The cap matters as much as the guard**: the constant was tuned against one app whose pulses are wide envelopes, where 200 cycles is a small additive correction. Applied flat to Yu-Gi-Oh Forbidden Memories' ~7-cycle pulses it inverted the waveform outright - a measured 7-on/205-off arrived as 207-on/5-off, with 272 gaps collapsing to exactly 0 cycles, merging pulse pairs and the bits their gaps encoded. The guard alone only kept that from going *backwards*; a zero-length gap is already unrecoverable.
+
+### Two transmit styles: `BGEN` does not gate emission
+
+**Real apps do not agree on `BGEN`, and both work on real hardware.** This was found by disassembling Yu-Gi-Oh Forbidden Memories' PocketStation app after it transmitted nothing at all in this emulator, with the IR diagnostics showing no traffic whatsoever.
+
+| | Chocobo World | Yu-Gi-Oh Forbidden Memories |
+|---|---|---|
+| `IRDA_MODE` while transmitting | `0x01` | `0x0D` |
+| `BGEN` (bit 2) | 0 - hardware 40kHz carrier **on** | 1 - hardware carrier **off** |
+| `BFLT` (bit 3) | 0 - glitch filter **on** | 1 - glitch filter **off** |
+| Pulse shape | wide envelopes, hardware fills them with carrier | ~7 reference cycles (6.6us), LED driven directly |
+| Encoding | pulse *width* (long is about twice short) | pulse *distance*: gaps of 205 or 406 cycles at a ~194us slot |
+
+The two rows at the bottom explain the two at the top. Yu-Gi-Oh's pulses are far narrower than `IR_BFLT_DEBOUNCE_CYCLES`, which is exactly why it turns the glitch filter off in the same register write that turns the carrier generator off. The app is not misconfiguring anything; it is using a different, self-clocked signalling style and switching off the two hardware helpers that would interfere with it.
+
+**`BGEN` therefore selects whether the hardware chops the LED's ON envelope into a 40kHz burst. It does not decide whether the LED lights.** This emulator relays only that ON/OFF envelope and explicitly does not model the sub-carrier inside it, so there is nothing left for `BGEN` to gate. `tx_emit_active` used to require `BGEN`=0, which made every one of Yu-Gi-Oh's `IRDA_DATA` writes a no-op: `tools/ir_probe.c` reported `edges relayed: A->B 0` against a save state parked on the app's own transfer screen, while the register trace showed the app bit-banging `IRDA_DATA` thousands of times.
+
+Note this is a case where the external register reference's wording ("0=Enable 40kHz carrier generator, 1=Disable") is correct as far as it goes, and still led to a wrong model. The reference describes what the bit does to the carrier. It says nothing about emission depending on it, and the emulator inferred a dependency that real apps disprove.
+
+**Two encodings, one link.** These two apps also settle a question about how to judge an IR transfer at all. `tools/ir_probe.c` now recovers the encoding from the relayed edges alone, with no knowledge of either app: it clusters both the gap between pulses and the width of the pulses, and reports whichever axis splits into two populations. Chocobo World comes back as pulse-width with symbols at 803/1408 reference cycles (760/1333us) on a constant 404-cycle gap; Yu-Gi-Oh as pulse-distance with 228/413-cycle gaps between fixed ~7-cycle pulses.
+
+Note that Chocobo World's two symbols are in a ratio of **1.75, not 2**. The external reference's "long is usually twice as long as short" is approximate, and a detector built on integer multiples of a unit reads Chocobo World's short symbol as half a unit, rounds it to one, and reports a single-symbol stream with nothing to decode. Clustering two populations and measuring their separation carries no such assumption and reads both apps correctly. Independent corroboration: Chocobo World's own state block records its nominal unit at `+0x20` as `1200`, against the 1207 measured externally from the edge stream.
+
+**Verified after the fix**, with `ir_probe` driving two instances from the app's own separately-armed sender and receiver save states:
+- 13060 edges relayed sender-to-receiver, and a 398-edge reply back.
+- Every one of the 6529 rise-to-rise gaps quantized exactly to 1 or 2 slot widths, with none ambiguous - the modulation survives the relay intact.
+- Decoding those gaps as pulse-distance (1 slot = 0, 2 slots = 1, matching the transmit ISR at `0x020018D8`) yields an 816-byte message: a `0x0000000A` header, a 199-entry table of `u32`s, and a trailer. The reply decodes to `FFFFFFFF` followed by five `0x0000007F` words.
+- The receiving instance's screen differs materially from a control run with a silent sender, rendering a received card sprite the control never shows.
+- Chocobo World still completes a full bidirectional exchange (`A->B VERIFIED, B->A VERIFIED`), so the change is not a trade of one app for the other.
 
 **Unconfirmed/inferred, flagged in `ir.h`'s own comments the same way as every other unconfirmed fact in this document:**
 
