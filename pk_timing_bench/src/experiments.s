@@ -761,6 +761,9 @@ run_experiment_12_rtc_rates:
     mov r0, #TIMER0_CTRL_DIV512
     str r0, [r4, #8]
 
+    mov r0, #RTC_TOGGLES_RUN_SETTLE    @ discarded: the first pulse after leaving
+    bl measure_rtc_toggles             @ program mode may be a partial one
+
     mov r0, #RTC_TOGGLES_RUN
     bl measure_rtc_toggles
     ldr r1, =WRAM_RTC_RUN_TICKS

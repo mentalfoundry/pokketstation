@@ -1171,6 +1171,10 @@ static void test_rtc_defaults_and_increment(void) {
        missing entirely before this fix (only the interrupt line toggled,
        the clock itself never moved on its own). */
     psemu_bus_write32(&ps->bus, PSEMU_RTC_BASE + 0x0, 0u); /* mode = running */
+    /* Two transitions, because a second is one full pulse and hardware makes two transitions per pulse
+       (see rtc.h). One transition alone must NOT move the clock. */
+    rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_RUN);
+    assert((psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) & 0xFFu) == 0x00u);
     rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_RUN);
     assert((psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) & 0xFFu) == 0x01u); /* seconds: 0 -> 1 */
 

@@ -242,7 +242,10 @@ void rtc_tick(rtc_t *rtc, struct intc *intc, uint32_t cycles) {
         rtc->tick_accumulator -= threshold;
         rtc->int_line = !rtc->int_line;
         intc_set_line(intc, INT_RTC, rtc->int_line);
-        if (!paused) {
+        /* One second per full pulse, not per transition: the documented rates are waveform rates, and
+           hardware makes two transitions per pulse (see rtc.h). Advancing on the falling edge picks exactly
+           one of the two, so the clock still moves once a second while the line runs at 2Hz. */
+        if (!paused && !rtc->int_line) {
             rtc_advance_second(rtc);
         }
     }

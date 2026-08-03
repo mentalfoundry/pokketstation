@@ -212,10 +212,19 @@
 @ real 16-bit wrap (see ../README.md), and stays inside it even if the true
 @ rate turns out to be 8x slower than documented.
 .equ RTC_TOGGLES_PAUSED,     256
-@ Running, a toggle is a whole second, which overflows Timer0's 16 bits at the
-@ /32 divisor. The run-mode half therefore slows Timer0 to /512 first, where a
-@ second is ~7808 ticks, and counts only 2 toggles to keep startup short.
-.equ RTC_TOGGLES_RUN,        2
+@ Running, a full pulse is a whole second, which overflows Timer0's 16 bits at
+@ the /32 divisor. The run-mode half therefore slows Timer0 to /512 first,
+@ where a second is ~7808 ticks.
+@
+@ 4 transitions is two full pulses, and one pulse is discarded before these are
+@ counted. The first version measured a single pulse with nothing discarded and
+@ came back about 11% off a 1Hz waveform on real hardware - a suspicious result
+@ from a one-pulse sample taken immediately after leaving program mode, where
+@ the RTC's own divider may still be resynchronising. Discarding one pulse and
+@ averaging two costs about two extra seconds of startup and makes the number
+@ trustworthy either way: if 11% survives this, it is real.
+.equ RTC_TOGGLES_RUN,        4
+.equ RTC_TOGGLES_RUN_SETTLE, 2
 .equ TIMER0_CTRL_DIV512,     0x6      @ divisor bits 2 (= /512) | enable
 
 @ The register under test. Bit 0 is believed to be a stop/standby request:

@@ -65,25 +65,34 @@ typedef struct rtc {
     int int_line;
 } rtc_t;
 
-/* Cycle count between interrupt-line toggles while running (mode bit0 clear), and so also between
-   one-second advances of the clock (see rtc_tick).
+/* Cycle count between interrupt-line TRANSITIONS. Two transitions make one full pulse, and the clock
+   advances one second per full pulse while running (see rtc_tick).
 
-   `cycles` reaches rtc_tick already converted to real elapsed time at the fixed PSEMU_ASSUMED_CPU_HZ
-   reference rate (see psemu_run), so a 1Hz clock means exactly one tick per PSEMU_ASSUMED_CPU_HZ cycles.
-   This is arithmetic, not a measurement: the RTC drives a wall clock, and 1Hz is what makes an emulated
-   second last a real second.
+   **The documented 1Hz and 4096Hz are waveform rates, not transition rates.** That distinction is worth
+   stating plainly because this emulator had it wrong: it treated them as transition rates, so its line ran
+   at half the real frequency in both modes.
+
+   MEASURED ON REAL HARDWARE, by pk_timing_bench's screen 14: with the RTC paused, the line makes 8192
+   transitions per second - that is 4096 full pulses, exactly the documented figure. The measurement landed
+   on 0.031250s for 256 transitions, to the tick, which simultaneously confirms CLK_MODE 7's frequency
+   (3,997,696Hz) that the timing table had only ever taken from documentation.
+
+   The running rate is set by the same reading of the same documentation - 1Hz waveform, so two transitions
+   a second - and by arithmetic: `cycles` reaches rtc_tick already converted to real elapsed time at the
+   fixed PSEMU_ASSUMED_CPU_HZ reference rate (see psemu_run), and a wall clock has to advance one second per
+   real second whatever the line does. The running rate has NOT been cleanly measured yet; screen 14's
+   run-mode row came back about 11% off a 1Hz waveform, from a two-transition sample taken immediately after
+   leaving program mode. See docs/hardware-notes.md.
 
    History: this was 4000000, chosen only to be "fast enough that a wait-for-pulse loop resolves within a
-   reasonable instruction budget" and explicitly never checked against a real 1Hz reference. That is 3.79
-   reference-seconds per tick, so the emulated PocketStation's own clock ran nearly 4x slow - 60 seconds of
-   real time advanced it by 15. Anything reading the device's clock saw it lose about 45 minutes an hour.
-   The wait-for-pulse concern is satisfied strictly better at this value, since pulses now come sooner.
-
-   The paused rate stays exactly 4096x the running rate, matching the documented 1Hz-vs-4096Hz ratio. The
-   integer division truncates 257.8 to 257, putting the paused rate 0.3% fast, which is well inside the
-   "approximately 4096Hz" the documentation claims. */
-#define RTC_TICK_CYCLES_RUN PSEMU_ASSUMED_CPU_HZ
-#define RTC_TICK_CYCLES_PAUSED (RTC_TICK_CYCLES_RUN / 4096u)
+   reasonable instruction budget" and explicitly never checked against a real reference. That is 3.79
+   reference-seconds per transition, so the emulated PocketStation's own clock ran nearly 4x slow - 60
+   seconds of real time advanced it by 15, losing about 45 minutes an hour. The wait-for-pulse concern is
+   satisfied strictly better here, since pulses now come sooner. */
+#define RTC_TICK_CYCLES_RUN (PSEMU_ASSUMED_CPU_HZ / 2u)
+/* Rounded, not truncated: the exact value is 128.9, and truncating to 128 would put the paused line 0.7%
+   fast against the 8192 transitions/second measured on hardware, where rounding to 129 lands 0.07% low. */
+#define RTC_TICK_CYCLES_PAUSED ((RTC_TICK_CYCLES_RUN + 2048u) / 4096u)
 
 void rtc_init(rtc_t *rtc);
 uint8_t rtc_read8(rtc_t *rtc, uint32_t offset);

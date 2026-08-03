@@ -36,9 +36,20 @@ void clk_init(clk_t *clk) {
 }
 
 uint8_t clk_read8(clk_t *clk, uint32_t offset) {
-    uint32_t word_index = offset / 4u;
     uint32_t shift = (offset % 4u) * 8u;
-    uint32_t value = (word_index == 0u) ? (clk->mode | CLK_STEADY) : clk->control;
+    /* BOTH words read back as CLK_MODE plus the steady bit. `control` (+0x4) does not read back what was
+       written to it.
+
+       Measured on real hardware, by pk_timing_bench's screen 14: after writing 1 to +0x4 and being woken
+       again, a read of +0x4 returned 0x17 - which is exactly the CLK_MODE value the app had set (7) with
+       the steady bit (0x10) ORed in. One data point, so "the two words alias on read" is the most
+       parsimonious explanation rather than a proven one, but returning the stored `control` was definitely
+       wrong: nothing on hardware reads back a 1 there.
+
+       This is also why screen 14 cannot answer whether the stop bit self-clears. There is no readable stop
+       status to inspect. What the same run does show is that the CPU resumed and kept running, so the stop
+       does not persist across a wake however it is implemented underneath. */
+    uint32_t value = clk->mode | CLK_STEADY;
     return (uint8_t)(value >> shift);
 }
 

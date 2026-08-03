@@ -200,25 +200,20 @@ The running rate matters for a different reason: it is what makes an emulated se
 | row | what it timed | Timer0 divisor |
 |---|---|---|
 | top | 256 transitions, RTC **paused** | /32 (as `start.s` leaves it) |
-| bottom | 2 transitions, RTC **running** | /512 |
+| bottom | 4 transitions (2 full pulses), RTC **running** | /512 |
 
-The two rows use different divisors on purpose: a running toggle is a whole second, which overflows Timer0's real 16-bit count at /32. Timer0 is restored afterwards, since every other screen's stopwatch is that timer.
+The two rows use different divisors on purpose: a running pulse is a whole second, which overflows Timer0's real 16-bit count at /32. The run-mode row also discards one pulse before counting, because the first pulse after leaving program mode may be a partial one. Timer0 is restored afterwards, since every other screen's stopwatch is that timer.
 
-**Doing the arithmetic.** The app sets `CLK_MODE 7`, so the CPU runs at 3,997,696Hz and Timer0 ticks at that over its divisor:
+**Doing the arithmetic.** The app sets `CLK_MODE 7`, so the CPU runs at 3,997,696Hz and Timer0 ticks at that over its divisor: 124,928/second at /32, 7,808/second at /512. A *waveform* Hz is half the transition rate, since a pulse is two transitions:
 
-- /32 → 124,928 ticks/second
-- /512 → 7,808 ticks/second
+- **paused Hz** = 128 ÷ (top ÷ 124,928)
+- **running Hz** = 2 ÷ (bottom ÷ 7,808)
 
-so:
+**Real-hardware result** (measured, see [VERIFICATION.md](VERIFICATION.md)): top `0x0F40` = **4096.0Hz paused, exactly**. 256 transitions in 0.031250 seconds, to the tick. That settles two things at once: the documented 4096Hz is a waveform rate rather than a transition rate, and `CLK_MODE 7` really is 3,997,696Hz - a figure the timing table had only ever taken from documentation.
 
-- **paused rate** = 256 ÷ (top ÷ 124,928) Hz
-- **running rate** = 2 ÷ (bottom ÷ 7,808) Hz
+**Emulator control run:** top `0x0F44` (8184 transitions/second, 0.1% under hardware from integer rounding in `RTC_TICK_CYCLES_PAUSED`), bottom `0x3D00` (1.0000Hz).
 
-**Expected values.** If the documentation is right — 4096Hz paused, 1Hz running — the rows read about `0x1E80` (7808) and `0x3D00` (15616).
-
-**Emulator control run** (this project's own model): top `0x1E67` (7783 → 4109Hz), bottom `0x3D00` (15616 → 1.0000Hz). The emulator's paused rate is 0.3% above 4096 purely from integer truncation in `RTC_TICK_CYCLES_PAUSED`; the running rate is exact by construction.
-
-**What a mismatch means.** If the top row comes back near `0x3D00` instead of `0x1E80`, the real paused rate is 2048Hz rather than 4096Hz and `rtc.h`'s 4096x ratio is wrong. If the bottom row is not close to `0x3D00`, the real RTC is not 1Hz, and the wall-clock rate needs revisiting.
+**The open one is the bottom row.** A 1Hz waveform reads `0x3D00`. The first hardware run returned a value implying 1.123Hz - about 11% fast - but from a single pulse measured immediately after leaving program mode, which is exactly where a resynchronising divider would show up. This screen now discards a pulse and averages two. If roughly `0x3650` comes back again, the 11% is real and the running rate needs revisiting; `0x3D00` means the first reading was a settling artefact.
 
 ### Screen 13: does CLK control (0x0B000004) bit 0 stop the CPU?
 
