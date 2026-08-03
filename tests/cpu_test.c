@@ -2140,6 +2140,50 @@ static void test_app_running_follows_flash1_execution(void) {
     printf("test_app_running_follows_flash1_execution OK\n");
 }
 
+static void test_clk_stop_halts_until_a_button_wakes_it(void) {
+    psemu_t *ps = psemu_create();
+    uint64_t steps;
+    ps->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
+
+    /* B . in RAM, so the CPU has something to execute that never leaves. */
+    put32(ps, 0, 0xEAFFFFFEu);
+    arm7tdmi_reset(&ps->cpu, 0);
+
+    /* Arm Timer0 and enable its interrupt. A running timer is the whole point: it is clocked by the same
+       oscillator the stop bit halts, so it must NOT tick while stopped and must NOT wake the CPU. Waking on
+       any asserted interrupt would leave a running timer re-asserting within microseconds, and the CPU
+       would never actually pause. */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 4u);                   /* period */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 4u);                   /* count */
+    psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x8, TIMER_CTRL_ENABLE);    /* run, /2 */
+    psemu_bus_write32(&ps->bus, PSEMU_INTC_BASE + 0x8, INT_TIMER0 | INT_BTN_ACTION);
+
+    psemu_run(ps, 10000u);
+    assert(ps->cpu.total_steps > 0);
+
+    /* Request the stop. */
+    psemu_bus_write32(&ps->bus, PSEMU_CLK_BASE + 0x4, 1u);
+    assert(clk_stop_requested(&ps->clk));
+
+    steps = ps->cpu.total_steps;
+    psemu_run(ps, 10u * (uint32_t)PSEMU_ASSUMED_CPU_HZ);
+    assert(ps->cpu.total_steps == steps); /* nothing executed for ten seconds of budget */
+    assert(clk_stop_requested(&ps->clk));  /* and the timer did not wake it */
+
+    /* The RTC has its own oscillator, so it keeps running while stopped - that is what lets a sleeping
+       device still know the time. */
+    assert(ps->intc.status & INT_RTC);
+
+    /* A button is external to this clock, so it wakes the CPU, and the wake clears the bit. */
+    psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
+    psemu_run(ps, 10000u);
+    assert(!clk_stop_requested(&ps->clk));
+    assert(ps->cpu.total_steps > steps);
+
+    psemu_destroy(ps);
+    printf("test_clk_stop_halts_until_a_button_wakes_it OK\n");
+}
+
 int main(void) {
     test_arm_data_processing();
     test_arm_long_multiply_and_swap();
@@ -2197,6 +2241,7 @@ int main(void) {
     test_set_datetime_rejects_out_of_range_arguments();
     test_settings_offsets_unknown_without_a_known_bios();
     test_app_running_follows_flash1_execution();
+    test_clk_stop_halts_until_a_button_wakes_it();
     printf("all cpu tests passed\n");
     return 0;
 }

@@ -44,7 +44,7 @@ The CPU clock speed is variable, controlled via `CLK_MODE`. See "CLK_MODE" below
 | `0x08000000` | 128KB | FLASH2 — physical flash, 15 blocks. |
 | `0x0A000000` | 0x14 | Interrupt controller: hold(+0x0, R), status(+0x4, R), enable(+0x8, W, ORs in), mask(+0xC, W, ANDs matching bits out of enable), acknowledge(+0x10, W, clears matching hold+status bits). |
 | `0x0A800000`+ | 0x30 | 3 timers, 0x10 bytes apart: period(+0x0), count(+0x4), control(+0x8, bits0-1 = clock divisor, bit2 = enable). |
-| `0x0B000000`+ | 0x8 | `CLK_MODE` - CPU/timer clock speed control. |
+| `0x0B000000`+ | 0x8 | `CLK_MODE`(+0x0) - CPU/timer clock speed control. `CLK control`(+0x4) bit0 - stop/standby, halts the CPU until a button wakes it. Sleep/wake confirmed on real hardware; the attribution to this bit is inferred (see "CLK control" below). |
 | `0x0B800000` | 0x10 | RTC: mode(+0x0), control/adjust(+0x4), time(+0x8, R), date(+0xC, R). |
 | `0x0C800000`+ | 0x10 | IR: `IRDA_MODE`(+0x0, protocol/send-receive mode), `IRDA_DATA`(+0x4, beam on/off), `IRDA_MISC`(+0xC, unknown/reserved). See "IR / IR Link". |
 | `0x0D000000` | 0x8 | `LCD_MODE`: bit6 `DISON` (display on/off), bit7 `ROT` (rotate 180°). |
@@ -328,6 +328,35 @@ Official documentation describes mode `00h` as an invalid/reserved setting that 
 - DAC: this emulator's audio resampling needs a fixed real-time output rate, regardless of the app's chosen CPU speed.
 
 See `test_clk_mode_scales_run_speed`, `test_timer_scales_with_clk_mode`, `test_clk_mode_keeps_rtc_dac_on_real_time`.
+
+## CLK control (0x0B000004): stop/standby
+
+**Bit 0 of the second `CLK` register halts the CPU, and everything clocked from the same oscillator, until a button wakes it.** This is how a PocketStation sleeps.
+
+**The behaviour is confirmed on real hardware. Which register produces it is inferred.** Keep those apart when reading what follows.
+
+**Confirmed, by direct testing on a real retail unit:** a real commercial app, left completely idle, blanks the screen about 37 seconds after the last button press and puts the device to sleep. The next button press wakes it and the screen returns where it was. Any emulator has to stop the CPU somewhere for that to happen.
+
+**Inferred:** that bit 0 of this register is what does it. The register is undocumented and this project has no way to probe it directly. The inference rests on two things.
+
+First, the write sits at the end of an unmistakable power-down sequence, with nothing else it could plausibly mean:
+
+| write | meaning |
+|---|---|
+| `IOP_STOP = 0x62` | sound and other IOP subsystems off |
+| `INTC mask = 0x200` | RTC interrupt disabled |
+| `LCD_MODE &= ~0x48` | `DISON` cleared - display off |
+| `CLK control = 1` | this |
+
+Second, modelling it as a stop reproduces the confirmed hardware behaviour exactly, end to end: the framebuffer goes to zero lit pixels at the stop, the CPU executes nothing until a button arrives, and the screen returns on the wake.
+
+**Leaving the write inert is not a harmless simplification; it corrupts the app.** The app's idle countdown is only written back *after* its sleep call returns. A CPU that keeps running executes the short delay loop that follows the stop, which pumps the app's own tick, which re-reads the same expired countdown and calls sleep again. That recursion is unbounded, at 28 bytes of stack per level. The app has 388 bytes before its stack reaches its globals (its user stack starts at `0x800`; its globals are at a hardcoded `0x67C`). It overruns them, a record-array `STRB` overwrites a byte of a saved return address on the stack, and the following `POP {pc}` jumps into data. The CPU then drifts through non-code memory until it hits an unrecognized opcode - which is what the fault looks like from a crash report, several million instructions downstream of the actual cause.
+
+**What stops and what does not.** Timer is clocked by the System Clock (see "Timers"), so it freezes here too. That part is essential rather than incidental: waking on any asserted interrupt is not a stop at all, because a running timer re-asserts within microseconds and the CPU never actually pauses. RTC keeps running on its own oscillator, which is what lets a sleeping device still know the time, and DAC keeps this emulator's own fixed resampling rate.
+
+**Open questions, all needing a `pk_timing_bench` screen to settle.** Whether bit 0 of this register specifically is the stop, rather than some other write in the sequence. Whether the timers really do freeze (snapshot `TIMER0_COUNT` and `GetBcdTime` across a sleep: if the RTC advances seconds while Timer0 advances nothing, they freeze). Whether real hardware auto-clears the bit on wake - this emulator does, so software need not. And whether anything other than a button can wake it: repeat with `INTC_MASK = 0x1F`, buttons masked and a timer live, and see whether it wakes on its own. No app this project can drive reaches any of these cases.
+
+See `test_clk_stop_halts_until_a_button_wakes_it`.
 
 ## Memory access timing
 

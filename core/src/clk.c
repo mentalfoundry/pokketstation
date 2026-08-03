@@ -62,3 +62,11 @@ void clk_write8(clk_t *clk, uint32_t offset, uint8_t value) {
 uint32_t clk_current_hz(const clk_t *clk) {
     return CPU_FREQ[clk->mode & 0x0Fu];
 }
+
+int clk_stop_requested(const clk_t *clk) {
+    return (clk->control & 1u) != 0;
+}
+
+void clk_clear_stop(clk_t *clk) {
+    clk->control &= ~1u;
+}

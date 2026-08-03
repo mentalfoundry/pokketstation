@@ -330,7 +330,39 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
     uint32_t ran = 0;
     while (elapsed_seconds < budget_seconds) {
         uint32_t pc = ps->cpu.r[15];
-        uint32_t step_cycles = arm7tdmi_step(&ps->cpu);
+        uint32_t step_cycles;
+        /* Software asked the clock to stop (see clk.h). Execute nothing, and freeze the peripherals that
+           run off the same oscillator: Timer is clocked by the System Clock, so it stops here too. That
+           part matters. Waking on any asserted interrupt is not a stop at all, because a running Timer
+           re-asserts within microseconds and the CPU never actually pauses.
+
+           RTC and DAC keep their own real-time rate: the RTC is a separate oscillator (see rtc.h), and DAC
+           resampling is this emulator's own fixed output rate rather than anything the hardware clocks.
+
+           A button is an external signal rather than something this clock drives, so it can still wake the
+           CPU, and that is what a user pressing a button on a sleeping PocketStation does. The wake clears
+           the bit, so software does not have to. Whether real hardware auto-clears it, and whether any
+           source other than a button can wake it, are both unconfirmed - no app this project can drive
+           reaches either case. */
+        if (clk_stop_requested(&ps->clk)) {
+            static const uint32_t WAKE_SOURCES =
+                INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP;
+            if (ps->intc.hold & ps->intc.enable & WAKE_SOURCES) {
+                clk_clear_stop(&ps->clk);
+            } else {
+                double stopped_dt = 1.0 / (double)clk_current_hz(&ps->clk);
+                uint32_t real_time_cycles;
+                elapsed_seconds += stopped_dt;
+                ps->real_time_cycle_carry += stopped_dt * (double)PSEMU_ASSUMED_CPU_HZ;
+                real_time_cycles = (uint32_t)ps->real_time_cycle_carry;
+                ps->real_time_cycle_carry -= (double)real_time_cycles;
+                rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
+                dac_tick(&ps->dac, real_time_cycles);
+                ran += 1u;
+                continue;
+            }
+        }
+        step_cycles = arm7tdmi_step(&ps->cpu);
         double dt = (double)step_cycles / (double)clk_current_hz(&ps->clk);
         elapsed_seconds += dt;
 
