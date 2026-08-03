@@ -147,6 +147,8 @@ clr_loop:
     beq rs_fiq_rearm_screen
     cmp r4, #11
     beq rs_full_dispatch_screen
+    cmp r4, #SCREEN_STOP_TEST
+    beq rs_stop_test_screen
 
     sub r5, r4, #1
     lsl r5, r5, #3
@@ -278,6 +280,33 @@ rs_full_dispatch_screen:
     bl draw_hex_u32
     b rs_done
 
+rs_stop_test_screen:
+    @ The CLK stop/standby test. Three rows, top to bottom:
+    @   seconds of RTC time that passed across the single store under test
+    @   Timer1 interrupts counted across that same store
+    @   CLK control read back afterwards
+    @ All zeros means it has not been run yet. Press Down to run it. See
+    @ run_stop_test in experiments.s, and ../README.md for how to read the
+    @ three numbers together.
+    ldr r5, =WRAM_STOP_SECONDS
+    ldr r0, [r5]
+    mov r1, #8
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r5, =WRAM_STOP_IRQCOUNT
+    ldr r0, [r5]
+    mov r1, #16
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r5, =WRAM_STOP_READBACK
+    ldr r0, [r5]
+    mov r1, #24
+    mov r2, #0
+    bl draw_hex_u32
+    b rs_done
+
 rs_diag_screen:
     @ Diagnostic screen: raw (not delta) Timer0 snapshots, 4 rows -
     @ single-call before/after, then full-30000-loop before/after.
@@ -362,6 +391,29 @@ pb_check_right:
     ldr r6, =WRAM_BUTTON_DEBOUNCE
     ldr r0, [r6]
 
+    @ Down, on the stop-test screen only, runs the test (see run_stop_test in
+    @ experiments.s). Down is otherwise unused outside the exit prompt, so this
+    @ costs no existing binding. Edge-triggered against the previous frame's
+    @ bits, the same way the Left/Right checks below are.
+    cmp r4, #SCREEN_STOP_TEST
+    bne pb_check_right_real
+    tst r5, #8
+    beq pb_check_right_real
+    tst r0, #8
+    bne pb_check_right_real
+    bl run_stop_test
+    @ run_stop_test does not return until something wakes the CPU, and that is
+    @ usually a different button than the Down that started it. Re-sample the
+    @ live button bits so the debounce state below reflects what is held NOW.
+    @ Without this, pb_store would record the stale pre-stop bits and the very
+    @ next poll would read the waking button as a fresh press - navigating
+    @ straight off the results screen the test just filled in.
+    ldr r6, =INTC_STATUS
+    ldr r5, [r6]
+    mov r1, #1
+    b pb_store
+
+pb_check_right_real:
     tst r5, #2
     beq pb_check_left
     tst r0, #2
@@ -536,14 +588,21 @@ pb_store:
     bx lr
     .ltorg
 
+@ The cycle is 1..11 then SCREEN_STOP_TEST (13), wrapping back to 1.
+@ SCREEN_EXIT_PROMPT (12) is deliberately skipped: it is not a result screen,
+@ it is reached only by holding Action, and tools/pk_exit_test.c depends on its
+@ index, so it stays where it is rather than being renumbered around.
 screen_next:
     push {r0, r1, lr}
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
+    cmp r1, #SCREEN_STOP_TEST
+    moveq r1, #1
+    beq sn_store
     add r1, r1, #1
     cmp r1, #11
     ble sn_store
-    mov r1, #1
+    mov r1, #SCREEN_STOP_TEST
 sn_store:
     str r1, [r0]
     pop {r0, r1, lr}
@@ -554,10 +613,13 @@ screen_prev:
     push {r0, r1, lr}
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
+    cmp r1, #SCREEN_STOP_TEST
+    moveq r1, #11
+    beq sp_store
     sub r1, r1, #1
     cmp r1, #1
     bge sp_store
-    mov r1, #11
+    mov r1, #SCREEN_STOP_TEST
 sp_store:
     str r1, [r0]
     pop {r0, r1, lr}

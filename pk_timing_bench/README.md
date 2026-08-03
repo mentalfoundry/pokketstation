@@ -44,11 +44,12 @@ To change the icon: edit or replace `assets/card_icon.bmp`, then rebuild. The fi
 
 ## Controls
 
-This app runs all eleven measurements once, at startup. After that, you page through eleven result screens by hand:
+This app runs all eleven measurements once, at startup. After that, you page through the result screens by hand:
 
 - **RIGHT**: next screen
 - **LEFT**: previous screen
-- Screens wrap around (11 → RIGHT → 1, 1 → LEFT → 11)
+- Screens wrap around (1 … 11 → screen 13 → 1)
+- **DOWN**, on screen 13 only, runs the CLK stop test. That is the one measurement here that does not run at startup, because only a human pressing a button can end it. See "Screen 13" below.
 - **Holding ACTION** opens a CONTINUE/EXIT prompt, for returning to the system without a hardware reset. UP selects CONTINUE, DOWN selects EXIT, and a fresh ACTION press confirms. See "Screen index used for the continue/exit prompt" in `src/constants.inc`, and `src/ui.s`'s `pb_prompt_confirm_exit`, for the full behavior.
 
 ## What each screen shows
@@ -183,6 +184,41 @@ This screen reproduces that same shape - acknowledge, nested ARM call, ARM-to-Th
 | Real hardware (measured 2026-07-31, see [VERIFICATION.md](VERIFICATION.md)) | `0x0FE4` | 1017 | **0 ticks** |
 
 **Real hardware matches screens 8 and 10 exactly, bit-for-bit, a third time.** Even with the full realistic dispatch chain in the handler, not a bare re-arm, real hardware still shows 0 added latency. This does more than rule out one more candidate: it falsifies the theory all three screens were built to test, that a re-armed timer's next period does not start until its handler reaches the re-arm. The simplest explanation left standing is that Timer2 auto-reloads in hardware the instant it expires, independent of when software services the interrupt, as long as the re-arm write lands before the *next* natural expiry - which it always does by a wide margin here. See "Unresolved" in [docs/hardware-notes.md](../docs/hardware-notes.md): the app's 184-tick figure is very unlikely to be latency compensation at all.
+
+### Screen 13: does CLK control (0x0B000004) bit 0 stop the CPU?
+
+Every other screen here reports a number measured at startup. This one is interactive: **press DOWN to run it.** The quantity being measured is how long the CPU stayed stopped, and on a device with no other input, only a human pressing a button ends that.
+
+**Why it exists.** A real commercial app arms an idle timer and, when it expires with no button pressed, writes `1` to this register as the last step of a power-down sequence (sound off, RTC interrupt masked, display off). Real hardware demonstrably sleeps at that point — the screen blanks and a button press brings it back. But *that this register is what stops the CPU* has never been measured. It was inferred from what the write sits next to. This screen tests the write on its own, with none of the rest of that sequence, which no amount of tracing the real app can do. See "CLK control" in [docs/hardware-notes.md](../docs/hardware-notes.md).
+
+**What it does.** Registers an interrupt handler, arms Timer1 slowly (~8Hz), un-masks the buttons and Timer1, draws a solid bar across the middle of the screen, and then issues one 32-bit store: `1` to `0x0B000004`. Everything after that store runs only once the CPU is running again. The LCD is deliberately left **on**, unlike the real app's sequence, so the result is readable.
+
+**What you see.** If the clock really stops, the bar is the last thing drawn and it stays on screen until you press a button. If the store does nothing, the bar is replaced by the result screen too fast to see.
+
+**Three rows of results**, top to bottom:
+
+| row | meaning |
+|---|---|
+| top | whole seconds of RTC time that passed across the store |
+| middle | Timer1 interrupts counted across the store (buttons are excluded) |
+| bottom | `0x0B000004` read back afterwards |
+
+**Reading them together.** Wait several seconds before pressing a button to wake it, so the top row is unambiguous:
+
+| top (seconds) | middle (timer IRQs) | conclusion |
+|---|---|---|
+| several | 0 | **The CPU stopped and the timers stopped with it.** This is what the emulator models. |
+| several | large | The CPU stopped, but the timers kept running and did not wake it. The emulator's wake logic is wrong. |
+| 0 | 0 | **The CPU never stopped.** This register is not the stop; something else in the real app's sequence is. |
+| 0 | small | The CPU stopped, and a timer interrupt woke it almost immediately. Timers keep running and do wake it. |
+
+If the screen updates **on its own**, with no button pressed, then something other than a button wakes the CPU — the RTC is the likely candidate, since this test leaves its interrupt un-masked where the real app masks it.
+
+The bottom row answers the last question: `0` means the bit self-cleared on wake, `1` means software has to clear it.
+
+**Emulator control run** (this project's own model, for comparison): top `0x00000001`, middle `0x00000000`, bottom `0x00000000`. Note the top row reads low in the emulator and should not be compared to hardware: `RTC_TICK_CYCLES_RUN` in `core/src/rtc.h` is documented as never having been calibrated against a real 1Hz reference, so emulated RTC seconds run roughly 3.8x slow. On real hardware the RTC is a true 1Hz and the top row should match the wall-clock time you waited.
+
+**Recovery.** If the CPU stops and nothing can wake it, the device needs its physical reset button. Nothing in this test writes flash, so that is the whole cost.
 
 ### Reading the hex digits
 

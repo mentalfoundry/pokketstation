@@ -21,6 +21,8 @@
     .global irq_rearm_handler
     .global irq_rearm_handler_t2
     .global irq_rearm_handler_t2_full
+    .global irq_count_handler
+    .global bcd8_to_bin
 
 memcpy_words:            @ r0=dst, r1=src, r2=count(words)
     push {r3, lr}
@@ -320,6 +322,50 @@ irq_rearm_handler:
     add r1, r1, #1
     str r1, [r0]
     pop {r0, r1, pc}
+    .ltorg
+
+@ IRQ handler for screen 13's CLK stop test. Same shape as irq_rearm_handler
+@ above - acknowledge, re-arm, count - but it counts into its own WRAM slot so
+@ running the stop test cannot disturb screen 8's result.
+@
+@ The count is the whole point of the test. Timer1 is clocked by the System
+@ Clock, the same oscillator the stop bit is believed to halt, so this counter
+@ is what says whether the timers kept running while the CPU was stopped. A
+@ count of zero across a multi-second stop means they froze with it.
+irq_count_handler:
+    push {r0, r1, r2, lr}
+    ldr r0, =INTC_BASE
+    ldr r1, [r0]                      @ r1 = what was pending, kept for the test below
+    str r1, [r0, #0x10]               @ acknowledge everything pending
+
+    @ Count ONLY Timer1. The buttons are un-masked too, because a press is what
+    @ ends the stop, so this handler also runs for the waking press. Counting
+    @ that would put a 1 or 2 in the result of a run where the timers never
+    @ ticked at all, and "did the timers run" is the entire question.
+    tst r1, #INT_TIMER1_BIT
+    beq ich_done
+    ldr r0, =WRAM_STOP_IRQCOUNT
+    ldr r2, [r0]
+    add r2, r2, #1
+    str r2, [r0]
+ich_done:
+    @ No re-arm: Timer1 reloads from its period register by itself. Screen 8
+    @ re-arms because re-arm latency is what it measures; here a free-running
+    @ timer is both simpler and closer to what is being asked.
+    pop {r0, r1, r2, pc}
+    .ltorg
+
+@ Packed-BCD byte to binary. The RTC reports seconds as BCD (see rtc.h), and
+@ screen 13 needs to subtract two of them.
+bcd8_to_bin:                          @ r0 = BCD byte -> r0 = 0-99
+    push {r1, lr}
+    mov r1, r0, lsr #4
+    add r1, r1, r1, lsl #2            @ r1 = tens * 5
+    mov r1, r1, lsl #1                @ r1 = tens * 10
+    and r0, r0, #0xF
+    add r0, r0, r1
+    pop {r1, lr}
+    bx lr
     .ltorg
 
 @ IRQ handler for experiment 10. Identical to irq_rearm_handler above, except

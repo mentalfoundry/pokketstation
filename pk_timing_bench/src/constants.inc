@@ -185,6 +185,37 @@
 .equ WRAM_REARM3_COUNTER,    0x2BC
 .equ WRAM_EXP11_FLAG,        0x2C0
 
+@ Screen 13 (the CLK stop/standby test - see experiments.s's run_stop_test and
+@ ../README.md). Unlike every other screen here this one is INTERACTIVE: it
+@ runs on a Down press rather than at startup, because the measurement is "how
+@ long was the CPU stopped", and only a human pressing a button ends that.
+.equ SCREEN_STOP_TEST,       13
+@ Whole seconds of RTC time that passed across the single store under test.
+.equ WRAM_STOP_SECONDS,      0x2C4
+@ Timer1 interrupts counted across that same store.
+.equ WRAM_STOP_IRQCOUNT,     0x2C8
+@ CLK control read back afterwards, to see whether the bit self-clears.
+.equ WRAM_STOP_READBACK,     0x2CC
+
+@ The register under test. Bit 0 is believed to be a stop/standby request:
+@ it halts the CPU until something external wakes it. A real commercial app
+@ writes 1 here as the last step of its power-down sequence, and a real unit
+@ demonstrably does sleep at that point - but that this register is what does
+@ it has never been measured directly. That is what screen 13 is for.
+@ See docs/hardware-notes.md, "CLK control (0x0B000004): stop/standby".
+.equ CLK_CONTROL_ADDR,       CLK_MODE_ADDR + 0x4
+@ RTC time register: BCD seconds in the low byte. Read directly rather than
+@ through GetBcdTime (SWI 0Eh), so the measurement spans one store and two
+@ loads with no kernel call in between to blur it.
+.equ RTC_TIME_ADDR,          0x0B800008
+@ INTC bits 0-4, the five buttons (see poll_buttons in ui.s).
+.equ INT_BUTTON_BITS,        0x1F
+@ Timer1 for screen 13, deliberately slow: /512 with period 999 fires roughly
+@ 8 times a second at CLK_MODE 7. Fast enough that a few seconds of stopped
+@ time is unmistakable against zero, slow enough not to flood the handler.
+.equ STOP_TIMER_PERIOD,      999
+.equ STOP_TIMER_CTRL,        0x6      @ divisor bits 2 (= /512) | enable
+
 @ Real BIOS ROM addresses (external to this app's own linked image - these
 @ are fixed, hardcoded, NOT link-time symbols) - see docs/app-notes.md.
 .equ BIOS_ARM_HELPER,        0x04001BC8

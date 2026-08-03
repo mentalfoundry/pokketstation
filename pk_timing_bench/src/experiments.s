@@ -16,6 +16,7 @@
     .global run_experiment_9_irda_write
     .global run_experiment_10_fiq_rearm_latency
     .global run_experiment_11_realistic_fiq_dispatch
+    .global run_stop_test
 
 @ Experiment 1: sanity check - ARM vs Thumb opcode-fetch cost (~2:1 expected)
 run_experiment_1_sanity:
@@ -558,6 +559,145 @@ exp11_wait:
 exp11_unreg_ret:
 
     mov r0, #0                          @ restore Timer2 as it was found
+    str r0, [r4, #8]
+    str r5, [r4]
+    str r6, [r4, #4]
+    str r7, [r4, #8]
+
+    pop {r4, r5, r6, r7, r8, lr}
+    bx lr
+    .ltorg
+
+@ Screen 13: does CLK control (0x0B000004) bit 0 stop the CPU, and what
+@ happens around it?
+@
+@ This is the only interactive test in this app. Every other experiment runs
+@ once at startup and leaves a number behind. This one cannot: the quantity
+@ being measured is how long the CPU stayed stopped, and on a device with no
+@ other input that interval is ended by a human pressing a button. So it runs
+@ on a Down press while screen 13 is showing (see poll_buttons in ui.s).
+@
+@ Four questions, one run. See ../README.md for the decision table that maps
+@ the three numbers this leaves behind onto answers, and
+@ docs/hardware-notes.md's "CLK control" section for why they matter.
+@
+@ Deliberately, this does NOT reproduce the rest of the real app's power-down
+@ sequence - no IOP_STOP, no INTC mask of the RTC, no LCD_MODE change. The one
+@ store under test is the CLK write, alone. If the CPU stops anyway, that
+@ isolates this register from everything else the real app happens to write
+@ around it, which no amount of tracing the real app can do.
+@
+@ The LCD is deliberately left ON, unlike the real app's sequence, so the
+@ result is readable afterwards.
+@
+@ Recovery: if the CPU stops and nothing can wake it, the device needs its
+@ physical reset button. Nothing here writes flash, so that is the whole cost.
+run_stop_test:
+    push {r4, r5, r6, r7, r8, lr}
+
+    ldr r0, =WRAM_STOP_IRQCOUNT        @ counter starts at zero
+    mov r1, #0
+    str r1, [r0]
+
+    ldr r4, =TIMER1_BASE               @ save Timer1 before borrowing it
+    ldr r5, [r4]
+    ldr r6, [r4, #4]
+    ldr r7, [r4, #8]
+
+    ldr r0, =irq_count_handler         @ install the handler before un-masking.
+    adr lr, stop_reg_ret               @ Un-masking a timer interrupt with no
+    ldr r1, =register_irq_handler      @ app callback registered visibly
+    bx r1                              @ corrupts the app - see experiment 7.
+stop_reg_ret:
+
+    mov r0, #0                         @ arm Timer1, slowly (see constants.inc)
+    str r0, [r4, #8]
+    ldr r0, =STOP_TIMER_PERIOD
+    str r0, [r4]
+    str r0, [r4, #4]
+    mov r0, #STOP_TIMER_CTRL
+    str r0, [r4, #8]
+
+    @ Un-mask the buttons AND Timer1. Buttons, so a press can end the stop.
+    @ Timer1, so its count afterwards says whether the timers kept running -
+    @ and, if they also wake the CPU, the stop will end on its own with no
+    @ button pressed at all, which is itself one of the four answers.
+    ldr r0, =INTC_ENABLE
+    ldr r1, =(INT_BUTTON_BITS | INT_TIMER1_BIT)
+    str r1, [r0]
+
+    @ A solid bar across the middle of the screen, drawn immediately before the
+    @ store. If the clock really stops, this is the last thing this app draws
+    @ and it stays on screen until something wakes the CPU. If the store does
+    @ nothing, the bar is replaced by the result screen too fast to see.
+    mov r0, #14
+    mov r1, #0
+    mov r2, #31
+    bl draw_hline
+    mov r0, #15
+    mov r1, #0
+    mov r2, #31
+    bl draw_hline
+    mov r0, #16
+    mov r1, #0
+    mov r2, #31
+    bl draw_hline
+
+    ldr r0, =RTC_TIME_ADDR             @ stash the "before" seconds in WRAM, not
+    ldr r0, [r0]                       @ a register: whatever wakes the CPU runs
+    and r0, r0, #0xFF                  @ an interrupt handler first, and only
+    ldr r1, =WRAM_STOP_SECONDS         @ memory is guaranteed to survive that
+    str r0, [r1]
+
+    @ --- the single store under test ---
+    @ A full 32-bit STR, matching exactly what the real app issues. Byte-wide
+    @ access to MMIO is a known real-hardware hazard here (see ../README.md).
+    ldr r0, =CLK_CONTROL_ADDR
+    mov r1, #1
+    str r1, [r0]
+
+    @ --- nothing below runs until the CPU is running again ---
+
+    ldr r0, =WRAM_STOP_IRQCOUNT        @ snapshot the count FIRST: the timer
+    ldr r8, [r0]                       @ interrupt is still live, and every
+                                       @ instruction from here adds to it
+
+    ldr r0, =RTC_TIME_ADDR
+    ldr r0, [r0]
+    and r0, r0, #0xFF
+    mov r1, r0                         @ r1 = "after", BCD
+
+    ldr r0, =CLK_CONTROL_ADDR          @ read back before restoring anything,
+    ldr r2, [r0]                       @ to see whether the bit self-cleared
+    ldr r0, =WRAM_STOP_READBACK
+    str r2, [r0]
+
+    ldr r0, =INTC_MASK                 @ re-mask every source at once
+    mvn r2, #0
+    str r2, [r0]
+
+    ldr r0, =WRAM_STOP_IRQCOUNT        @ store the snapshot, not the live value
+    str r8, [r0]
+
+    @ seconds delta, as (after - before) mod 60
+    mov r0, r1
+    bl bcd8_to_bin
+    mov r8, r0                         @ r8 = after, binary
+    ldr r0, =WRAM_STOP_SECONDS
+    ldr r0, [r0]
+    bl bcd8_to_bin                     @ r0 = before, binary
+    subs r0, r8, r0
+    addmi r0, r0, #60
+    ldr r1, =WRAM_STOP_SECONDS
+    str r0, [r1]
+
+    mov r0, #0                         @ unregister our handler again
+    adr lr, stop_unreg_ret
+    ldr r1, =register_irq_handler
+    bx r1
+stop_unreg_ret:
+
+    mov r0, #0                         @ restore Timer1 as it was found
     str r0, [r4, #8]
     str r5, [r4]
     str r6, [r4, #4]
