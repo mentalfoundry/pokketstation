@@ -44,11 +44,11 @@ To change the icon: edit or replace `assets/card_icon.bmp`, then rebuild. The fi
 
 ## Controls
 
-This app runs all eleven measurements once, at startup. After that, you page through the result screens by hand:
+This app runs its startup measurements once, at power-on, then you page through the result screens by hand. Screen 13 is the exception: it is interactive and runs on demand.
 
 - **RIGHT**: next screen
 - **LEFT**: previous screen
-- Screens wrap around (1 … 11 → screen 13 → 1)
+- Screens wrap around (1 … 11 → screen 13 → screen 14 → 1)
 - **DOWN**, on screen 13 only, runs the CLK stop test. That is the one measurement here that does not run at startup, because only a human pressing a button can end it. See "Screen 13" below.
 - **Holding ACTION** opens a CONTINUE/EXIT prompt, for returning to the system without a hardware reset. UP selects CONTINUE, DOWN selects EXIT, and a fresh ACTION press confirms. See "Screen index used for the continue/exit prompt" in `src/constants.inc`, and `src/ui.s`'s `pb_prompt_confirm_exit`, for the full behavior.
 
@@ -184,6 +184,41 @@ This screen reproduces that same shape - acknowledge, nested ARM call, ARM-to-Th
 | Real hardware (measured 2026-07-31, see [VERIFICATION.md](VERIFICATION.md)) | `0x0FE4` | 1017 | **0 ticks** |
 
 **Real hardware matches screens 8 and 10 exactly, bit-for-bit, a third time.** Even with the full realistic dispatch chain in the handler, not a bare re-arm, real hardware still shows 0 added latency. This does more than rule out one more candidate: it falsifies the theory all three screens were built to test, that a re-armed timer's next period does not start until its handler reaches the re-arm. The simplest explanation left standing is that Timer2 auto-reloads in hardware the instant it expires, independent of when software services the interrupt, as long as the re-arm write lands before the *next* natural expiry - which it always does by a wide margin here. See "Unresolved" in [docs/hardware-notes.md](../docs/hardware-notes.md): the app's 184-tick figure is very unlikely to be latency compensation at all.
+
+### Screen 14: the RTC's two interrupt-line rates
+
+Runs at startup like screens 1-11, and is why startup now takes a couple of seconds longer than it used to: a running RTC toggle *is* a second, so measuring two of them costs two real seconds.
+
+**Why it exists.** The RTC's interrupt line is documented as running at "approximately 1Hz" while the clock runs, and "approximately 4096Hz" while it is paused (mode bit 0, `PRGSEL` — the state the BIOS puts it in so `RTC_ADJUST` can step one field without the clock moving underneath it). Neither figure has ever been measured on hardware, and *approximately* is doing real work in that sentence. This emulator derives its paused rate as exactly 4096x its running rate, so if the true ratio is anything else, every `RTC_ADJUST`-driven wait in the BIOS is mistimed here.
+
+The running rate matters for a different reason: it is what makes an emulated second last a real second. The constant behind it was 3.79x off for a long time, and the emulated device's clock lost about 45 minutes an hour as a result.
+
+**Method.** Polls `INT_STATUS`'s RTC bit and times a fixed number of transitions against Timer0. No interrupt is un-masked and none is taken — the status register reports the raw signal level, so the line can be watched directly.
+
+**Two rows of raw Timer0 ticks**, not rates:
+
+| row | what it timed | Timer0 divisor |
+|---|---|---|
+| top | 256 transitions, RTC **paused** | /32 (as `start.s` leaves it) |
+| bottom | 2 transitions, RTC **running** | /512 |
+
+The two rows use different divisors on purpose: a running toggle is a whole second, which overflows Timer0's real 16-bit count at /32. Timer0 is restored afterwards, since every other screen's stopwatch is that timer.
+
+**Doing the arithmetic.** The app sets `CLK_MODE 7`, so the CPU runs at 3,997,696Hz and Timer0 ticks at that over its divisor:
+
+- /32 → 124,928 ticks/second
+- /512 → 7,808 ticks/second
+
+so:
+
+- **paused rate** = 256 ÷ (top ÷ 124,928) Hz
+- **running rate** = 2 ÷ (bottom ÷ 7,808) Hz
+
+**Expected values.** If the documentation is right — 4096Hz paused, 1Hz running — the rows read about `0x1E80` (7808) and `0x3D00` (15616).
+
+**Emulator control run** (this project's own model): top `0x1E67` (7783 → 4109Hz), bottom `0x3D00` (15616 → 1.0000Hz). The emulator's paused rate is 0.3% above 4096 purely from integer truncation in `RTC_TICK_CYCLES_PAUSED`; the running rate is exact by construction.
+
+**What a mismatch means.** If the top row comes back near `0x3D00` instead of `0x1E80`, the real paused rate is 2048Hz rather than 4096Hz and `rtc.h`'s 4096x ratio is wrong. If the bottom row is not close to `0x3D00`, the real RTC is not 1Hz, and the wall-clock rate needs revisiting.
 
 ### Screen 13: does CLK control (0x0B000004) bit 0 stop the CPU?
 

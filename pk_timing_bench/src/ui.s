@@ -149,6 +149,8 @@ clr_loop:
     beq rs_full_dispatch_screen
     cmp r4, #SCREEN_STOP_TEST
     beq rs_stop_test_screen
+    cmp r4, #SCREEN_RTC_RATES
+    beq rs_rtc_rates_screen
 
     sub r5, r4, #1
     lsl r5, r5, #3
@@ -275,6 +277,25 @@ rs_full_dispatch_screen:
     bl draw_hex_u32
 
     ldr r0, =EXP8_TIMER_PERIOD
+    mov r1, #17
+    mov r2, #0
+    bl draw_hex_u32
+    b rs_done
+
+rs_rtc_rates_screen:
+    @ Experiment 12: raw Timer0 tick counts, not rates. Top is RTC_TOGGLES_PAUSED
+    @ transitions with the RTC paused, timed at Timer0's normal /32 divisor.
+    @ Bottom is RTC_TOGGLES_RUN transitions with it running, timed at /512
+    @ because a running toggle is a whole second. The two rows use different
+    @ Timer0 divisors on purpose; ../README.md does the arithmetic.
+    ldr r5, =WRAM_RTC_PAUSED_TICKS
+    ldr r0, [r5]
+    mov r1, #9
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r5, =WRAM_RTC_RUN_TICKS
+    ldr r0, [r5]
     mov r1, #17
     mov r2, #0
     bl draw_hex_u32
@@ -588,7 +609,8 @@ pb_store:
     bx lr
     .ltorg
 
-@ The cycle is 1..11 then SCREEN_STOP_TEST (13), wrapping back to 1.
+@ The cycle is 1..11, then SCREEN_STOP_TEST (13), then SCREEN_RTC_RATES (14),
+@ wrapping back to 1.
 @ SCREEN_EXIT_PROMPT (12) is deliberately skipped: it is not a result screen,
 @ it is reached only by holding Action, and tools/pk_exit_test.c depends on its
 @ index, so it stays where it is rather than being renumbered around.
@@ -596,8 +618,11 @@ screen_next:
     push {r0, r1, lr}
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
-    cmp r1, #SCREEN_STOP_TEST
+    cmp r1, #SCREEN_RTC_RATES
     moveq r1, #1
+    beq sn_store
+    cmp r1, #SCREEN_STOP_TEST
+    moveq r1, #SCREEN_RTC_RATES
     beq sn_store
     add r1, r1, #1
     cmp r1, #11
@@ -613,13 +638,16 @@ screen_prev:
     push {r0, r1, lr}
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
+    cmp r1, #SCREEN_RTC_RATES
+    moveq r1, #SCREEN_STOP_TEST
+    beq sp_store
     cmp r1, #SCREEN_STOP_TEST
     moveq r1, #11
     beq sp_store
     sub r1, r1, #1
     cmp r1, #1
     bge sp_store
-    mov r1, #SCREEN_STOP_TEST
+    mov r1, #SCREEN_RTC_RATES
 sp_store:
     str r1, [r0]
     pop {r0, r1, lr}

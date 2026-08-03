@@ -197,6 +197,27 @@
 @ CLK control read back afterwards, to see whether the bit self-clears.
 .equ WRAM_STOP_READBACK,     0x2CC
 
+@ Screen 14 (experiment 12): the RTC's two interrupt-line rates, timed against
+@ Timer0. Documentation says approximately 1Hz while running and approximately
+@ 4096Hz while paused (mode bit0, PRGSEL). "Approximately" is doing real work
+@ in that sentence, and neither number has ever been measured on hardware.
+@ See run_experiment_12_rtc_rates in experiments.s and ../README.md.
+.equ SCREEN_RTC_RATES,       14
+.equ WRAM_RTC_PAUSED_TICKS,  0x2D0
+.equ WRAM_RTC_RUN_TICKS,     0x2D4
+.equ RTC_MODE_ADDR,          0x0B800000
+.equ INT_RTC_BIT,            0x200
+@ 256 toggles at the documented ~4096Hz is ~62ms, which is ~7808 Timer0 ticks
+@ at the /32 divisor start.s leaves it on. That is comfortably inside Timer0's
+@ real 16-bit wrap (see ../README.md), and stays inside it even if the true
+@ rate turns out to be 8x slower than documented.
+.equ RTC_TOGGLES_PAUSED,     256
+@ Running, a toggle is a whole second, which overflows Timer0's 16 bits at the
+@ /32 divisor. The run-mode half therefore slows Timer0 to /512 first, where a
+@ second is ~7808 ticks, and counts only 2 toggles to keep startup short.
+.equ RTC_TOGGLES_RUN,        2
+.equ TIMER0_CTRL_DIV512,     0x6      @ divisor bits 2 (= /512) | enable
+
 @ The register under test. Bit 0 is believed to be a stop/standby request:
 @ it halts the CPU until something external wakes it. A real commercial app
 @ writes 1 here as the last step of its power-down sequence, and a real unit

@@ -202,6 +202,18 @@ clk_wait:
     bl draw_pixel
     .ltorg
 
+    @ Experiment 12 (screen 14): the RTC's running and paused interrupt-line
+    @ rates, timed against Timer0. Both are documented only as "approximately",
+    @ and neither has been measured on hardware. This one briefly puts the RTC
+    @ into program mode and briefly slows Timer0 to /512, restoring both. It is
+    @ deliberately last: it is the only experiment that spends real seconds
+    @ rather than cycles, since a running RTC toggle IS a second.
+    bl run_experiment_12_rtc_rates
+    mov r0, #14
+    mov r1, #0
+    bl draw_pixel
+    .ltorg
+
     @ --- init UI state ---
     ldr r0, =WRAM_SCREEN_INDEX
     mov r1, #1

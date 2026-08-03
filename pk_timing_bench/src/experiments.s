@@ -17,6 +17,7 @@
     .global run_experiment_10_fiq_rearm_latency
     .global run_experiment_11_realistic_fiq_dispatch
     .global run_stop_test
+    .global run_experiment_12_rtc_rates
 
 @ Experiment 1: sanity check - ARM vs Thumb opcode-fetch cost (~2:1 expected)
 run_experiment_1_sanity:
@@ -704,5 +705,74 @@ stop_unreg_ret:
     str r7, [r4, #8]
 
     pop {r4, r5, r6, r7, r8, lr}
+    bx lr
+    .ltorg
+
+@ Experiment 12 (screen 14): what are the RTC's two interrupt-line rates?
+@
+@ The documentation says the line runs at approximately 1Hz while the RTC is
+@ running, and approximately 4096Hz while it is paused (mode bit0, PRGSEL, the
+@ state the BIOS puts it in so RTC_ADJUST can step one field without the clock
+@ moving underneath it). Neither number has ever been measured on real
+@ hardware, and "approximately" is doing real work in that sentence: this
+@ emulator derives its paused rate as exactly 4096x its running rate, so if the
+@ real ratio is anything else, every RTC_ADJUST-driven wait in the BIOS is
+@ mistimed here.
+@
+@ The running rate matters for a different reason. It is what makes an emulated
+@ second last a real second, so the emulated device's own clock keeps or loses
+@ time by exactly this ratio. Getting it wrong is not subtle: the constant
+@ behind it was 3.79x off for a long time, and the emulated clock lost about 45
+@ minutes an hour.
+@
+@ Method: poll INT_STATUS's RTC bit and time a fixed number of transitions
+@ against Timer0 (see measure_rtc_toggles in helpers.s). Nothing is un-masked
+@ and no interrupt is taken - the status register reports the raw signal level,
+@ so the line can be watched directly.
+@
+@ Screen 14 shows the two raw Timer0 tick counts. Do the arithmetic against
+@ them rather than trusting a pre-computed rate; ../README.md's "Screen 14"
+@ section has the expected values and how to convert.
+run_experiment_12_rtc_rates:
+    push {r4, r5, r6, lr}
+
+    @ --- paused/program mode, at Timer0's normal /32 divisor ---
+    ldr r4, =RTC_MODE_ADDR
+    ldr r5, [r4]                       @ save the whole mode word: bits 1-3 are
+    orr r0, r5, #1                     @ CNTSEL and must come back untouched
+    str r0, [r4]
+
+    mov r0, #RTC_TOGGLES_PAUSED
+    bl measure_rtc_toggles
+    ldr r1, =WRAM_RTC_PAUSED_TICKS
+    str r0, [r1]
+
+    str r5, [r4]                       @ back to running before anything else
+
+    @ --- running mode. A toggle is a whole second here, which overflows
+    @ Timer0's real 16-bit count at /32, so slow Timer0 to /512 first. ---
+    ldr r4, =TIMER0_BASE
+    ldr r6, [r4, #8]                   @ save Timer0 control
+    mov r0, #0
+    str r0, [r4, #8]                   @ stop before reprogramming
+    mvn r0, #0
+    str r0, [r4]
+    str r0, [r4, #4]
+    mov r0, #TIMER0_CTRL_DIV512
+    str r0, [r4, #8]
+
+    mov r0, #RTC_TOGGLES_RUN
+    bl measure_rtc_toggles
+    ldr r1, =WRAM_RTC_RUN_TICKS
+    str r0, [r1]
+
+    mov r0, #0                         @ restore Timer0 exactly as it was found:
+    str r0, [r4, #8]                   @ every other screen's stopwatch is this
+    mvn r0, #0                         @ timer, and this app keeps running after
+    str r0, [r4]
+    str r0, [r4, #4]
+    str r6, [r4, #8]
+
+    pop {r4, r5, r6, lr}
     bx lr
     .ltorg

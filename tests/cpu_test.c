@@ -2140,6 +2140,51 @@ static void test_app_running_follows_flash1_execution(void) {
     printf("test_app_running_follows_flash1_execution OK\n");
 }
 
+static void test_rtc_date_rolls_over_at_midnight(void) {
+    /* Confirmed on real hardware: the date advances at midnight. This used to do nothing at all - the
+       per-second cascade stopped at day-of-week - so a device sat on one date forever. */
+    struct {
+        uint32_t date_before, time_before, date_after;
+        const char *what;
+    } cases[] = {
+        {0x00260801u, 0x07235959u, 0x00260802u, "ordinary day"},
+        {0x00260831u, 0x07235959u, 0x00260901u, "end of a 31-day month"},
+        {0x00260930u, 0x07235959u, 0x00261001u, "end of a 30-day month"},
+        {0x00261231u, 0x07235959u, 0x00270101u, "end of the year"},
+        {0x00240228u, 0x07235959u, 0x00240229u, "February in a leap year (24 % 4 == 0)"},
+        {0x00240229u, 0x07235959u, 0x00240301u, "the leap day itself"},
+        {0x00260228u, 0x07235959u, 0x00260301u, "February in a common year"},
+    };
+    size_t i;
+    for (i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        psemu_t *ps = psemu_create();
+        ps->has_bios = 1;
+        put32(ps, 0, 0xEAFFFFFEu);
+        arm7tdmi_reset(&ps->cpu, 0);
+        ps->rtc.date = cases[i].date_before;
+        ps->rtc.time = cases[i].time_before; /* 23:59:59, one second short of midnight */
+        psemu_run(ps, (uint32_t)PSEMU_ASSUMED_CPU_HZ);
+        assert((ps->rtc.time & 0x00FFFFFFu) == 0x000000u); /* 00:00:00 */
+        assert(ps->rtc.date == cases[i].date_after);
+        (void)cases[i].what;
+        psemu_destroy(ps);
+    }
+
+    /* A day that does not end must leave the date completely alone. */
+    {
+        psemu_t *ps = psemu_create();
+        ps->has_bios = 1;
+        put32(ps, 0, 0xEAFFFFFEu);
+        arm7tdmi_reset(&ps->cpu, 0);
+        ps->rtc.date = 0x00260815u;
+        ps->rtc.time = 0x07105959u; /* 10:59:59 */
+        psemu_run(ps, (uint32_t)PSEMU_ASSUMED_CPU_HZ);
+        assert(ps->rtc.date == 0x00260815u);
+        psemu_destroy(ps);
+    }
+    printf("test_rtc_date_rolls_over_at_midnight OK\n");
+}
+
 static void test_rtc_keeps_real_time(void) {
     /* The RTC drives a wall clock, so one emulated second has to last one real second. psemu_run's budget is
        in PSEMU_ASSUMED_CPU_HZ reference cycles, which IS real elapsed time, so a budget of exactly that many
@@ -2269,6 +2314,7 @@ int main(void) {
     test_settings_offsets_unknown_without_a_known_bios();
     test_app_running_follows_flash1_execution();
     test_rtc_keeps_real_time();
+    test_rtc_date_rolls_over_at_midnight();
     test_clk_stop_halts_until_a_button_wakes_it();
     printf("all cpu tests passed\n");
     return 0;

@@ -23,6 +23,7 @@
     .global irq_rearm_handler_t2_full
     .global irq_count_handler
     .global bcd8_to_bin
+    .global measure_rtc_toggles
 
 memcpy_words:            @ r0=dst, r1=src, r2=count(words)
     push {r3, lr}
@@ -322,6 +323,49 @@ irq_rearm_handler:
     add r1, r1, #1
     str r1, [r0]
     pop {r0, r1, pc}
+    .ltorg
+
+@ Times a fixed number of RTC interrupt-line transitions against Timer0, for
+@ experiment 12. r0 = transitions to count, returns Timer0 ticks elapsed.
+@
+@ Polls INT_STATUS's RTC bit rather than taking interrupts: this app runs with
+@ every source masked, and the status register reports the raw signal LEVEL
+@ (see docs/hardware-notes.md's "Interrupt controller"), so the level can be
+@ watched directly without un-masking anything or acknowledging anything.
+@
+@ It waits for one transition before starting the stopwatch, so the measurement
+@ always spans whole intervals rather than starting part-way through one.
+@
+@ The 16-bit mask on the result is the usual Timer0 wrap (see ../README.md);
+@ both callers size their transition counts to stay well inside one wrap.
+measure_rtc_toggles:              @ r0 = transitions -> r0 = Timer0 ticks
+    push {r4, r5, r6, r7, lr}
+    mov r4, r0
+    ldr r5, =INTC_STATUS
+    ldr r6, =TIMER0_COUNT
+    ldr r0, [r5]
+    and r7, r0, #INT_RTC_BIT      @ r7 = level as last seen
+mrt_align:
+    ldr r0, [r5]
+    and r0, r0, #INT_RTC_BIT
+    cmp r0, r7
+    beq mrt_align
+    mov r7, r0
+    ldr r3, [r6]                  @ start the stopwatch on that transition
+mrt_loop:
+    ldr r0, [r5]
+    and r0, r0, #INT_RTC_BIT
+    cmp r0, r7
+    beq mrt_loop
+    mov r7, r0
+    subs r4, r4, #1
+    bne mrt_loop
+    ldr r0, [r6]
+    sub r0, r3, r0                @ Timer0 counts down, so before minus after
+    mov r0, r0, lsl #16
+    mov r0, r0, lsr #16
+    pop {r4, r5, r6, r7, lr}
+    bx lr
     .ltorg
 
 @ IRQ handler for screen 13's CLK stop test. Same shape as irq_rearm_handler

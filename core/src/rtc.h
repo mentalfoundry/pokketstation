@@ -47,12 +47,15 @@ struct intc;
    This part is confirmed against real hardware's behavior and independent community write-ups; this emulator
    implements it as-is.
 
-   The automatic per-tick advance cascades seconds -> minutes -> hours -> day-of-week only.
+   The automatic per-tick advance cascades seconds -> minutes -> hours -> day-of-week, and at midnight on
+   into day -> month -> year (see rtc_advance_date).
    It uses the exact same BCD carry arithmetic as the CNTSEL=0 (seconds) case.
-   This cascade is this emulator's own RTC auto-advance logic.
-   It does not cascade into date on a day rollover.
-   This is a gap in this codebase's own history; no independent source explains it.
-   No independent source describes the real date-rollover mechanism either, so this gap is inherited, not invented. */
+
+   History: this cascade used to stop at day-of-week and never touch RTC_DATE, so an emulated device sat on
+   one date forever while its day-of-week advanced past it. That was recorded here as an inherited gap, on
+   the grounds that no independent source described the real mechanism. Direct testing on a real unit has
+   since confirmed the date does roll over, so the gap was a bug rather than an unknown. The month lengths
+   and leap rule rtc_advance_date applies are still unconfirmed; see its comment. */
 typedef struct rtc {
     uint32_t mode;
     uint32_t control;
