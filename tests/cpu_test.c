@@ -1,3 +1,14 @@
+/* Every check in this file is an assert(), and a Release build defines NDEBUG, which compiles assert()
+   to nothing. This whole suite therefore ran as a few hundred no-ops and a printf per test in any
+   Release configuration - reporting "all cpu tests passed" while verifying nothing at all. The release
+   workflows (.github/workflows/) run ctest in Release, so that is where it mattered most.
+   Proven, not inferred: an assert(0) placed at the top of main still exited 0 and printed the full
+   passing output in a Release build.
+   Undefining NDEBUG right here keeps the checks in whatever configuration this is built as, and needs
+   nothing from the build files. It must come before <assert.h>, which decides what assert() means at
+   include time. */
+#undef NDEBUG
+
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
@@ -1377,6 +1388,85 @@ static void test_flash_serial_number_register_access(void) {
     printf("test_flash_serial_number_register_access OK\n");
 }
 
+/* Builds a card carrying one named save, with `data_fill` in its data area, so a test can change what
+   is stored without changing what the card is. */
+static void make_identity_card(uint8_t *card, const char *name, uint8_t data_fill) {
+    memset(card, 0, PSEMU_FLASH_SIZE);
+    memcpy(card, "MC", 2);
+    card[128] = 0x51u; /* frame 1: in use, first block of a file */
+    memcpy(&card[128 + 0x0A], name, strlen(name));
+    {
+        uint32_t frame;
+        for (frame = 2; frame < 16u; frame++) {
+            card[frame * 128u] = 0xA0u; /* free */
+        }
+    }
+    memset(&card[FLASH_BLOCK_SIZE], data_fill, FLASH_BLOCK_SIZE);
+    memcpy(&card[FLASH_BLOCK_SIZE], "SC", 2);
+}
+
+static void test_content_identity_hash_survives_a_save(void) {
+    /* The property this exists for: a save state has to keep matching the card it was made from after
+       an app writes to that card, now that a frontend writes the card back to disk. Hashing the file
+       cannot do that - the file is what changed. See psemu_content_identity_hash. */
+    static uint8_t card[PSEMU_FLASH_SIZE];
+    static uint8_t other[PSEMU_FLASH_SIZE];
+    static uint8_t app[8192];
+    static uint8_t mcs[128 + 8192];
+    uint32_t before, after;
+
+    make_identity_card(card, "BASLUS-01411-YUGIOH", 0x11);
+    before = psemu_content_identity_hash(card, sizeof(card));
+
+    /* The app saves: data changes all over the card's data blocks, exactly as a real trade does. */
+    memset(&card[FLASH_BLOCK_SIZE + 0x200], 0x99, 0x400);
+    card[FLASH_BLOCK_SIZE + 0x259] = 0x01u;
+    after = psemu_content_identity_hash(card, sizeof(card));
+    assert(before == after);
+
+    /* A different card is still a different card. */
+    make_identity_card(other, "BASCUS-94163-CHOCOBO", 0x11);
+    assert(psemu_content_identity_hash(other, sizeof(other)) != before);
+
+    /* So is the same card with a file added or removed - that is a real change of identity, not of
+       stored data, and refusing a state across it is correct. */
+    make_identity_card(other, "BASLUS-01411-YUGIOH", 0x11);
+    other[2 * 128u] = 0x51u;
+    assert(psemu_content_identity_hash(other, sizeof(other)) != before);
+
+    /* A bare app: its title-sector metadata identifies it, and its own blocks are free to change. */
+    memset(app, 0, sizeof(app));
+    memcpy(&app[0x52], "MCX0", 4);
+    memcpy(&app[0x04], "A TEST APP", 10);
+    app[0x02] = 0x11u; /* one standard icon frame */
+    memset(&app[0x80], 0x5Au, 128); /* the icon bitmap */
+    before = psemu_content_identity_hash(app, sizeof(app));
+    memset(&app[0x600], 0xEE, 0x100); /* the app saves, well past its icon */
+    assert(psemu_content_identity_hash(app, sizeof(app)) == before);
+    memcpy(&app[0x04], "B TEST APP", 10); /* a different app entirely */
+    assert(psemu_content_identity_hash(app, sizeof(app)) != before);
+    memcpy(&app[0x04], "A TEST APP", 10);
+    app[0x80] ^= 0xFFu; /* a different icon, same title */
+    assert(psemu_content_identity_hash(app, sizeof(app)) != before);
+    app[0x80] ^= 0xFFu;
+
+    /* A .mcs identifies by its directory frame as well as its body. */
+    memset(mcs, 0, sizeof(mcs));
+    mcs[0x00] = 0x51u;
+    mcs[0x04] = (uint8_t)(8192u & 0xFFu);
+    mcs[0x05] = (uint8_t)((8192u >> 8) & 0xFFu);
+    memcpy(&mcs[0x0A], "BESLES-99999-TEST", 17);
+    memcpy(&mcs[128], app, sizeof(app));
+    assert(psemu_identify_content(mcs, sizeof(mcs)) == PSEMU_CONTENT_MCS);
+    before = psemu_content_identity_hash(mcs, sizeof(mcs));
+    memset(&mcs[128 + 0x600], 0x77, 0x100); /* the app saves */
+    assert(psemu_content_identity_hash(mcs, sizeof(mcs)) == before);
+    memcpy(&mcs[0x0A], "BESLES-11111-TEST", 17); /* a different file on the card */
+    assert(psemu_content_identity_hash(mcs, sizeof(mcs)) != before);
+
+    printf("test_content_identity_hash_survives_a_save OK\n");
+}
+
 static void test_flash_load_app_synthesizes_directory(void) {
     /* A real, confirmed bug (see docs/app-notes.md, "App-selection and
        dispatch"): the real BIOS's app-selection routine requires FLASH2 to
@@ -2345,8 +2435,25 @@ static void test_clk_stop_halts_until_a_button_wakes_it(void) {
     assert(clk_stop_requested(&ps->clk));  /* and the timer did not wake it */
 
     /* The RTC has its own oscillator, so it keeps running while stopped - that is what lets a sleeping
-       device still know the time. */
-    assert(ps->intc.status & INT_RTC);
+       device still know the time. Ten seconds of stopped CPU are still ten seconds on the clock, in BCD.
+
+       This used to assert INT_RTC in STATUS instead, which is not the same claim. STATUS carries the raw
+       level of the RTC's interrupt line (see intc.h), and that line is a square wave: asserting it is high
+       only ever tests which half of the waveform the run happened to end in. Ten seconds is a whole number
+       of periods at both the 1-transition-per-second rate this was written against and the 2Hz rate
+       measured later, so it landed low and the assert failed both times. It never passed in any Debug
+       build; NDEBUG hid that everywhere else. */
+    assert((ps->rtc.time & 0xFFu) == 0x10u);
+
+    /* The interrupt line keeps moving too, which is the part the level check was reaching for. One more
+       transition is the phase-independent way to ask, and STATUS must follow it. */
+    {
+        int line_before = ps->rtc.int_line;
+        psemu_run(ps, RTC_TICK_CYCLES_RUN);
+        assert(ps->rtc.int_line != line_before);
+        assert(((ps->intc.status & INT_RTC) != 0) == (ps->rtc.int_line != 0));
+        assert(ps->cpu.total_steps == steps); /* still stopped: an RTC tick is not a wake */
+    }
 
     /* A button is external to this clock, so it wakes the CPU, and the wake clears the bit. */
     psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
@@ -2393,6 +2500,7 @@ int main(void) {
     test_flash_serial_number_default_and_override();
     test_hardware_id_string_conversion();
     test_flash_serial_number_register_access();
+    test_content_identity_hash_survives_a_save();
     test_flash_load_app_synthesizes_directory();
     test_flash_load_app_rejects_oversized_app();
     test_psemu_load_mcs_validates_and_unwraps();

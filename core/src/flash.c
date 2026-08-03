@@ -80,12 +80,27 @@ static uint8_t directory_frame_xor(const uint8_t *frame) {
     return xor_value;
 }
 
+int flash_app_body_is_valid(const uint8_t *data, size_t size) {
+    if (!data || size < TITLE_SECTOR_HEADER_SIZE || size > DIRECTORY_MAX_APP_BLOCKS * FLASH_BLOCK_SIZE) {
+        return 0;
+    }
+    return memcmp(&data[TITLE_SECTOR_MAGIC_OFFSET], "MCX0", 4) == 0 ||
+           memcmp(&data[TITLE_SECTOR_MAGIC_OFFSET], "MCX1", 4) == 0;
+}
+
+psemu_status flash_save_app(const flash_t *flash, uint8_t *buf, size_t size) {
+    if (!buf || size == 0u || size > DIRECTORY_MAX_APP_BLOCKS * FLASH_BLOCK_SIZE) {
+        return PSEMU_ERR_BAD_SIZE;
+    }
+    memcpy(buf, &flash->data[FLASH_BLOCK_SIZE], size);
+    return PSEMU_OK;
+}
+
 psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
     if (size < TITLE_SECTOR_HEADER_SIZE || size > DIRECTORY_MAX_APP_BLOCKS * FLASH_BLOCK_SIZE) {
         return PSEMU_ERR_BAD_SIZE;
     }
-    if (memcmp(&data[TITLE_SECTOR_MAGIC_OFFSET], "MCX0", 4) != 0 &&
-        memcmp(&data[TITLE_SECTOR_MAGIC_OFFSET], "MCX1", 4) != 0) {
+    if (!flash_app_body_is_valid(data, size)) {
         return PSEMU_ERR_BAD_FORMAT;
     }
 

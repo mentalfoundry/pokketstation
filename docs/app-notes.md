@@ -113,6 +113,17 @@ Yu-Gi-Oh's write routine is at `0x020028FA`:
 3. Per frame: up to **10 attempts** at `SWI 0x10` with the frame number in `r0` and a 128-byte source buffer in `r1`, retrying while it returns nonzero.
 4. On success, advance one frame and 128 source bytes, and repeat for the caller's frame count.
 
+**Nothing ever calls `0x020028FA` at its entry.** Both of its callers set `r0`/`r1`/`r2` themselves, push the same registers, and branch into the middle of it at `0x020028FE`. A cross-reference search for the entry address finds nothing, which reads as "this routine is dead" and is wrong. Search for `0x020028FE` instead.
+
+The two callers are the ones to watch, since between them they cover the first `0x400` bytes of the save:
+
+- **`0x02002960` writes 7 frames from save frame 0** (`r0=0`, `r2=7`), that is, save data `+0x000`-`+0x37F`, out of a fixed buffer. Before writing it recomputes a 64-byte table at save data `+0x340` word by word, via the helper at `0x02002878`. This is the routine a completed IR trade calls.
+- **`0x0200292C` writes 1 frame at frame offset 7** (save data `+0x380`-`+0x3FF`), and likewise recomputes a checksum over `0x6C` bytes at the caller's structure `+0x6C`/`+0x7C` first.
+
+**The gate at `0x02000C84` is a low-battery check, not a confirmation prompt.** It calls `0x020025E8`, whose entire body is `ldr r0,[0x0A000004]` then `lsrs r0,r0,#0xb` - which lands **INTC `STATUS` bit 10, `INT_BATTERY`,** in the carry flag (see `core/src/intc.h`). Carry clear means the battery is fine and the write proceeds. Carry set makes the gate raise a flag bit and spin on a redraw/poll pair until the condition clears, then return carry set, and the write routine abandons the write. `INT_BATTERY` is not in `INT_STATUS_MASK`, so this emulator reads it as 0 and the gate always passes - which matches a healthy device and is what a user emulating one wants.
+
+This matters because the gate looked for a long time like the thing standing between a received transfer and a committed save. It is not, and no in-app confirmation has to be found to satisfy it.
+
 The J110 kernel handler is at `0x0400126C`, and every step of it has to work or the write fails silently:
 
 1. `F_WAIT2` (`FLASH_CTRL+0x10`) `= 0x21`, enabling flash writes.
@@ -123,20 +134,60 @@ The J110 kernel handler is at `0x0400126C`, and every step of it has to work or 
 
 This whole path is modelled correctly, and `test_flash_frame_write_lands_in_a_ps1_save_block` (in `tests/cpu_test.c`) replays the sequence directly - no BIOS or app image needed, so it runs in CI - and asserts the frame lands where the handler's own verify would look for it.
 
-### Nothing commits to flash during an IR transfer
+### A completed IR trade does commit to the PS1 save, on both sides
 
-**No app this project can drive attempts a single flash write during an IR transfer** - not Yu-Gi-Oh, and not Chocobo World even on a fully verified bidirectional exchange. This is measured at the level of *attempted* writes, not inferred from a diff, which matters: a diff reports nothing whether the app never wrote, wrote a value identical to what was stored, or had its write discarded by some layer in between. `tools/ir_probe.c`'s `flashwatch` mode uses `psemu_bus_write_trace_cb` (`core/src/memory.c`) to separate those cases, and reports zero attempts to both FLASH1 and FLASH2.
+**Yu-Gi-Oh writes the console game's PS1 save at the end of a successful card trade, and this emulator carries that write all the way to the card.** Measured end to end with `tools/ir_probe.c`, driving two instances against each other over the IR relay:
+
+- 7 `SWI 0x10` calls per side, at the app's `0x0200291A`, reached through `0x02002960` -> `0x020028FE`.
+- 1876 attempted FLASH2 byte writes per run, and **65 bytes changed in physical block 1 on each card** - block 1 being `BASLUS-01411-YUGIOH`, the game's own PS1 save, not the app's blocks.
+- Timing, in emulated frames: the receiver commits about 4 frames after the transfer ends, the sender about 3 frames after that.
+
+The 65 changed bytes are exactly what a trade should produce, and the two sides mirror each other:
+
+- **Save data `+0x59`: `01` -> `00` on the sender, `00` -> `01` on the receiver.** One byte per card ID, holding how many copies the save owns. One card left one save and arrived in the other.
+- **Save data `+0x340`-`+0x37F`: 64 bytes rewritten on both.** The derived table `0x02002960` recomputes before every write (see above). It changes on both sides because the data it is derived from changed on both sides.
+
+Both resulting cards stay structurally valid: `"MC"` header intact, every directory frame's XOR checksum still correct, and no block outside block 1 touched. A written card loads straight back into this emulator, and is in the same raw layout a real card dump uses.
+
+**What had to be right to get here was the app's state, not the emulator.** Every earlier attempt drove both roles from a single shared screen, or from states that had not been navigated to the app's own send and receive screens. Those runs reported zero flash writes, which is a true measurement of the wrong scenario, and it was read as a missing emulator capability. Yu-Gi-Oh parks the sender and the receiver on *different* screens, so the two roles have to be armed from two separately captured states - which is what `ir_probe`'s comma-separated `quicksaveA,quicksaveB` form is for. With both sides genuinely armed, the write needs no further confirmation press: the app commits on its own once the trade completes.
+
+Reproducing it:
+
+```
+ir_probe J110.bin card2.mcr "sender.sav,receiver.sav" 33000 300 "fire@20-21" "fire@10-11" flashwatch
+```
+
+where `sender.sav` is a state sitting on the app's send screen and `receiver.sav` one sitting on its receive screen, each one Action-press away from starting. The run reports the block diff, and writes each side's resulting card to `ir_probe_A_card.mcr`/`ir_probe_B_card.mcr`.
+
+Three diagnostics answer three different questions here, and mixing them up wasted real time:
+
+- `flashwatch` (`psemu_bus_write_trace_cb`) reports **attempted** writes. A diff cannot: it reports nothing whether the app never wrote, wrote a value identical to what was stored, or had its write dropped in between.
+- `IR_PROBE_WATCH_PC` (`psemu_exec_trace_cb`, `core/src/cpu.h`) reports whether **execution ever reached** a given address over a whole run. This is the question that comes first - "the app never called its writer" and "it called it and the write was dropped" look identical from a write hook - and the CPU's own trace ring cannot answer it, since a run long enough to matter overwrites the ring many times over.
+- The end-of-run **block diff** reports what actually changed, against flash as it stood once the run was set up.
 
 Two false leads are worth recording so they are not followed again:
 
 - **Diffing the loaded file against flash is not a write check.** `psemu_load_mcs` synthesizes a 16-frame directory and relocates the save's data to block 1, and `psemu_load_state` then overwrites flash again. Both happen before the first instruction. A file-vs-flash diff reported thousands of "written" bytes across every block for a `.mcs`-loaded app that had in fact written nothing. The baseline has to be flash as it stood once the run was set up.
-- **The only FLASH_CTRL traffic during a transfer is not a flash write.** Both apps generate writes to `F_WAIT1` (`+0x0C`) and `F_WAIT2` (`+0x10`) from BIOS `0x040017C6`/`0x040017C8`. That routine (entry `0x040017B6`, distinct from `FlashReadSerial` at `0x040017A5`) sets flash waitstates and then programs `CLK_MODE` and polls for the change to take effect: it is the **clock-speed change routine**, and it fires because both apps switch CLK_MODE for the duration of a transfer (measured: 507904Hz to 1998848Hz). `F_WAIT2` is also what a real flash-write routine polls, so this region is worth watching - but these particular writes are not a commit.
+- **Not all FLASH_CTRL traffic during a transfer is a flash write.** Both apps generate writes to `F_WAIT1` (`+0x0C`) and `F_WAIT2` (`+0x10`) from BIOS `0x040017C6`/`0x040017C8`. That routine (entry `0x040017B6`, distinct from `FlashReadSerial` at `0x040017A5`) sets flash waitstates and then programs `CLK_MODE` and polls for the change to take effect: it is the **clock-speed change routine**, and it fires because both apps switch CLK_MODE for the duration of a transfer (measured: 507904Hz to 1998848Hz). `F_WAIT2` is also what a real flash-write routine polls, so this region is worth watching - but these particular writes are not a commit.
 
-So the received data reaches RAM and the screen, and the commit is gated on something none of these scenarios reach. Button scripts covering repeated confirmation presses, long `Action` holds, directional navigation, and 2500 frames (~78s emulated) of idle runtime all produced zero write attempts.
+**The two apps are not equivalent here, and the difference is the point.** Chocobo World's transfers move its own app state, which lives in its own blocks, and it still attempts no flash write on a fully verified bidirectional exchange. Yu-Gi-Oh is the case that genuinely writes the console game's PS1 save, so it is the app to drive when testing this path, and `SWI 0x10` reaching `FLASH2` block 1 is the signal to watch for.
 
-**The two apps are not equivalent here, and the difference is the point.** Chocobo World's transfers move its own app state, which lives in its own blocks. Yu-Gi-Oh is the case that genuinely writes the console game's PS1 save, adding traded cards to it - so it is the app to drive when testing this path, and `SWI 0x10` reaching `FLASH2` block 1 is the signal to watch for.
+### Getting the edited card back out
 
-What is not yet located is the in-app trigger: which screen or confirmation makes `0x020028FA`'s gate at `0x02000C84` return carry clear and let the write proceed. That is a question about reaching the right app state, not about the emulator - the kernel path underneath it is modelled and tested. `tools/ir_probe.c`'s `flashwatch` mode reports `SWI 0x10` traffic the moment any scenario does reach it.
+An edit that never leaves the emulator is not much use. Three public functions cover getting content back out, all in `core/include/psemu/psemu.h`:
+
+- **`psemu_save_flash_image`** copies flash back out in the same raw layout a `.mcr` already uses - the inverse of `psemu_load_flash_image`.
+- **`psemu_save_app_image`** copies just the loaded app's own body back out - the inverse of `psemu_load_app`, and of the part of `psemu_load_mcs` that follows the directory frame. The body sits contiguously at physical block 1, right where `flash_load_app`'s final `memcpy` put it, so the inverse really is a plain copy back.
+- **`psemu_identify_content`** names what `psemu_load_content` would make of a buffer, without loading it. `psemu_load_content` is written in terms of it, so a caller cannot drift out of step with the dispatch the way a reimplemented size or extension check would.
+- **`psemu_content_identity_hash`** hashes which app or card a buffer *is* - directory file names for a card, title-sector metadata for an app - rather than what is currently stored in it. Write-back makes this necessary rather than merely nice: a frontend that identifies a save state by hashing the whole file finds that every state stops matching the moment the app saves, because the file is what changed. Measured against the real thing: a Yu-Gi-Oh card trade leaves both cards' identity hashes untouched, and the two cards still hash differently from each other.
+
+The desktop frontend writes all three kinds back automatically; see `frontends/desktop/content_writeback.h` for the rules, and `docs/desktop_readme.md` for what a user sees. What matters for anyone else building on this:
+
+- **A `.mcs` is rebuilt as its own directory frame plus the app body.** Keep the frame verbatim from the loaded file: it describes the file (size, name, link) rather than its contents, and an app cannot reach it, so the loaded copy is still correct. Do not write flash's *synthesized* directory there - that is this emulator's scaffolding, not the file's.
+- **For a `.mcs`/`.pss`, only the app's own blocks exist in the file.** An app can write anywhere in the synthesized card through `FLASH2`, and there is nowhere to put those bytes. Compare only the region that will be written, too, or a stray write to the synthesized directory marks the file dirty forever and rewrites it on a loop.
+- **A reset and a save-state load replace flash wholesale**, without any app writing to it. Those are not edits to persist; treat them as a new baseline instead, or a state load will write the state's card over the file.
+
+`frontends/desktop/content_writeback_selftest.c` covers all three kinds, and takes an optional file argument for round-tripping real content from `testdata/` by hand. Six real files - four `.mcs` (up to 13 blocks) and two `.mcr` - rebuild byte-for-byte identically when nothing has changed them.
 
 ## Browse-screen icon/graphic
 

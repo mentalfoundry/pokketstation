@@ -8,6 +8,8 @@ This project is stable, broadly tested by the community, and as cycle-accurate a
 
 IR now works locally! Be sure to set the recieving side into recieving mode first within your apps. The send side does not appear to be very forgiving (like in the real world). Tested against my favorite app - your mileage may vary.
 
+Apps now save to disk. Whatever an app writes - its own progress, or an edit to the console game's own PS1 save sharing the memory card - is written back to the file you opened, in the format you opened (`.mcr`, `.mcs` or `.pss`), with a `.bak` of the original kept alongside. Yu-Gi-Oh Forbidden Memories trading cards over IR into the game's save is the case this was verified against. See [Save write-back](docs/desktop_readme.md#save-write-back), and [app-notes.md](docs/app-notes.md) for how an app reaches that save.
+
 Do not rely on save state compatibility between versions just yet. Apologies but there are still likely a few more iterations of the internal registries to go.
 
 See [docs/hardware-notes.md](docs/hardware-notes.md) for the technical details.

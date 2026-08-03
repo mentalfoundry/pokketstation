@@ -1,3 +1,7 @@
+/* See the note at the top of cpu_test.c: a Release build's NDEBUG compiles every assert() away, so this
+   suite has to keep them itself. Must precede <assert.h>. */
+#undef NDEBUG
+
 #include <assert.h>
 #include <stdio.h>
 

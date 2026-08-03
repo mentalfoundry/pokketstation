@@ -26,6 +26,7 @@
 
 #include "psemu/psemu.h"
 #include "resource.h"
+#include "content_writeback.h"
 #include "ir_link.h"
 
 #define SCALE 8
@@ -64,16 +65,6 @@ static void join_path(char *out, size_t out_size, const char *dir, const char *n
     } else {
         snprintf(out, out_size, "%s/%s", dir, name);
     }
-}
-
-static uint32_t fnv1a_hash(const uint8_t *data, size_t size) {
-    uint32_t hash = 2166136261u;
-    size_t i;
-    for (i = 0; i < size; i++) {
-        hash ^= data[i];
-        hash *= 16777619u;
-    }
-    return hash;
 }
 
 /* How many save slots File > Save State/Load State offer.
@@ -134,13 +125,25 @@ static const char *save_slot_label(int slot) {
    state that got smaller, never one that grew.
    4: arm7tdmi_t gained r8_12_bank, the FIQ bank for r8-r12 that a real
    ARM7TDMI has and this emulator was missing. A version-3 state loaded as
-   version 4 would misread every field after the CPU, so it is rejected. */
-#define QUICKSAVE_VERSION 4u
+   version 4 would misread every field after the CPU, so it is rejected.
+   5: app_hash changed meaning - see below. The blob itself is unchanged, but
+   a version-4 file's hash would never match a version-5 one's, and being
+   told a state does not belong to the card it plainly came from is worse
+   than being told it is from an older build. */
+#define QUICKSAVE_VERSION 5u
 
 /* app_size/app_hash guard against loading a state saved under a different
    app/card. The per-app filename already makes that unlikely to even be
    attempted; this is a safety net against a hash collision or a
-   hand-edited/renamed file. */
+   hand-edited/renamed file.
+
+   app_hash is a hash of the content's IDENTITY, not of the file (see
+   psemu_content_identity_hash). It hashed the whole file until write-back
+   existed, and that stopped working the moment it arrived: an app saving its
+   progress rewrites the file, so every state made before that save stopped
+   matching the very card it was made from. Hashing the parts that say which
+   card this is - directory file names, title-sector metadata - survives an
+   app saving, and still refuses a genuinely different app or card. */
 typedef struct {
     char magic[4];
     uint32_t version;
@@ -899,6 +902,7 @@ typedef struct {
     const char *settings_path;
     const char *exe_dir;
     ir_link_t *ir_link;
+    content_writeback_t *content_writeback;
 } menu_context_t;
 
 /* Shows IR Link's live status as the entire window title, e.g. "IR - Connected", replacing the plain
@@ -1005,11 +1009,16 @@ static void prompt_open_app(menu_context_t *ctx) {
         return;
     }
 
+    /* Before the file being replaced goes out of reach. Opening something else is not a reason to
+       discard an edit the app already made to what is loaded now. */
+    content_writeback_commit(ctx->content_writeback, ctx->ps);
+
     free(*ctx->app);
     *ctx->app = new_app;
     *ctx->app_size = new_size;
     snprintf(ctx->app_path, ctx->app_path_cap, "%s", path);
     psemu_reset(ctx->ps);
+    content_writeback_arm(ctx->content_writeback, ctx->ps, path, new_app, new_size);
     drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 }
@@ -1019,7 +1028,11 @@ static void prompt_open_app(menu_context_t *ctx) {
    psemu_reset already performs this same reset after a fresh load. See its comment in psemu.c.
    This triggers it on demand, instead of only after a file dialog succeeds. */
 static void reset_emulation(menu_context_t *ctx) {
+    /* A reset leaves flash alone (see psemu_reset), so this commits an edit the app has already made
+       rather than losing it, and then treats what survives as the new baseline. */
+    content_writeback_commit(ctx->content_writeback, ctx->ps);
     psemu_reset(ctx->ps);
+    content_writeback_resync(ctx->content_writeback, ctx->ps);
     drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 }
@@ -1041,7 +1054,7 @@ static void save_state_to_slot(menu_context_t *ctx, int slot) {
     memcpy(header.magic, QUICKSAVE_MAGIC, 4);
     header.version = QUICKSAVE_VERSION;
     header.app_size = (uint32_t)*ctx->app_size;
-    header.app_hash = fnv1a_hash(*ctx->app, *ctx->app_size);
+    header.app_hash = psemu_content_identity_hash(*ctx->app, *ctx->app_size);
     memcpy(buf, &header, sizeof(header));
     psemu_save_state(ctx->ps, buf + sizeof(header), state_size);
 
@@ -1077,7 +1090,7 @@ static void load_state_from_slot(menu_context_t *ctx, int slot) {
         return;
     }
 
-    uint32_t current_hash = fnv1a_hash(*ctx->app, *ctx->app_size);
+    uint32_t current_hash = psemu_content_identity_hash(*ctx->app, *ctx->app_size);
     if (header.app_size != (uint32_t)*ctx->app_size || header.app_hash != current_hash) {
         snprintf(msg, sizeof(msg), "The save state in %s doesn't match the currently loaded app/card.",
             save_slot_label(slot));
@@ -1125,6 +1138,10 @@ static void load_state_from_slot(menu_context_t *ctx, int slot) {
 
     free(buf);
     fclose(f);
+    /* A save state carries its own copy of flash, so the card just changed wholesale without any app
+       writing to it. That is not an edit to write back: take it as the new baseline instead, and let
+       whatever the app does from here be what reaches the file. */
+    content_writeback_resync(ctx->content_writeback, ctx->ps);
     drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 }
@@ -2235,6 +2252,10 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels, uint32_t pix
     }
 }
 
+/* A quarter of a megabyte of card snapshots, kept out of main's stack frame. One per process, which is
+   what an IR Link pair already is: two processes, each with its own card. */
+static content_writeback_t content_writeback;
+
 int main(int argc, char **argv) {
     char exe_dir[900];
     char settings_config_path[1024];
@@ -2423,6 +2444,7 @@ int main(int argc, char **argv) {
         app_size = 0;
     }
     psemu_reset(ps);
+    content_writeback_arm(&content_writeback, ps, app_path, app, app ? app_size : 0);
 
     /* Persist a successfully-loaded BIOS path right away, whether it came from
        a CLI argument or the settings-remembered/next-to-the-.exe default.
@@ -2572,6 +2594,7 @@ int main(int argc, char **argv) {
     menu_ctx.settings_path = settings_config_path;
     menu_ctx.exe_dir = exe_dir;
     menu_ctx.ir_link = &ir_link;
+    menu_ctx.content_writeback = &content_writeback;
     SDL_SetWindowsMessageHook(handle_windows_message, &menu_ctx);
 
     uint32_t pixels[PSEMU_LCD_WIDTH * PSEMU_LCD_HEIGHT];
@@ -2795,10 +2818,13 @@ int main(int argc, char **argv) {
         SDL_RenderClear(renderer);
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
+        content_writeback_poll(&content_writeback, ps, frame);
         SDL_Delay(31); /* ~32Hz, matching the real LCD refresh */
         frame++;
     }
 
+    /* Whatever is still inside the settle window when the user quits. */
+    content_writeback_commit(&content_writeback, ps);
     ir_link_disconnect(&ir_link);
 
     if (audio_dev != 0) {

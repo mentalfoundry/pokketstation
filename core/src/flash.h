@@ -122,6 +122,18 @@ void flash_reset_registers(flash_t *flash);
    reserved for the synthesized directory. */
 psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size);
 
+/* The size/magic half of flash_load_app's validation, without loading anything. Returns nonzero if
+   `data` is a Title Sector body flash_load_app would accept.
+   flash_load_app itself calls this, so "would this load?" and "does this load?" cannot drift apart.
+   psemu_identify_content needs the question answered without side effects, since it has to name a
+   content type before anything is loaded. */
+int flash_app_body_is_valid(const uint8_t *data, size_t size);
+
+/* Copies `size` bytes of the loaded app's own body back out - the exact inverse of flash_load_app's
+   final copy. The body sits contiguously at physical block 1, right after the synthesized directory,
+   so this is a plain copy back from there and `size` is the caller's own payload size. */
+psemu_status flash_save_app(const flash_t *flash, uint8_t *buf, size_t size);
+
 /* FLASH2: physical flash, unwindowed. */
 uint8_t flash_read8(flash_t *flash, uint32_t addr);
 void flash_write8(flash_t *flash, uint32_t addr, uint8_t value);

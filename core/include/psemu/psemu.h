@@ -70,6 +70,22 @@ psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size);
    The rest of flash is left zeroed. */
 psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t size);
 
+/* Copies the whole FLASH2 image back out, as an app has left it. The inverse of
+   psemu_load_flash_image, in the same raw layout a .mcr file already uses, so the result can be
+   written straight back over the card image it was loaded from.
+
+   This exists because a PocketStation app's real output frequently is not its own state at all: it
+   is an edit to the PS1 save belonging to the console game sitting in another block of the same
+   card. Yu-Gi-Oh Forbidden Memories trades cards into the game's save this way. See
+   docs/app-notes.md, "How an app reaches the PS1 save on the same card". Without a way to get flash
+   back out, that edit lives and dies inside one emulator session.
+
+   `size` must be at least PSEMU_FLASH_SIZE; this returns PSEMU_ERR_BAD_SIZE otherwise. Callers that
+   loaded a .mcs/.pss rather than a whole card should think twice before writing the result to a
+   file: flash then holds a synthesized directory around a relocated save (see psemu_load_mcs), not
+   the file that was loaded. */
+psemu_status psemu_save_flash_image(const psemu_t *ps, uint8_t *buf, size_t size);
+
 /* Determines the content type of `data` from its size and content, not from a file extension.
    Loads `data` using the matching loader.
    Both frontends must call this function instead of duplicating this dispatch logic.
@@ -86,6 +102,67 @@ psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t siz
    - If neither loader matches, this function returns the status of the last-attempted
      loader. */
 psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size);
+
+/* What psemu_load_content would make of `data`, decided without loading it and without side effects.
+   This IS psemu_load_content's own dispatch - that function is written in terms of this one - so a
+   caller cannot drift out of step with it the way a reimplemented size/extension check would.
+
+   A frontend needs this to write content back out again: the three kinds round-trip differently, and
+   only the caller knows which file the bytes came from. See psemu_save_app_image. */
+typedef enum {
+    PSEMU_CONTENT_UNKNOWN = 0, /* neither loader would accept it */
+    PSEMU_CONTENT_CARD,        /* whole memory-card image, exactly PSEMU_FLASH_SIZE bytes */
+    PSEMU_CONTENT_MCS,         /* single-save export: a 0x80-byte directory frame, then the app body */
+    PSEMU_CONTENT_APP          /* bare Title Sector body, no directory frame */
+} psemu_content_kind;
+
+psemu_content_kind psemu_identify_content(const uint8_t *data, size_t size);
+
+/* A stable identity for loaded content: which app or card this is, rather than what is currently
+   stored in it. Hashing the whole file cannot answer that question, because the whole file is exactly
+   what changes when an app saves.
+
+   That distinction became load-bearing once a frontend could write content back to disk. A save state
+   carries its own copy of flash, so loading one onto the wrong card replaces that card wholesale, and
+   anything the app writes afterwards then lands in the wrong file. The guard has to keep working after
+   an app has saved, or it gets in the way often enough to be worth removing - and then it is not there
+   for the case that corrupts something.
+
+   Hashed, by content kind:
+   - CARD: every directory frame's allocation state, and the file name of every frame in use. That is
+     which saves live on this card, which an app writing save data does not change.
+   - MCS: the file's own directory frame (state and name), then its body's title-sector metadata.
+   - APP: the body's title-sector metadata alone.
+   - UNKNOWN: the whole buffer, since nothing better can be said about it.
+
+   "Title-sector metadata" means everything up to the end of the standard PS1 icon: the header, the
+   Shift-JIS title, the CLUT, and the icon frames. All of it has to stay valid for the BIOS to dispatch
+   the app at all, so an app cannot use it for save data - and it is what a person means by which app
+   this is. Confirmed against a real app writing a real save: Yu-Gi-Oh's card trade changes bytes at
+   save-data offsets 0x59 and 0x340, well past this region.
+
+   TWO CARDS HOLDING THE SAME FILES HASH THE SAME, and nothing can fix that: a real PS1 memory card has
+   no serial number, so there is no intrinsic way to tell two identical cards apart. A frontend that
+   needs them distinguished should key on the file path as well - the desktop frontend already names
+   each save-state file after the card it belongs to. */
+uint32_t psemu_content_identity_hash(const uint8_t *data, size_t size);
+
+/* Copies `size` bytes of the loaded app's own body back out: the inverse of psemu_load_app, and of the
+   part of psemu_load_mcs that follows the directory frame. `size` is the caller's own payload size -
+   the whole file for a .pss, or the file minus its leading 0x80-byte frame for a .mcs.
+
+   To rebuild a .mcs, write that same 0x80-byte frame back in front of this. The frame describes the
+   file (size, name, link) rather than its contents, and an app cannot reach it, so the copy in the
+   loaded file is still correct afterwards.
+
+   ONLY THE APP'S OWN BLOCKS ROUND-TRIP. A loaded app runs inside a memory card this emulator
+   synthesizes around it (see psemu_load_app), and nothing else in that card exists in the file: not the
+   directory, and not any other block. An app that writes outside its own blocks - which it can, since
+   FLASH2 shows it the whole synthesized card - has nowhere for those bytes to go in a .mcs/.pss, and
+   they are dropped. Load the app as part of a real .mcr card if it needs more than itself.
+
+   Returns PSEMU_ERR_BAD_SIZE if `size` is 0 or larger than the 15 blocks an app can occupy. */
+psemu_status psemu_save_app_image(const psemu_t *ps, uint8_t *buf, size_t size);
 
 void psemu_set_buttons(psemu_t *ps, uint32_t buttons);
 

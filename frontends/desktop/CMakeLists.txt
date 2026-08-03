@@ -22,7 +22,7 @@ enable_language(RC)
 # alongside the SDL window by default. main() still gets a normal argc/argv
 # via SDL2::SDL2main's WinMain shim; pass --console to opt back into a
 # visible console for stderr diagnostics (see main.c).
-add_executable(pokketstation_desktop WIN32 main.c ir_link.c resource.rc)
+add_executable(pokketstation_desktop WIN32 main.c ir_link.c content_writeback.c resource.rc)
 # comctl32 - the About dialog's SysLink control (Help > About's clickable
 # repo link); shell32 - ShellExecuteA, to actually open it in a browser.
 target_link_libraries(pokketstation_desktop PRIVATE psemu SDL2::SDL2 SDL2::SDL2main comdlg32 comctl32 shell32)
@@ -40,3 +40,10 @@ set_target_properties(pokketstation_desktop PROPERTIES OUTPUT_NAME "pokketstatio
 add_executable(ir_link_selftest ir_link_selftest.c ir_link.c)
 target_include_directories(ir_link_selftest PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(ir_link_selftest PRIVATE psemu)
+
+# Unlike ir_link_selftest this one IS wired into CTest - see its top comment. It covers the only code
+# here that overwrites a file the user supplied, and it does so with plain file operations that have no
+# IPC timing to go flaky on.
+add_executable(content_writeback_selftest content_writeback_selftest.c content_writeback.c)
+target_link_libraries(content_writeback_selftest PRIVATE psemu)
+add_test(NAME content_writeback_selftest COMMAND content_writeback_selftest)

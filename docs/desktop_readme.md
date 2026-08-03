@@ -22,7 +22,7 @@ pokketstation.exe .\bios.bin .\samplememcard.mcr
 - Launching with no BIOS and/or no app/card present, or an invalid one, is not fatal. The window still opens. Use **File > Load BIOS...** or **File > Open App/Card...** to browse to one instead.
 - By default, the app runs without a console window, so its diagnostic `stderr` output has nowhere to go. Pass `--console` to get a console window, or `--no-console` to suppress it explicitly. Either flag is remembered in `settings.cfg` for future launches.
 - **Controls:** arrow keys for Up/Down/Left/Right, **Z** for the Fire/Action button by default, and **F12** to write a diagnostic report. Remap any of these, plus **Reset** (F8), **Save State** (F5) and **Load State** (F9), from **Tools > Remap Controls...**. Picking a key already used by another row unbinds it from that row; two actions cannot share a key. An unbound row shows "(unbound)" and does nothing until remapped. The window is freely resizable; **View > Native Size (1x)** and **Double Size (2x)** are shortcuts back to a known-good size.
-- **Save states:** **File > Save State** and **File > Load State** each offer three slots. **Quick Slot** is the one the keyboard acts on (**F5** to save, **F9** to load, both remappable); **Slot 1** and **Slot 2** are menu-only, so a state parked in one cannot be overwritten by a stray hotkey. Each slot is a separate file next to the executable, named after the loaded app/card: `chocobo.mcr.sav` for the quick slot, `chocobo.mcr_1.sav` and `chocobo.mcr_2.sav` for slots 1 and 2. A state records which app/card it came from and refuses to load onto a different one. Save states are also **not portable between versions of this emulator** - see the note at the top of the [main README](../README.md).
+- **Save states:** **File > Save State** and **File > Load State** each offer three slots. **Quick Slot** is the one the keyboard acts on (**F5** to save, **F9** to load, both remappable); **Slot 1** and **Slot 2** are menu-only, so a state parked in one cannot be overwritten by a stray hotkey. Each slot is a separate file next to the executable, named after the loaded app/card: `chocobo.mcr.sav` for the quick slot, `chocobo.mcr_1.sav` and `chocobo.mcr_2.sav` for slots 1 and 2. A state records which app/card it came from and refuses to load onto a different one, in a way that survives that app saving to it - see [Save write-back](#save-write-back). Save states are also **not portable between versions of this emulator** - see the note at the top of the [main README](../README.md).
 - **View > Colors** switches the LCD's rendered look: **Classic** (the default muted LCD-style ink-on-sage look), **Light** (black on white), **Dark** (white on black), or **Advanced Colors...** for anything else. A scheme is three colors - the active pixel, the background, and the sprite shadow - and picking any of the above sets all three.
 - **Advanced Colors...** asks for one color, the screen (background), and matches the other two to it automatically: same hue, with enough contrast to stay legible. A live preview shows the three together. It also holds the **sprite shadows** checkbox, which toggles a faint one-row "ghosting" trail approximating a real passive-matrix LCD's slow pixel response. Expand **Custom Colors** in that dialog to set all three colors by hand, or **Match to Screen Color** to go back to matched ones. Nothing in the Custom Colors group re-matches anything on its own - only **Choose Screen Color...** and **Match to Screen Color** overwrite a color you set by hand.
 - Press **F12** at any time to write a diagnostic report to a log file. See [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
@@ -50,6 +50,7 @@ pokketstation.exe .\bios.bin .\samplememcard.mcr
   Forcing the date/time also means the emulated clock keeps advancing while the app is closed, which is closer to a real PocketStation than the alternative: its clock runs off the battery whether or not you are looking at it.
 - **Help > About pokketstation...** shows the running version and a link back to this repo.
 - **IR Link** connects two running copies of this app over IR, the same way two physical PocketStations would be held up to each other for local multiplayer. See [IR Link](#ir-link) below.
+- **Save write-back** keeps the file you opened in step with what an app does to it, so app progress - and an edit an app makes to the console game's own PS1 save - survives closing the window. A backup of the original is kept. See [Save write-back](#save-write-back) below.
 
 Single-app loads (`.pss`/`.mcs`) boot through the real BIOS menu the same way a full memory card does. See [Reaching a single loaded app](../README.md#reaching-a-single-loaded-app) in the main README for the button sequence.
 
@@ -69,6 +70,27 @@ Two separate running instances of `pokketstation.exe`, **on the same Windows mac
 - This only works between two instances on **one machine**. There is no network/remote play support.
 - Loading a different BIOS or app/card, pressing **Reset**, and using **Load State** each drop an active IR Link automatically. All three reset the emulator's own IR state, so a link left connected across one would fall out of sync with the other instance. Reconnect through **IR Link > Connect** or **Host Session** afterward if you still need it.
 - IR timing is inferred, not confirmed against real hardware. Two details in particular are inferred: how strongly this emulator filters a noisy signal, and what a receiving app reads back during a transfer. No app in this project's own test corpus has ever been traced using IR. An app that behaves differently over IR Link than on real hardware is worth reporting. See [hardware-notes.md](hardware-notes.md#ir--ir-link) for the technical detail.
+
+## Save write-back
+
+**When an app saves, the file you opened is updated to match.** This works for every kind of file this app loads - a whole card (`.mcr`), a single save (`.mcs`), or a bare app (`.pss`) - and each one is written back in its own format, the same shape you opened.
+
+*Any* change counts, not just one kind:
+
+- an app saving **its own progress** into its own blocks, which is what most apps do; and
+- an app editing the **console game's PS1 save** in another block of the same memory card - Yu-Gi-Oh Forbidden Memories trades cards over IR Link straight into the game's own save.
+
+Both reach the same storage, so both are written back. Without this, a completed trade, or an evening of app progress, would vanish when you close the window.
+
+- **The first time your file is about to change, a pristine copy is saved next to it as `<yourfile>.bak`** (so `mycard.mcr.bak`, `chocobo.mcs.bak`). It is written once and never overwritten afterwards, so it always holds the file exactly as it was before this emulator touched it. If something goes wrong, that is your way back - rename it over the original.
+- The file is written about a second after a change settles, and again when you quit, open something else, or press Reset. Each write goes to a temporary file that then replaces the original, so an interrupted write cannot leave you with a truncated save.
+- **Load State does not write your file.** A save state carries its own copy of the card, so loading one is not an edit to persist; it simply becomes the new starting point, and whatever the app does from there is what reaches the file.
+- Under IR Link, each of the two instances writes back its own file independently, which is what you want: both sides of a trade get saved.
+- Writes are reported on stderr (run with `--console` to see them), including a message if one fails - a failed write always leaves the file on disk untouched.
+
+**Save states keep working after an app saves.** A state records which card or app it came from and refuses to load onto a different one, and that check is deliberately made against *which* card this is - the file names in its directory, an app's title and icon - rather than against the file's contents. So a set of states prepared before a card trade still loads afterwards, even though the card on disk has changed in the meantime. Two genuinely different cards, or a card that gained or lost a save, are still told apart and still refused.
+
+**For a `.mcs` or `.pss`, only the app's own data is saved.** An app loaded on its own runs inside a memory card this emulator builds around it, and nothing else in that card exists in your file. In practice this is what an app writes anyway; if an app needs to reach a console game's PS1 save, load a full `.mcr` card that has both on it.
 
 ## Building
 

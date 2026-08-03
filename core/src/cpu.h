@@ -104,6 +104,18 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu);
    diagnostic infrastructure. */
 extern uint32_t psemu_debug_current_pc;
 
+/* Diagnostic hook: called once per executed instruction, with that
+   instruction's PC and the CPSR it executes under, before it executes.
+   NULL by default, and compiled in only for the psemu_trace target (see
+   PSEMU_TRACE_HOOKS in core/CMakeLists.txt), so frontends pay nothing.
+   The per-step trace ring above answers "what led up to here" for the last
+   PSEMU_TRACE_SIZE steps. This answers the different question of whether
+   execution ever reaches a given address at all, over a whole run, which a
+   ring buffer cannot: a run long enough to matter overwrites it many times
+   over. tools/ir_probe.c's watch list uses it to tell "the app never called
+   its flash-write routine" from "it called it and the write was dropped". */
+extern void (*psemu_exec_trace_cb)(uint32_t pc, uint32_t cpsr);
+
 /* Shared helpers used by arm_exec.c / thumb_exec.c, implemented in cpu.c. */
 int arm_condition_passed(arm7tdmi_t *cpu, uint32_t cond);
 uint32_t arm_read_reg(arm7tdmi_t *cpu, int n, uint32_t pc, int thumb);

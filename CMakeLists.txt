@@ -17,6 +17,13 @@ option(PSEMU_BUILD_LIBRETRO "Build the libretro core" ON)
 option(PSEMU_BUILD_DESKTOP "Build the SDL2 desktop frontend" ON)
 option(PSEMU_BUILD_TESTS "Build the smoke test" ON)
 
+# Before the subdirectories, not alongside add_subdirectory(tests): a frontend can register its own
+# CTest test (frontends/desktop's content_writeback_selftest does), and add_test only registers if testing
+# was already enabled when that directory was processed.
+if(PSEMU_BUILD_TESTS)
+    enable_testing()
+endif()
+
 add_subdirectory(core)
 add_subdirectory(tools)
 
@@ -29,7 +36,6 @@ if(PSEMU_BUILD_DESKTOP)
 endif()
 
 if(PSEMU_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
 

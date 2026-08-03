@@ -480,6 +480,18 @@ Note that `0x290` sits in the region the memory map above calls user RAM (`0x200
 
 The desktop frontend writes a timestamped `pokketstation_report_*.log` automatically on a CPU fault, and on demand via the **F12** hotkey. See `test_crash_report_contents`, `test_cpu_faulted_flag`, `test_faulted_cpu_stops_advancing`.
 
+`psemu_exec_trace_cb` (`core/src/cpu.h`) is called once per executed instruction, and is compiled in only for the `psemu_trace` target. It answers a question the ring buffer above structurally cannot: whether execution ever reached a given address across a whole run, rather than what led up to the last few thousand steps. `tools/ir_probe.c`'s `IR_PROBE_WATCH_PC` uses it to separate "the app never called its flash-write routine" from "it called it and the write was dropped".
+
+### The test suite must not depend on NDEBUG
+
+**Every check in `tests/` is an `assert()`, and a Release build defines `NDEBUG`, which compiles `assert()` to nothing.** The whole suite therefore ran as a few hundred no-ops plus a `printf` per test in any Release configuration, and reported "all cpu tests passed" having verified nothing. Both release workflows in `.github/workflows/` run `ctest` in Release, so CI was the configuration where this mattered most.
+
+This is proven rather than inferred: an `assert(0)` placed at the very top of `main` still exited 0 and printed the full passing output in a Release build.
+
+Each test file now `#undef NDEBUG` before `#include <assert.h>`, which keeps the checks in whatever configuration it is built as and needs nothing from the build files. `assert.h` decides what `assert()` means at include time, so the order matters.
+
+One real assertion had been hiding behind this since the day it was written. `test_clk_stop_halts_until_a_button_wakes_it` asserted `INT_RTC` was set in `STATUS` after ten seconds of stopped CPU, to show the RTC keeps running while the CPU sleeps. `STATUS` carries the RTC interrupt line's **raw level** (see "Interrupt controller"), and that line is a square wave, so asserting it is high only tests which half of the waveform the run happened to end in. Ten seconds is a whole number of periods both at the 1-transition-per-second rate it was written against and at the 2Hz rate measured later in `047b271`, so it landed low and failed in Debug both times. It now asserts what the comment always claimed: that the clock reads ten seconds later, and that one further transition still moves the line and `STATUS` with it.
+
 ## Hardware ID (F_SN)
 
 Each real unit carries a 32-bit serial number in `F_EXTRA` (`FLASH_CTRL+0x300`, 256 bytes): `F_SN_LO`/`F_SN_HI` (`+0x300`/`+0x302`, two 16-bit halves) and `F_CAL` (`+0x308`, LCD calibration). Real code reads `F_SN_LO`/`F_SN_HI` via two separate 16-bit `LDRH` instructions, never a single 32-bit `LDR`. Implemented in `core/src/flash.c`/`flash.h` (`flash_get_serial`/`flash_set_serial`). See `test_flash_serial_number_register_access`.

@@ -100,18 +100,37 @@ psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size) {
 #define MCS_HEADER_SIZE 0x80u
 #define MCS_DATASIZE_OFFSET 0x04u
 
-psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size) {
-    if (size <= MCS_HEADER_SIZE) {
-        return PSEMU_ERR_BAD_SIZE;
+/* The directory-frame half of a .mcs's validation: everything that can be decided before handing the
+   body to flash_load_app. Returns nonzero and sets *out_payload_size when `data` carries a frame whose
+   recorded size agrees with the bytes that follow it.
+   Shared by psemu_load_mcs and psemu_identify_content so the two cannot disagree about what a .mcs is. */
+static int mcs_payload_size(const uint8_t *data, size_t size, size_t *out_payload_size) {
+    size_t payload_size;
+    uint32_t datasize;
+    if (!data || size <= MCS_HEADER_SIZE) {
+        return 0;
     }
-    size_t payload_size = size - MCS_HEADER_SIZE;
+    payload_size = size - MCS_HEADER_SIZE;
     if (payload_size % FLASH_BLOCK_SIZE != 0) {
-        return PSEMU_ERR_BAD_SIZE;
+        return 0;
     }
-    uint32_t datasize = (uint32_t)data[MCS_DATASIZE_OFFSET] | ((uint32_t)data[MCS_DATASIZE_OFFSET + 1] << 8) |
-                         ((uint32_t)data[MCS_DATASIZE_OFFSET + 2] << 16) |
-                         ((uint32_t)data[MCS_DATASIZE_OFFSET + 3] << 24);
+    datasize = (uint32_t)data[MCS_DATASIZE_OFFSET] | ((uint32_t)data[MCS_DATASIZE_OFFSET + 1] << 8) |
+               ((uint32_t)data[MCS_DATASIZE_OFFSET + 2] << 16) | ((uint32_t)data[MCS_DATASIZE_OFFSET + 3] << 24);
     if (datasize != payload_size) {
+        return 0;
+    }
+    *out_payload_size = payload_size;
+    return 1;
+}
+
+psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size) {
+    size_t payload_size;
+    if (!mcs_payload_size(data, size, &payload_size)) {
+        /* Preserved from when this was written inline: a short or misaligned file is a size problem, and
+           a frame that disagrees with what follows it is a format problem. */
+        if (!data || size <= MCS_HEADER_SIZE || (size - MCS_HEADER_SIZE) % FLASH_BLOCK_SIZE != 0) {
+            return PSEMU_ERR_BAD_SIZE;
+        }
         return PSEMU_ERR_BAD_FORMAT;
     }
     return flash_load_app(&ps->flash, data + MCS_HEADER_SIZE, payload_size);
@@ -126,14 +145,126 @@ psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t siz
     return PSEMU_OK;
 }
 
-psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size) {
+psemu_status psemu_save_flash_image(const psemu_t *ps, uint8_t *buf, size_t size) {
+    if (size < sizeof(ps->flash.data)) {
+        return PSEMU_ERR_BAD_SIZE;
+    }
+    memcpy(buf, ps->flash.data, sizeof(ps->flash.data));
+    return PSEMU_OK;
+}
+
+psemu_status psemu_save_app_image(const psemu_t *ps, uint8_t *buf, size_t size) {
+    return flash_save_app(&ps->flash, buf, size);
+}
+
+psemu_content_kind psemu_identify_content(const uint8_t *data, size_t size) {
+    size_t payload_size;
+    if (!data) {
+        return PSEMU_CONTENT_UNKNOWN;
+    }
     if (size == PSEMU_FLASH_SIZE) {
+        return PSEMU_CONTENT_CARD;
+    }
+    /* A .mcs is checked before a bare body, because single-save exports are far more common than bare
+       Title Sector dumps - and because the two are distinguishable: only the .mcs carries a directory
+       frame whose recorded size matches what follows it. */
+    if (mcs_payload_size(data, size, &payload_size) && flash_app_body_is_valid(data + MCS_HEADER_SIZE, payload_size)) {
+        return PSEMU_CONTENT_MCS;
+    }
+    if (flash_app_body_is_valid(data, size)) {
+        return PSEMU_CONTENT_APP;
+    }
+    return PSEMU_CONTENT_UNKNOWN;
+}
+
+/* FNV-1a, the same construction the desktop frontend used when it hashed whole files. Kept identical so
+   the change is what gets hashed, not how. */
+#define FNV1A_OFFSET_BASIS 2166136261u
+#define FNV1A_PRIME 16777619u
+
+static void identity_hash_update(uint32_t *hash, const uint8_t *data, size_t size) {
+    size_t i;
+    for (i = 0; i < size; i++) {
+        *hash ^= data[i];
+        *hash *= FNV1A_PRIME;
+    }
+}
+
+/* A PS1 directory frame's identity: whether it is in use, and what the file is called. Deliberately not
+   the size or the block link - those describe where the file sits, and a card rewritten by a save
+   manager can move a file without it becoming a different file. */
+#define DIRECTORY_FRAME_SIZE 128u
+#define DIRECTORY_NAME_OFFSET 0x0Au
+#define DIRECTORY_NAME_SIZE 21u
+
+static void identity_hash_directory_frame(uint32_t *hash, const uint8_t *frame) {
+    identity_hash_update(hash, frame, 1); /* allocation state */
+    if (frame[0] != 0xA0u) {
+        identity_hash_update(hash, frame + DIRECTORY_NAME_OFFSET, DIRECTORY_NAME_SIZE);
+    }
+}
+
+/* Everything up to the end of the standard PS1 icon: header, title, CLUT, icon frames. See the header
+   comment on psemu_content_identity_hash for why this region and not more. */
+#define TITLE_SECTOR_ICON_FLAG_OFFSET 0x02u
+#define TITLE_SECTOR_ICON_DATA_OFFSET 0x80u
+#define TITLE_SECTOR_ICON_FRAME_SIZE 128u
+
+static void identity_hash_title_sector(uint32_t *hash, const uint8_t *body, size_t size) {
+    /* The standard PS1 icon-flag byte's low bits give the frame count, 1 to 3. Clamped rather than
+       trusted: this runs on a file that has not been validated beyond its magic. */
+    size_t frames = (size_t)(body[TITLE_SECTOR_ICON_FLAG_OFFSET] & 0x03u);
+    size_t end;
+    if (frames < 1u) {
+        frames = 1u;
+    }
+    end = TITLE_SECTOR_ICON_DATA_OFFSET + frames * TITLE_SECTOR_ICON_FRAME_SIZE;
+    if (end > size) {
+        end = size;
+    }
+    identity_hash_update(hash, body, end);
+}
+
+uint32_t psemu_content_identity_hash(const uint8_t *data, size_t size) {
+    uint32_t hash = FNV1A_OFFSET_BASIS;
+    size_t payload_size;
+    uint32_t frame;
+    if (!data) {
+        return hash;
+    }
+    switch (psemu_identify_content(data, size)) {
+    case PSEMU_CONTENT_CARD:
+        for (frame = 1; frame < 16u; frame++) {
+            identity_hash_directory_frame(&hash, data + frame * DIRECTORY_FRAME_SIZE);
+        }
+        return hash;
+    case PSEMU_CONTENT_MCS:
+        (void)mcs_payload_size(data, size, &payload_size);
+        identity_hash_directory_frame(&hash, data);
+        identity_hash_title_sector(&hash, data + MCS_HEADER_SIZE, payload_size);
+        return hash;
+    case PSEMU_CONTENT_APP:
+        identity_hash_title_sector(&hash, data, size);
+        return hash;
+    default:
+        identity_hash_update(&hash, data, size);
+        return hash;
+    }
+}
+
+psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size) {
+    switch (psemu_identify_content(data, size)) {
+    case PSEMU_CONTENT_CARD:
         return psemu_load_flash_image(ps, data, size);
+    case PSEMU_CONTENT_MCS:
+        return psemu_load_mcs(ps, data, size);
+    case PSEMU_CONTENT_APP:
+        return psemu_load_app(ps, data, size);
+    default:
+        /* Unchanged from when the dispatch was a fallback chain: nothing matched, so report the
+           last-attempted loader's own status rather than inventing one. */
+        return psemu_load_app(ps, data, size);
     }
-    if (psemu_load_mcs(ps, data, size) == PSEMU_OK) {
-        return PSEMU_OK;
-    }
-    return psemu_load_app(ps, data, size);
 }
 
 uint32_t psemu_get_hardware_id(const psemu_t *ps) {

@@ -71,7 +71,13 @@
    Environment:
      IR_PROBE_PLAYOUT_DELAY  override the relay's playout delay, in reference cycles.
      IR_PROBE_STATE_BLOCK    RAM address of the running app's IR state block, enabling the app-specific
-                             readouts that depend on one. Off by default; see app_state_block. */
+                             readouts that depend on one. Off by default; see app_state_block.
+     IR_PROBE_WATCH_PC       comma-separated app addresses; reports whether either side's execution ever
+                             reaches each one over the whole run. See watch_pcs.
+
+   Output: both sides' final screens, the per-block card diff against flash as it stood at setup, and -
+   for any side whose card changed - that side's whole card written to ir_probe_A_card.mcr /
+   ir_probe_B_card.mcr, in the same raw layout a .mcr already uses. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -144,6 +150,39 @@ static void flash_write_watch(uint32_t addr, uint8_t value, uint32_t pc) {
         }
         printf(" = 0x%02X from pc=0x%08X\n", value, pc);
         flash_watch.samples_printed++;
+    }
+}
+
+/* "watch" list: does execution ever reach a given app address, on either side, over the whole run?
+   The flash-write hook above answers what an app wrote. This answers the question that comes first, and
+   that a write hook cannot: whether the app even called the routine that would have written. Yu-Gi-Oh's
+   PS1-save writer is a syscall wrapper behind a gate (docs/app-notes.md), so "no write attempt" has two
+   very different causes - the gate refused, or nothing ever called the wrapper - and only one of them is
+   about this emulator.
+   Set IR_PROBE_WATCH_PC to a comma-separated list of addresses (0x... accepted). Every hit is counted per
+   instance, with the frame of the first one. */
+#define WATCH_MAX 24
+static struct {
+    uint32_t pc;
+    unsigned long hits[2]; /* [0] = A, [1] = B */
+    long first_frame[2];
+} watch_pcs[WATCH_MAX];
+static int watch_n;
+static int watch_side;    /* which instance psemu_run is currently inside: 0 = A, 1 = B */
+static long watch_frame;
+
+static void exec_watch(uint32_t pc, uint32_t cpsr) {
+    int i;
+    (void)cpsr;
+    for (i = 0; i < watch_n; i++) {
+        if (watch_pcs[i].pc == pc) {
+            if (watch_pcs[i].hits[watch_side]++ == 0) {
+                watch_pcs[i].first_frame[watch_side] = watch_frame;
+                printf("  [watch %s] pc=0x%08X first reached at frame %ld\n", watch_side ? "B" : "A", pc,
+                    watch_frame);
+            }
+            return;
+        }
     }
 }
 
@@ -730,6 +769,32 @@ int main(int argc, char **argv) {
         }
     }
     {
+        const char *w = getenv("IR_PROBE_WATCH_PC");
+        if (w) {
+            while (*w && watch_n < WATCH_MAX) {
+                char *end;
+                unsigned long v = strtoul(w, &end, 0);
+                if (end == w) {
+                    break;
+                }
+                watch_pcs[watch_n].pc = (uint32_t)v;
+                watch_pcs[watch_n].first_frame[0] = -1;
+                watch_pcs[watch_n].first_frame[1] = -1;
+                watch_n++;
+                w = (*end == ',') ? end + 1 : end;
+            }
+            if (watch_n > 0) {
+                int i;
+                psemu_exec_trace_cb = exec_watch;
+                printf("watching %d pc(s):", watch_n);
+                for (i = 0; i < watch_n; i++) {
+                    printf(" 0x%08X", watch_pcs[i].pc);
+                }
+                printf("\n");
+            }
+        }
+    }
+    {
         /* See app_state_block: off unless a caller names an address, because the address belongs to one
            app's build and reports noise for any other. */
         const char *sb = getenv("IR_PROBE_STATE_BLOCK");
@@ -788,9 +853,12 @@ int main(int argc, char **argv) {
                That is what attributes each logged register access to the instance that made it. */
             psemu_ir_trace_enabled = (trace & 1) != 0;
             flash_watch.label = "A";
+            watch_side = 0;
+            watch_frame = f;
             psemu_run(a, slice);
             psemu_ir_trace_enabled = (trace & 2) != 0;
             flash_watch.label = "B";
+            watch_side = 1;
             psemu_run(b, slice);
             psemu_ir_trace_enabled = 0;
             if (a->ir.data != last_a_data) {
@@ -1126,6 +1194,23 @@ int main(int argc, char **argv) {
 
     printf("\nA clk=%u Hz  B clk=%u Hz  (PSEMU_ASSUMED_CPU_HZ reference = %u)\n", clk_current_hz(&a->clk),
         clk_current_hz(&b->clk), (unsigned)PSEMU_ASSUMED_CPU_HZ);
+
+    if (watch_n > 0) {
+        int i, side;
+        printf("\nwatched pcs:\n");
+        for (i = 0; i < watch_n; i++) {
+            for (side = 0; side < 2; side++) {
+                printf("  0x%08X %s: %lu hit(s)", watch_pcs[i].pc, side ? "B" : "A", watch_pcs[i].hits[side]);
+                if (watch_pcs[i].hits[side]) {
+                    printf(", first at frame %ld", watch_pcs[i].first_frame[side]);
+                }
+                printf("\n");
+            }
+        }
+    }
+    printf("\n");
+    print_framebuffer(a, "A");
+    print_framebuffer(b, "B");
     if (app_state_block) {
         uint32_t unit = psemu_bus_read32(&b->bus, app_state_block + 0x20u) & 0xFFFFu;
         int k;
@@ -1270,6 +1355,21 @@ int main(int argc, char **argv) {
                 }
             }
             printf("%s\n", any ? "" : "none");
+            /* The run's real output: each side's card exactly as it stands afterwards, in the same raw
+               128KB layout a .mcr already uses. A block count says a write landed; only the card itself
+               shows what landed, and it can be diffed against the input card or loaded straight back into
+               either frontend. */
+            if (any) {
+                char path[64];
+                FILE *out;
+                sprintf(path, "ir_probe_%s_card.mcr", side ? "B" : "A");
+                out = fopen(path, "wb");
+                if (out) {
+                    fwrite(now, 1, PSEMU_FLASH_SIZE, out);
+                    fclose(out);
+                    printf("  wrote %s\n", path);
+                }
+            }
         }
         free(flash_baseline_a);
         free(flash_baseline_b);

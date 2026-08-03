@@ -234,6 +234,12 @@ void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32
 
 uint32_t psemu_debug_current_pc = 0;
 
+#ifdef PSEMU_TRACE_HOOKS
+/* See psemu_exec_trace_cb in cpu.h. Same compile-out rule as memory.c's bus
+   hooks: only the psemu_trace target defines PSEMU_TRACE_HOOKS. */
+void (*psemu_exec_trace_cb)(uint32_t pc, uint32_t cpsr) = NULL;
+#endif
+
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     psemu_debug_current_pc = cpu->r[15];
     /* A confirmed bug, found via a desktop-app crash report.
@@ -253,6 +259,11 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     if (cpu->halted || cpu->unimplemented) {
         return 1;
     }
+#ifdef PSEMU_TRACE_HOOKS
+    if (psemu_exec_trace_cb) {
+        psemu_exec_trace_cb(cpu->r[15], cpu->cpsr);
+    }
+#endif
     cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].pc = cpu->r[15];
     cpu->trace[cpu->trace_pos % PSEMU_TRACE_SIZE].cpsr = cpu->cpsr;
     cpu->trace_pos++;
