@@ -77,12 +77,14 @@ typedef struct rtc {
    on 0.031250s for 256 transitions, to the tick, which simultaneously confirms CLK_MODE 7's frequency
    (3,997,696Hz) that the timing table had only ever taken from documentation.
 
-   The running rate is set by the same reading of the same documentation - 1Hz waveform, so two transitions
-   a second - and by arithmetic: `cycles` reaches rtc_tick already converted to real elapsed time at the
-   fixed PSEMU_ASSUMED_CPU_HZ reference rate (see psemu_run), and a wall clock has to advance one second per
-   real second whatever the line does. The running rate has NOT been cleanly measured yet; screen 14's
-   run-mode row came back about 11% off a 1Hz waveform, from a two-transition sample taken immediately after
-   leaving program mode. See docs/hardware-notes.md.
+   ALSO MEASURED, by the same screen: running, the line makes two transitions a second - a 1Hz waveform,
+   again exactly the documented figure. Four transitions came back at exactly 2.000 seconds. An earlier
+   run of that measurement read 11% fast, but it sampled a single pulse immediately after leaving program
+   mode, while the RTC's own divider was still resynchronising; discarding one pulse first removes it.
+
+   That the running rate is 1Hz is also forced by arithmetic, independently of any measurement: `cycles`
+   reaches rtc_tick already converted to real elapsed time at the fixed PSEMU_ASSUMED_CPU_HZ reference rate
+   (see psemu_run), and a wall clock has to advance one second per real second whatever the line does.
 
    History: this was 4000000, chosen only to be "fast enough that a wait-for-pulse loop resolves within a
    reasonable instruction budget" and explicitly never checked against a real reference. That is 3.79

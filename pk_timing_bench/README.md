@@ -209,11 +209,13 @@ The two rows use different divisors on purpose: a running pulse is a whole secon
 - **paused Hz** = 128 ÷ (top ÷ 124,928)
 - **running Hz** = 2 ÷ (bottom ÷ 7,808)
 
-**Real-hardware result** (measured, see [VERIFICATION.md](VERIFICATION.md)): top `0x0F40` = **4096.0Hz paused, exactly**. 256 transitions in 0.031250 seconds, to the tick. That settles two things at once: the documented 4096Hz is a waveform rate rather than a transition rate, and `CLK_MODE 7` really is 3,997,696Hz - a figure the timing table had only ever taken from documentation.
+**Real-hardware result** (measured twice, `0x0F40` then `0x0F3F` - one tick apart, which is this measurement's own resolution; see [VERIFICATION.md](VERIFICATION.md)): **4096Hz paused**. 256 transitions in 0.031250 seconds, to the tick. That settles two things at once: the documented 4096Hz is a waveform rate rather than a transition rate, and `CLK_MODE 7` really is 3,997,696Hz - a figure the timing table had only ever taken from documentation.
 
 **Emulator control run:** top `0x0F44` (8184 transitions/second, 0.1% under hardware from integer rounding in `RTC_TICK_CYCLES_PAUSED`), bottom `0x3D00` (1.0000Hz).
 
-**The open one is the bottom row.** A 1Hz waveform reads `0x3D00`. The first hardware run returned a value implying 1.123Hz - about 11% fast - but from a single pulse measured immediately after leaving program mode, which is exactly where a resynchronising divider would show up. This screen now discards a pulse and averages two. If roughly `0x3650` comes back again, the 11% is real and the running rate needs revisiting; `0x3D00` means the first reading was a settling artefact.
+**The bottom row is settled too:** hardware returns `0x3D00`, which is four transitions in exactly 2.000 seconds - a **1Hz waveform**, again exactly the documented figure. An earlier build measured a single pulse with nothing discarded and read 11% fast; that was a resynchronising divider immediately after leaving program mode, and discarding one pulse removes it entirely.
+
+**Both documented RTC figures are therefore confirmed, and both are waveform rates.** See [VERIFICATION.md](VERIFICATION.md) for the raw runs.
 
 ### Screen 13: does CLK control (0x0B000004) bit 0 stop the CPU?
 

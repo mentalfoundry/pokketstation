@@ -8,6 +8,51 @@ Each entry below is one full run. Each entry lists the build state tested, the e
 
 ---
 
+## 2026-08-03 (later) — retail PocketStation unit (screen 14 re-run, settled)
+
+**Build tested:** the current committed `pk_timing_bench.mcs`. Screen 14's run-mode row now discards one pulse before counting, and averages two, after the previous run's single-pulse reading came back 11% off. Only screen 14 was re-read.
+
+| Screen | Paused (top) | Running (bottom) |
+|---|---|---|
+| 14 — RTC interrupt-line rates | `0x00000F3F` | `0x00003D00` |
+
+**Interpretation:**
+
+- **The running rate is 1Hz, exactly.** `0x3D00` = 15616 Timer0 ticks at /512 = 7808 ticks/second, so 4 transitions (two full pulses) in exactly 2.000 seconds. **The previous run's 11% was a settling artefact**, as suspected: a single pulse measured immediately after leaving program mode, while the RTC's own divider was still resynchronising. Discarding one pulse removes it completely.
+- **The paused rate reproduces.** `0x0F3F` = 3903 ticks against the previous run's `0x0F40` = 3904 — one tick apart, which is this measurement's own resolution (±0.026%). 256 transitions in 0.031230 seconds = 8197 transitions/second = **4098Hz**, against 4096 documented.
+- **Both documented RTC figures are now confirmed as waveform rates**, at 1Hz and 4096Hz, with two transitions per pulse. See the previous entry for what that changed in the emulator.
+
+This run had no crashes, no hangs, and no other anomalies.
+
+---
+
+## 2026-08-03 — retail PocketStation unit (adds screens 13 and 14)
+
+**Build tested:** the current committed `pk_timing_bench.mcs`. It adds screen 13 (the `CLK control` stop/standby test — the only interactive measurement here, run with DOWN) and screen 14 (the RTC's two interrupt-line rates) since the previous run. `SCREEN_EXIT_PROMPT` stays at index 12; the screen cycle is now 1…11 → 13 → 14 → 1.
+
+Screen 13, waiting about 10 seconds before pressing a button to wake the device:
+
+| Screen | Seconds stopped | Timer1 IRQs | `CLK control` readback |
+|---|---|---|---|
+| 13 — `CLK control` stop/standby | `0x0000000A` | `0x00000000` | `0x00000017` |
+
+| Screen | Paused (top) | Running (bottom) |
+|---|---|---|
+| 14 — RTC interrupt-line rates | `0x00000F40` | `0x00001B28` |
+
+**Interpretation:**
+
+- **`CLK control` (`0x0B000004`) bit 0 stops the CPU.** Ten seconds of RTC time passed across a single store, with the device sitting there until a button was pressed. This screen issues that store *alone* — no `IOP_STOP`, no RTC interrupt mask, no `LCD_MODE` change — so this isolates the register from everything else the real app writes around it, which no amount of tracing that app could do.
+- **The timers freeze with it.** Zero Timer1 interrupts across those ten seconds, with Timer1 armed and its interrupt un-masked the whole time. This was the least certain part of the emulator's model and the one that mattered most: waking on any asserted interrupt would not be a stop at all, since a running timer re-asserts within microseconds.
+- **`CLK control` does not read back what was written to it.** The readback is `0x17`, which is the `CLK_MODE` value this app sets (7) with the steady bit (`0x10`) ORed in — the `+0x0` register's readback, not `+0x4`'s. The emulator was returning the stored control word, which nothing on hardware ever shows. A consequence: this screen cannot answer whether the stop bit self-clears, because there is no readable stop status. What the run does show is that the CPU resumed and kept running, so the stop does not persist across a wake.
+- **The documented 4096Hz paused rate is a WAVEFORM rate, not a transition rate.** `0x0F40` = 3904 ticks at /32 = 124928 ticks/second, so 256 transitions in exactly 0.031250 seconds: 8192 transitions/second, which is 4096 full pulses. The emulator had been treating 4096Hz as the transition rate, running its line at half the real frequency in both modes.
+- **This also confirms `CLK_MODE 7` = 3,997,696Hz.** That figure has only ever come from documentation. Landing exactly on 0.031250 seconds is not possible if the real CPU rate differs meaningfully, so this measurement validates the frequency table entry as a side effect.
+- **The running row was not trustworthy** at `0x1B28`, implying 1.123Hz — about 11% fast, from a single pulse measured immediately after leaving program mode. See the entry above for the settled re-run.
+
+This run had no crashes, no hangs, and no other anomalies.
+
+---
+
 ## 2026-07-31 (yet later) — retail PocketStation unit (adds screen 11)
 
 **Build tested:** the current committed `pk_timing_bench.mcs`. It adds experiment 11 (the real transmit handler's full dispatch chain: acknowledge, nested `ARM` call, `ARM`-to-`Thumb` trampoline, then re-arm - not a bare re-arm) since the previous run. `SCREEN_EXIT_PROMPT` moved from index 11 to 12. Only screen 11 was read this run.
