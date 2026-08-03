@@ -112,6 +112,18 @@ See `test_flash_ctrl_busy_wait_bits`.
 
 **App-selection and dispatch is documented in [docs/app-notes.md](app-notes.md).** See that file for the real BIOS's app-selection routine, and for how `flash_load_app` synthesizes a directory for a single loaded app.
 
+## Register banking
+
+Banked per mode, as on any ARM7TDMI: `r13`, `r14`, and `SPSR` for each of FIQ/IRQ/SVC/ABT/UND, with User and System sharing one set.
+
+**`r8`-`r12` are banked as well, but for FIQ only.** That is what lets a FIQ handler use those five registers as scratch without saving them, and it is the reason "fast interrupt" is fast. Every non-FIQ mode shares a single copy, so an SVC-to-IRQ switch must leave them alone; only crossing the FIQ boundary swaps them.
+
+This emulator banked only `r13`/`r14` for a long time, so a FIQ handler silently destroyed the interrupted code's `r8`-`r12`. **This was live, not theoretical.** Pop'n Music drives its audio from Timer2, which is FIQ-routed (`INT_FIQ_MASK`), and measurement shows its FIQ handler writing four of the five registers on essentially every entry: 462 of 463 FIQs in a boot-and-play run left `r8`, `r9`, `r11` and `r12` changed. Under the old model each of those writes landed on whatever the interrupted code was holding. See `test_fiq_banks_r8_to_r12`.
+
+IRQ does *not* bank these on real hardware either, so an IRQ handler has to save them itself, and the real BIOS's does - measured at 0 of 25120 IRQ entries leaving them changed.
+
+**`LDM`/`STM` with the `^` suffix and PC absent from the register list** transfers the User bank rather than the current mode's, which is how a privileged handler reaches an interrupted app's `r13`/`r14` without switching modes. `exec_block_transfer` ignored the S bit in that case and moved the current mode's registers instead. The real BIOS uses the form - `STMIA r0!,{r13,r14}^` at `0x04001944` with the matching `LDM` at `0x04001B90` - though no app this project can drive has been observed executing those, so this was a latent gap rather than an active bug. See `test_ldm_stm_user_bank_transfer`. The S-bit-with-PC case is the separate CPSR-restore idiom described under "CPU" above.
+
 ## SWI (syscall) mechanism
 
 The vector table at RAM `0x00000000`-`0x0000001C` has 7 identical `LDR PC,[PC,#0x18]` entries, plus one filler entry. The real handler addresses follow immediately, in a literal pool, in this order: reset, undefined instruction, SWI, prefetch abort, data abort, reserved, IRQ, FIQ. The SWI vector is at `0x08`.

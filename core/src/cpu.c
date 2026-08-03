@@ -31,6 +31,7 @@ void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector) {
     memset(cpu->r13_bank, 0, sizeof(cpu->r13_bank));
     memset(cpu->r14_bank, 0, sizeof(cpu->r14_bank));
     memset(cpu->spsr_bank, 0, sizeof(cpu->spsr_bank));
+    memset(cpu->r8_12_bank, 0, sizeof(cpu->r8_12_bank));
     /* Real ARM7TDMI reset always enters Supervisor mode, ARM state.
        IRQ and FIQ are disabled. This holds for any SoC built around
        the core. */
@@ -103,10 +104,23 @@ void arm_set_mode(arm7tdmi_t *cpu, uint32_t new_mode) {
     uint32_t old_mode = cpu->cpsr & CPSR_MODE_MASK;
     int old_bank = bank_index(old_mode);
     int new_bank = bank_index(new_mode);
+    int old_fiq = (old_bank == ARM_BANK_FIQ);
+    int new_fiq = (new_bank == ARM_BANK_FIQ);
+
     cpu->r13_bank[old_bank] = cpu->r[13];
     cpu->r14_bank[old_bank] = cpu->r[14];
     cpu->r[13] = cpu->r13_bank[new_bank];
     cpu->r[14] = cpu->r14_bank[new_bank];
+
+    /* r8-r12 swap only when crossing the FIQ boundary: every non-FIQ mode shares one copy of them, so a
+       SVC-to-IRQ switch must leave them alone. See r8_12_bank in cpu.h. */
+    if (old_fiq != new_fiq) {
+        int i;
+        for (i = 0; i < 5; i++) {
+            cpu->r8_12_bank[old_fiq][i] = cpu->r[8 + i];
+            cpu->r[8 + i] = cpu->r8_12_bank[new_fiq][i];
+        }
+    }
     cpu->cpsr = (cpu->cpsr & ~CPSR_MODE_MASK) | (new_mode & CPSR_MODE_MASK);
 }
 

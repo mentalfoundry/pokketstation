@@ -27,6 +27,8 @@
 
 /* Bank slots: 0=fiq, 1=irq, 2=svc, 3=abt, 4=und, 5=usr/sys (shared, per spec). */
 #define ARM_BANK_COUNT 6
+#define ARM_BANK_FIQ 0
+#define ARM_BANK_USR 5
 
 /* Ring buffer of recently executed (pc, cpsr) pairs.
    arm7tdmi_step records one entry every step, regardless of caller.
@@ -53,6 +55,15 @@ typedef struct {
     uint32_t r13_bank[ARM_BANK_COUNT];
     uint32_t r14_bank[ARM_BANK_COUNT];
     uint32_t spsr_bank[ARM_BANK_COUNT];
+    /* r8-r12 are banked too, but only for FIQ: every other mode shares one copy. Index 0 is that shared
+       copy, index 1 is FIQ's. Only whichever set is not currently loaded into r[] holds live data; see
+       arm_set_mode, which swaps them on entering or leaving FIQ.
+
+       This is the whole reason a real FIQ handler can use r8-r12 as scratch without saving them, and it is
+       why "fast interrupt" is fast. This emulator banked only r13/r14 for a long time, so a FIQ handler
+       silently destroyed the interrupted code's r8-r12. Pop'n Music drives its audio from Timer2, which is
+       FIQ-routed (INT_FIQ_MASK), so it is the most exposed app this project can drive. */
+    uint32_t r8_12_bank[2][5];
 
     psemu_bus_t *bus;
     int halted;

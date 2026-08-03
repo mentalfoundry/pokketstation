@@ -455,6 +455,48 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
     }
 }
 
+/* Reads register `reg` from the USER bank, whatever mode the CPU is actually in - the "^" form of LDM/STM
+   (S set, PC absent from the list). r0-r7 and r15 are never banked, so only r8-r14 need redirecting, and
+   r8-r12 only when the current mode is FIQ. In User or System mode the current registers ARE the user bank,
+   so this is a plain read. */
+static uint32_t read_user_bank_reg(arm7tdmi_t *cpu, int reg, uint32_t pc) {
+    uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
+    if (reg == 15) {
+        return arm_read_reg(cpu, 15, pc, 0);
+    }
+    if (mode == ARM_MODE_USR || mode == ARM_MODE_SYS) {
+        return cpu->r[reg];
+    }
+    if (reg == 13 || reg == 14) {
+        return (reg == 13) ? cpu->r13_bank[ARM_BANK_USR] : cpu->r14_bank[ARM_BANK_USR];
+    }
+    if (reg >= 8 && reg <= 12 && mode == ARM_MODE_FIQ) {
+        return cpu->r8_12_bank[0][reg - 8]; /* index 0 is the copy every non-FIQ mode shares */
+    }
+    return cpu->r[reg];
+}
+
+static void write_user_bank_reg(arm7tdmi_t *cpu, int reg, uint32_t value) {
+    uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
+    if (mode == ARM_MODE_USR || mode == ARM_MODE_SYS) {
+        cpu->r[reg] = value;
+        return;
+    }
+    if (reg == 13 || reg == 14) {
+        if (reg == 13) {
+            cpu->r13_bank[ARM_BANK_USR] = value;
+        } else {
+            cpu->r14_bank[ARM_BANK_USR] = value;
+        }
+        return;
+    }
+    if (reg >= 8 && reg <= 12 && mode == ARM_MODE_FIQ) {
+        cpu->r8_12_bank[0][reg - 8] = value;
+        return;
+    }
+    cpu->r[reg] = value;
+}
+
 static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     int pre_index = (int)((instr >> 24) & 1u);
     int up = (int)((instr >> 23) & 1u);
@@ -475,6 +517,17 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         return; /* empty register list is architecturally unpredictable */
     }
 
+    /* S set with PC absent from the list is the "^" user-bank form: the transfer moves the User mode's
+       registers rather than the current mode's banked ones. That is how a privileged handler saves and
+       restores the interrupted code's r13/r14 (and, from FIQ, r8-r12) without switching modes to reach
+       them. The real BIOS uses it - "STMIA r0!,{r13,r14}^" at 0x04001944 and the matching LDM at
+       0x04001B90 - though nothing this project can drive has been observed executing those.
+
+       Architecturally, base writeback alongside "^" is UNPREDICTABLE. The BIOS does it anyway, and the
+       base it writes back is never itself a banked register, so the normal writeback below is unambiguous
+       in practice and is left as-is. */
+    int user_bank = s_bit && !(reg_list & 0x8000u);
+
     uint32_t addr = base;
     int step = up ? 4 : -4;
     for (int i = 0; i < 16; i++) {
@@ -487,9 +540,18 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         }
         if (load) {
             uint32_t value = psemu_bus_read32(cpu->bus, addr & ~3u);
-            cpu->r[reg] = value;
+            if (user_bank) {
+                write_user_bank_reg(cpu, reg, value);
+            } else {
+                cpu->r[reg] = value;
+            }
         } else {
-            uint32_t value = (reg == 15) ? arm_read_reg(cpu, 15, pc, 0) : cpu->r[reg];
+            uint32_t value;
+            if (user_bank) {
+                value = read_user_bank_reg(cpu, reg, pc);
+            } else {
+                value = (reg == 15) ? arm_read_reg(cpu, 15, pc, 0) : cpu->r[reg];
+            }
             psemu_bus_write32(cpu->bus, addr & ~3u, value);
         }
         if (!pre_index) {
@@ -504,9 +566,8 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     /* "LDM ...,{...,PC}^" is the other standard exception-return idiom,
        alongside "MOVS/SUBS PC,LR".
        S-bit set with PC in the register list also restores the whole
-       CPSR from this mode's SPSR. S-bit set without PC in the list means
-       something unrelated (user-bank register access); this function
-       does not handle that case.
+       CPSR from this mode's SPSR. S-bit set WITHOUT PC in the list is
+       the unrelated user-bank form, handled by `user_bank` above.
        This restore runs before the cycle accounting below, so a
        PC-refill fetch cost reflects the post-restore ARM/Thumb state. */
     if (load && s_bit && (reg_list & 0x8000u)) {

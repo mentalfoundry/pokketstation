@@ -168,12 +168,14 @@ static uint32_t rtc_days_in_month(uint32_t month, uint32_t year) {
    per-second cascade stopped at day-of-week - so an emulated device sat on the same date forever while its
    day-of-week advanced past it.
 
-   NOT confirmed: the month lengths and the leap rule above. Real hardware is known to keep poor time (the
-   BIOS ships a workaround Sony calls "The RTC Problem", see rtc.h), so a cheaper design that rolls every
-   month at 31 is possible. Testing that needs a unit parked at 23:59:5x on a short month; see
-   pk_timing_bench's README. Proper lengths are used here because a frontend can impose the host date
-   through psemu_set_datetime, and a free-running clock that produced "31 February" would be visibly wrong
-   in a way this is not.
+   ALSO CONFIRMED on real hardware: the device handles leap years. That settles the month lengths with it -
+   a design that simply rolled every month at 31 could not have a leap year to handle, since knowing
+   February is 28 or 29 days long is the same knowledge as knowing the other months' lengths. This was
+   originally written as a guess, on the grounds that a "31 February" would be visibly wrong in a way
+   proper lengths are not; the guess turned out to be right.
+
+   The leap rule itself is still only inferable rather than measured, but it cannot be anything except
+   year % 4 (see rtc_days_in_month): the hardware has no century to apply the 100/400-year exceptions to.
 
    Byte 3 is left alone: it is documented as unused and unidentified, not a century field. */
 static void rtc_advance_date(rtc_t *rtc) {

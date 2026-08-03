@@ -131,8 +131,11 @@ static const char *save_slot_label(int slot) {
    the blob changed size again. The state blob is a raw struct dump
    (psemu_state_size is sizeof(psemu_t)), so every field added to psemu_t
    needs a bump here - the size check in psemu_load_state only catches a
-   state that got smaller, never one that grew. */
-#define QUICKSAVE_VERSION 3u
+   state that got smaller, never one that grew.
+   4: arm7tdmi_t gained r8_12_bank, the FIQ bank for r8-r12 that a real
+   ARM7TDMI has and this emulator was missing. A version-3 state loaded as
+   version 4 would misread every field after the CPU, so it is rejected. */
+#define QUICKSAVE_VERSION 4u
 
 /* app_size/app_hash guard against loading a state saved under a different
    app/card. The per-app filename already makes that unlikely to even be

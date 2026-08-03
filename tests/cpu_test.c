@@ -2144,6 +2144,104 @@ static void test_app_running_follows_flash1_execution(void) {
     printf("test_app_running_follows_flash1_execution OK\n");
 }
 
+static void test_fiq_banks_r8_to_r12(void) {
+    /* A real ARM7TDMI banks r8-r12 for FIQ and nothing else. That is what lets a FIQ handler use them as
+       scratch without saving them, and it is why "fast interrupt" is fast. This emulator banked only
+       r13/r14, so a FIQ handler silently destroyed the interrupted code's r8-r12. */
+    psemu_t *ps = psemu_create();
+    int i;
+
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    for (i = 8; i <= 12; i++) {
+        ps->cpu.r[i] = 0xAA000000u + (uint32_t)i;
+    }
+    ps->cpu.r[7] = 0x77777777u;  /* r0-r7 are never banked */
+    ps->cpu.r[13] = 0x00000800u;
+
+    /* Entering FIQ must present a separate, independent set of r8-r12. */
+    arm_set_mode(&ps->cpu, ARM_MODE_FIQ);
+    for (i = 8; i <= 12; i++) {
+        assert(ps->cpu.r[i] != 0xAA000000u + (uint32_t)i);
+        ps->cpu.r[i] = 0xFF000000u + (uint32_t)i; /* handler scribbles on them */
+    }
+    assert(ps->cpu.r[7] == 0x77777777u); /* still shared */
+
+    /* Returning restores every one of them. */
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    for (i = 8; i <= 12; i++) {
+        assert(ps->cpu.r[i] == 0xAA000000u + (uint32_t)i);
+    }
+    assert(ps->cpu.r[13] == 0x00000800u);
+
+    /* And the FIQ bank kept its own values for next time. */
+    arm_set_mode(&ps->cpu, ARM_MODE_FIQ);
+    for (i = 8; i <= 12; i++) {
+        assert(ps->cpu.r[i] == 0xFF000000u + (uint32_t)i);
+    }
+
+    /* A switch that does not cross the FIQ boundary must leave r8-r12 completely alone: every non-FIQ mode
+       shares one copy. */
+    arm_set_mode(&ps->cpu, ARM_MODE_SVC);
+    for (i = 8; i <= 12; i++) {
+        assert(ps->cpu.r[i] == 0xAA000000u + (uint32_t)i);
+        ps->cpu.r[i] = 0xBB000000u + (uint32_t)i;
+    }
+    arm_set_mode(&ps->cpu, ARM_MODE_IRQ);
+    for (i = 8; i <= 12; i++) {
+        assert(ps->cpu.r[i] == 0xBB000000u + (uint32_t)i);
+    }
+
+    psemu_destroy(ps);
+    printf("test_fiq_banks_r8_to_r12 OK\n");
+}
+
+static void test_ldm_stm_user_bank_transfer(void) {
+    /* "LDM/STM ...^" with PC absent from the list moves the USER mode's registers, not the current mode's.
+       The real BIOS uses it to save and restore an app's r13/r14 without switching modes to reach them
+       (STMIA r0!,{r13,r14}^ at 0x04001944, LDM at 0x04001B90). exec_block_transfer used to ignore the S
+       bit in this case entirely and transfer the current mode's registers. */
+    psemu_t *ps = psemu_create();
+
+    /* Give User mode a known r13/r14, then leave it. */
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    ps->cpu.r[13] = 0x00000800u;
+    ps->cpu.r[14] = 0x02001234u;
+    arm_set_mode(&ps->cpu, ARM_MODE_SVC);
+    ps->cpu.r[13] = 0x00000180u; /* SVC's own, deliberately different */
+    ps->cpu.r[14] = 0x04001234u;
+    ps->cpu.r[0] = 0x00000400u;  /* somewhere in RAM to spill to */
+
+    /* STMIA r0!, {r13,r14}^ - must write USER's pair, not SVC's. */
+    put32(ps, 0, 0xE8E06000u);
+    ps->cpu.r[15] = 0;
+    arm7tdmi_step(&ps->cpu);
+    assert(psemu_bus_read32(&ps->bus, 0x400u) == 0x00000800u);
+    assert(psemu_bus_read32(&ps->bus, 0x404u) == 0x02001234u);
+    assert(ps->cpu.r[0] == 0x00000408u); /* writeback still happens */
+    assert(ps->cpu.r[13] == 0x00000180u); /* SVC's own pair untouched */
+    assert(ps->cpu.r[14] == 0x04001234u);
+
+    /* Now rewrite the spilled values and load them back the same way. */
+    psemu_bus_write32(&ps->bus, 0x400u, 0x000007C0u);
+    psemu_bus_write32(&ps->bus, 0x404u, 0x0200ABCDu);
+    ps->cpu.r[0] = 0x00000400u;
+    put32(ps, 0, 0xE8F06000u); /* LDMIA r0!, {r13,r14}^ */
+    ps->cpu.r[15] = 0;
+    arm7tdmi_step(&ps->cpu);
+    assert(ps->cpu.r[13] == 0x00000180u); /* still SVC's own */
+    assert(ps->cpu.r[14] == 0x04001234u);
+    assert(ps->cpu.r13_bank[ARM_BANK_USR] == 0x000007C0u); /* USER's pair took the load */
+    assert(ps->cpu.r14_bank[ARM_BANK_USR] == 0x0200ABCDu);
+
+    /* Confirm it end-to-end: switching to User mode presents the loaded values. */
+    arm_set_mode(&ps->cpu, ARM_MODE_USR);
+    assert(ps->cpu.r[13] == 0x000007C0u);
+    assert(ps->cpu.r[14] == 0x0200ABCDu);
+
+    psemu_destroy(ps);
+    printf("test_ldm_stm_user_bank_transfer OK\n");
+}
+
 static void test_rtc_date_rolls_over_at_midnight(void) {
     /* Confirmed on real hardware: the date advances at midnight. This used to do nothing at all - the
        per-second cascade stopped at day-of-week - so a device sat on one date forever. */
@@ -2317,6 +2415,8 @@ int main(void) {
     test_set_datetime_rejects_out_of_range_arguments();
     test_settings_offsets_unknown_without_a_known_bios();
     test_app_running_follows_flash1_execution();
+    test_fiq_banks_r8_to_r12();
+    test_ldm_stm_user_bank_transfer();
     test_rtc_keeps_real_time();
     test_rtc_date_rolls_over_at_midnight();
     test_clk_stop_halts_until_a_button_wakes_it();
