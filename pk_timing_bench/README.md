@@ -216,7 +216,7 @@ If the screen updates **on its own**, with no button pressed, then something oth
 
 The bottom row answers the last question: `0` means the bit self-cleared on wake, `1` means software has to clear it.
 
-**Emulator control run** (this project's own model, for comparison): top `0x00000001`, middle `0x00000000`, bottom `0x00000000`. Note the top row reads low in the emulator and should not be compared to hardware: `RTC_TICK_CYCLES_RUN` in `core/src/rtc.h` is documented as never having been calibrated against a real 1Hz reference, so emulated RTC seconds run roughly 3.8x slow. On real hardware the RTC is a true 1Hz and the top row should match the wall-clock time you waited.
+**Emulator control run** (this project's own model, for comparison), stopping for five seconds: top `0x00000005`, middle `0x00000000`, bottom `0x00000000`. All three rows are directly comparable to hardware, including the seconds: the emulated RTC keeps true 1Hz time, so the top row should match the wall-clock time you waited on either.
 
 **Recovery.** If the CPU stops and nothing can wake it, the device needs its physical reset button. Nothing in this test writes flash, so that is the whole cost.
 

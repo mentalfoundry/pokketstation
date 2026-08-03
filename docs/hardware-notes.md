@@ -185,6 +185,8 @@ Real hardware power-on-reset values: `RTCClock = 0x04000000` (day-of-week BCD 4,
 
 RTC ticks at a fixed 1Hz in Run mode, regardless of `CLK_MODE`. It runs from a separate oscillator, independent of the CPU clock.
 
+**`RTC_TICK_CYCLES_RUN` is that 1Hz, expressed in `PSEMU_ASSUMED_CPU_HZ` reference cycles, so the two constants are equal by definition.** This needs no measurement: the RTC drives a wall clock, and one emulated second has to last one real second. It was `4000000` for a long time - a value chosen only to make a wait-for-pulse loop resolve quickly, and explicitly never checked against a real 1Hz reference. That is 3.79 reference-seconds per tick, so the device's own clock ran nearly 4x slow: 60 seconds of real time advanced it by 15, losing about 45 minutes an hour. Anything that read the PocketStation's clock saw that drift.
+
 The BIOS resets the clock to Jan 1 1999 in a documented condition Sony calls "The RTC Problem", a software workaround for inaccurate clock hardware. This reset is a software action, performed via the normal `RTC_ADJUST` mechanism. This emulator's own reset state does not build in this behavior.
 
 ### Where the date/time settings actually live

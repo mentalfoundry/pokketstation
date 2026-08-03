@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "dac.h" /* PSEMU_ASSUMED_CPU_HZ: the reference rate rtc_tick's `cycles` argument is expressed in */
+
 struct intc;
 
 #define RTC_REG_SPAN 16u
@@ -60,11 +62,24 @@ typedef struct rtc {
     int int_line;
 } rtc_t;
 
-/* Approximate cycle count between interrupt-line toggles while running (mode bit0 clear).
-   This value is not calibrated against a real 1Hz reference.
-   It is only fast enough that a wait-for-pulse loop resolves within a reasonable instruction budget.
-   The paused rate is exactly 4096x faster than the running rate, matching the confirmed 1Hz-vs-4096Hz ratio. */
-#define RTC_TICK_CYCLES_RUN 4000000u
+/* Cycle count between interrupt-line toggles while running (mode bit0 clear), and so also between
+   one-second advances of the clock (see rtc_tick).
+
+   `cycles` reaches rtc_tick already converted to real elapsed time at the fixed PSEMU_ASSUMED_CPU_HZ
+   reference rate (see psemu_run), so a 1Hz clock means exactly one tick per PSEMU_ASSUMED_CPU_HZ cycles.
+   This is arithmetic, not a measurement: the RTC drives a wall clock, and 1Hz is what makes an emulated
+   second last a real second.
+
+   History: this was 4000000, chosen only to be "fast enough that a wait-for-pulse loop resolves within a
+   reasonable instruction budget" and explicitly never checked against a real 1Hz reference. That is 3.79
+   reference-seconds per tick, so the emulated PocketStation's own clock ran nearly 4x slow - 60 seconds of
+   real time advanced it by 15. Anything reading the device's clock saw it lose about 45 minutes an hour.
+   The wait-for-pulse concern is satisfied strictly better at this value, since pulses now come sooner.
+
+   The paused rate stays exactly 4096x the running rate, matching the documented 1Hz-vs-4096Hz ratio. The
+   integer division truncates 257.8 to 257, putting the paused rate 0.3% fast, which is well inside the
+   "approximately 4096Hz" the documentation claims. */
+#define RTC_TICK_CYCLES_RUN PSEMU_ASSUMED_CPU_HZ
 #define RTC_TICK_CYCLES_PAUSED (RTC_TICK_CYCLES_RUN / 4096u)
 
 void rtc_init(rtc_t *rtc);

@@ -350,7 +350,14 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
             if (ps->intc.hold & ps->intc.enable & WAKE_SOURCES) {
                 clk_clear_stop(&ps->clk);
             } else {
-                double stopped_dt = 1.0 / (double)clk_current_hz(&ps->clk);
+                /* One reference-rate cycle per iteration, deliberately, rather than one CPU cycle at the
+                   current CLK_MODE. Nothing executes here, so the only thing this granularity controls is
+                   how finely RTC and DAC get ticked - and picking the reference rate keeps `ran` (which this
+                   function returns in reference-rate cycles) consistent with the real time actually
+                   consumed. Counting CPU cycles instead over-reported `ran` by the ratio between the two
+                   rates, up to about 4x at CLK_MODE 7, so a caller that paces itself by the return value
+                   saw a sleeping device's clock run fast. */
+                double stopped_dt = 1.0 / (double)PSEMU_ASSUMED_CPU_HZ;
                 uint32_t real_time_cycles;
                 elapsed_seconds += stopped_dt;
                 ps->real_time_cycle_carry += stopped_dt * (double)PSEMU_ASSUMED_CPU_HZ;

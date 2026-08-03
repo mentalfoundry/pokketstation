@@ -2140,6 +2140,33 @@ static void test_app_running_follows_flash1_execution(void) {
     printf("test_app_running_follows_flash1_execution OK\n");
 }
 
+static void test_rtc_keeps_real_time(void) {
+    /* The RTC drives a wall clock, so one emulated second has to last one real second. psemu_run's budget is
+       in PSEMU_ASSUMED_CPU_HZ reference cycles, which IS real elapsed time, so a budget of exactly that many
+       cycles must advance the clock by exactly one second - at any CLK_MODE, since the RTC runs from its own
+       oscillator. This caught RTC_TICK_CYCLES_RUN sitting at 4000000, which made the device's clock run
+       nearly 4x slow. */
+    static const uint32_t modes[] = {0u, 4u, 7u};
+    size_t m;
+    for (m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {
+        psemu_t *ps = psemu_create();
+        int i;
+        ps->has_bios = 1;
+        put32(ps, 0, 0xEAFFFFFEu); /* B . so there is something to execute */
+        arm7tdmi_reset(&ps->cpu, 0);
+        psemu_bus_write32(&ps->bus, PSEMU_CLK_BASE, modes[m]);
+
+        assert((ps->rtc.time & 0xFFu) == 0x00u); /* power-on reset is 00:00:00 */
+        for (i = 0; i < 30; i++) {
+            psemu_run(ps, (uint32_t)PSEMU_ASSUMED_CPU_HZ);
+        }
+        /* 30 seconds of real time, so BCD seconds must read exactly 0x30. */
+        assert((ps->rtc.time & 0xFFu) == 0x30u);
+        psemu_destroy(ps);
+    }
+    printf("test_rtc_keeps_real_time OK\n");
+}
+
 static void test_clk_stop_halts_until_a_button_wakes_it(void) {
     psemu_t *ps = psemu_create();
     uint64_t steps;
@@ -2241,6 +2268,7 @@ int main(void) {
     test_set_datetime_rejects_out_of_range_arguments();
     test_settings_offsets_unknown_without_a_known_bios();
     test_app_running_follows_flash1_execution();
+    test_rtc_keeps_real_time();
     test_clk_stop_halts_until_a_button_wakes_it();
     printf("all cpu tests passed\n");
     return 0;

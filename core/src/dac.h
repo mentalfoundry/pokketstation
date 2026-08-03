@@ -37,8 +37,11 @@
    Keep this value in sync with main.c's psemu_run() cycle count if that count ever changes.
    Otherwise audio pitch/tempo and on-screen timing will drift apart from each other.
 
-   History: an earlier version of this file assumed approximately 4MHz instead, matching rtc.h's RTC_TICK_CYCLES.
-   That was an unvalidated guess: it matched one uncalibrated constant to another, with no independent confirmation.
+   History: an earlier version of this file assumed approximately 4MHz instead, matching what rtc.h's
+   RTC_TICK_CYCLES_RUN was at the time.
+   That was an unvalidated guess: it matched one uncalibrated constant to another, with no independent
+   confirmation. The RTC constant has since been corrected to this same reference rate, for its own
+   reasons - see rtc.h - so the two now agree, but by derivation rather than by coincidence.
    Real-hardware testing showed that rate made on-screen animations visibly too fast.
    This value now follows the frontend's own empirically-confirmed pacing instead.
 
