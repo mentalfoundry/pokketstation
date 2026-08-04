@@ -237,7 +237,14 @@ static void identity_hash_title_sector(uint32_t *hash, const uint8_t *body, size
 
 uint32_t psemu_content_identity_hash(const uint8_t *data, size_t size) {
     uint32_t hash = FNV1A_OFFSET_BASIS;
-    size_t payload_size;
+    /* Initialized because nothing here enforces the invariant that makes the PSEMU_CONTENT_MCS branch
+       below safe. psemu_identify_content only returns MCS when mcs_payload_size succeeded on these same
+       arguments, and it is deterministic, so the second call cannot fail - but that reasoning spans two
+       functions, which is why -Wmaybe-uninitialized flags it on GCC. If it ever stopped holding, the
+       consequence would be identity_hash_title_sector reading past the buffer on a garbage length. Zero
+       degrades that to hashing nothing extra. No reachable behaviour changes, so hashes already written
+       to disk stay valid. */
+    size_t payload_size = 0;
     uint32_t frame;
     if (!data) {
         return hash;

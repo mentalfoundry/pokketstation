@@ -34,6 +34,15 @@ foreach(target psemu psemu_trace)
 
     target_compile_features(${target} PUBLIC c_std_99)
 
+    # The libretro core is a shared module that links these static libraries into itself. On any target
+    # whose ABI forbids absolute relocations inside a shared object, a non-PIC static library cannot go
+    # into one at all - the link fails outright with "relocation R_X86_64_32 ... recompile with -fPIC".
+    # This built fine on most CI targets for reasons that are all accidental rather than portable: the
+    # Android NDK and Apple's clang default to PIC, aarch64 addressing is PC-relative anyway, and 32-bit
+    # x86 tolerates text relocations. Only x86_64 Linux and 32-bit ARM webOS actually rejected it, so
+    # relying on those defaults meant two platforms breaking while the rest looked healthy. Ask for it.
+    set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4)
     else()
