@@ -12,6 +12,12 @@ static retro_video_refresh_t video_cb;
 static retro_audio_sample_batch_t audio_batch_cb;
 static retro_input_poll_t input_poll_cb;
 static retro_input_state_t input_state_cb;
+static retro_log_printf_t log_cb;
+
+/* The card's identity as it stood right after the load, before the frontend had any chance to
+   overwrite flash with its own save data. See check_savedata_identity. */
+static uint32_t g_loaded_identity;
+static bool g_identity_check_pending;
 
 void retro_set_environment(retro_environment_t cb) { environ_cb = cb; }
 void retro_set_video_refresh(retro_video_refresh_t cb) { video_cb = cb; }
@@ -22,7 +28,12 @@ void retro_set_input_state(retro_input_state_t cb) { input_state_cb = cb; }
 void retro_set_controller_port_device(unsigned port, unsigned device) { (void)port; (void)device; }
 
 void retro_init(void) {
+    struct retro_log_callback log;
     g_ps = psemu_create();
+    /* Optional, per the libretro spec: a frontend need not provide this, so every use is guarded. */
+    if (environ_cb && environ_cb(RETRO_ENVIRONMENT_GET_LOG_INTERFACE, &log)) {
+        log_cb = log.log;
+    }
 }
 
 void retro_deinit(void) {
@@ -99,7 +110,57 @@ static void submit_audio(void) {
     }
 }
 
+/* ~6s at this core's 32fps. */
+#define IDENTITY_WARNING_FRAMES (32 * 6)
+
+/* A frontend copies save data over flash after retro_load_game returns and before the first
+   retro_run, with no validation of any kind: whatever save file is named after this content wins.
+   That is usually right - same card, further along - but it silently discards the content's own bytes
+   when it is wrong, and the case that bites is a real one. Because this core's save data IS a card
+   image (see retro_get_memory_data), users are told to open it in external memory-card tools; edit a
+   card that way, load it here while a stale save file from an older session is still sitting next to
+   it, and the edit is gone without a word.
+
+   psemu_content_identity_hash answers close to this question. It covers which saves live on a card and
+   deliberately excludes the bytes an app rewrites when it saves, so an ordinary session - an app
+   writing its own progress, or editing the PS1 save next to it - still matches afterwards.
+
+   It is not exact, and the gap is worth knowing before someone reports it as a bug: the hash also
+   moves when the set of files on the card changes, so an app that CREATES or DELETES a save file will
+   trip this on the next load even though the card is the right one. That is rare for PocketStation
+   apps, which live in their own blocks and write within them, and the consequence is one spurious
+   warning rather than any data loss - so it is the right trade against missing the real case.
+
+   Both sides are hashed as flash, before and after, rather than comparing the loaded file against
+   flash. A .mcs/.pss file and the card synthesized around it hash in different domains - one is a
+   file, the other a card - so comparing those two would be meaningless. Comparing flash-then against
+   flash-now is the same domain for all three content kinds.
+
+   The save data still wins. Refusing it would risk throwing away a real session's progress over a
+   false positive, which is the worse failure by far. This only makes the swap visible. */
+static void check_savedata_identity(void) {
+    struct retro_message msg;
+    if (psemu_content_identity_hash(psemu_flash_data(g_ps), PSEMU_FLASH_SIZE) == g_loaded_identity) {
+        return;
+    }
+    if (log_cb) {
+        log_cb(RETRO_LOG_WARN,
+               "[PokketStation] Save data holds a different memory card than the loaded content, and "
+               "has replaced it. If you edited this card outside RetroArch, delete its .srm and "
+               "reload.\n");
+    }
+    msg.msg = "Save data is from a different memory card, and has replaced the loaded content.";
+    msg.frames = IDENTITY_WARNING_FRAMES;
+    if (environ_cb) {
+        environ_cb(RETRO_ENVIRONMENT_SET_MESSAGE, &msg);
+    }
+}
+
 void retro_run(void) {
+    if (g_identity_check_pending) {
+        g_identity_check_pending = false;
+        check_savedata_identity();
+    }
     update_input();
     psemu_run(g_ps, 33000); /* cycle budget at PSEMU_ASSUMED_CPU_HZ, see docs/hardware-notes.md */
     convert_framebuffer();
@@ -147,6 +208,9 @@ bool retro_load_game(const struct retro_game_info *game) {
         return false;
     }
     psemu_reset(g_ps);
+    /* Snapshot now, while flash still holds what the content put there and nothing else. */
+    g_loaded_identity = psemu_content_identity_hash(psemu_flash_data(g_ps), PSEMU_FLASH_SIZE);
+    g_identity_check_pending = true;
     return true;
 }
 
@@ -158,6 +222,7 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 }
 
 void retro_unload_game(void) {
+    g_identity_check_pending = false;
 }
 
 unsigned retro_get_region(void) {
@@ -185,12 +250,41 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code) {
     (void)code;
 }
 
+/* SAVE_RAM is the whole 128KB FLASH2 image, which is what makes an app's progress survive at all -
+   before this, nothing persisted except a manual save state, and a session's saves died on exit.
+   Flash is the right region rather than any narrower one: a PocketStation app's output is frequently
+   an edit to the PS1 game's save in another block of the same card, not its own state (see
+   docs/app-notes.md), so anything smaller would drop exactly the edits people care about.
+
+   THE .srm THIS PRODUCES IS A .mcr, byte for byte. That is deliberate and depends on this staying a
+   flat PSEMU_FLASH_SIZE region - see psemu_flash_data's contract, and the saves section of
+   docs/libretro_readme.md, which tells users to open the .srm directly in external memory-card tools.
+   All three content kinds behave this way, because a loaded .mcs/.pss runs inside a full card this
+   emulator synthesizes around it.
+
+   SYSTEM_RAM is work RAM, exposed for RetroArch's cheat search and memory viewers. The frontend does
+   not persist it, which is correct - it is live state, not save data. */
 void *retro_get_memory_data(unsigned id) {
-    (void)id;
-    return NULL;
+    if (!g_ps) {
+        return NULL;
+    }
+    switch (id) {
+    case RETRO_MEMORY_SAVE_RAM:
+        return psemu_flash_data(g_ps);
+    case RETRO_MEMORY_SYSTEM_RAM:
+        return psemu_ram_data(g_ps);
+    default:
+        return NULL;
+    }
 }
 
 size_t retro_get_memory_size(unsigned id) {
-    (void)id;
-    return 0;
+    switch (id) {
+    case RETRO_MEMORY_SAVE_RAM:
+        return PSEMU_FLASH_SIZE;
+    case RETRO_MEMORY_SYSTEM_RAM:
+        return PSEMU_RAM_SIZE;
+    default:
+        return 0;
+    }
 }

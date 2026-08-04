@@ -15,6 +15,11 @@ extern "C" {
 
 #define PSEMU_BIOS_SIZE (16 * 1024)
 #define PSEMU_FLASH_SIZE (128 * 1024)
+/* Work RAM at 0x00000000: 0x000-0x1FF kernel, 0x200-0x7FF user. See docs/hardware-notes.md,
+   "Memory map". Public because a frontend needs the size to expose RAM for host-side
+   introspection (see psemu_ram_data); PSEMU_RAM_BASE and the rest of the address map stay
+   internal to core/src/memory.h. */
+#define PSEMU_RAM_SIZE 0x800u
 
 typedef enum {
     PSEMU_BUTTON_UP = 1 << 0,
@@ -85,6 +90,33 @@ psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t siz
    file: flash then holds a synthesized directory around a relocated save (see psemu_load_mcs), not
    the file that was loaded. */
 psemu_status psemu_save_flash_image(const psemu_t *ps, uint8_t *buf, size_t size);
+
+/* A stable, writable pointer to the whole FLASH2 image: the same bytes psemu_save_flash_image copies
+   out, without the copy. Valid until psemu_destroy, and NOT invalidated by psemu_load_state - that
+   function copies into this instance and re-links its internal pointers rather than replacing it.
+   psemu_reset leaves the contents alone, the same as it leaves loaded content alone generally.
+
+   This exists for a frontend whose host persists a fixed-size memory region on the frontend's behalf,
+   rather than calling a save function: libretro's RETRO_MEMORY_SAVE_RAM works exactly that way, taking
+   a pointer the host reads and writes directly, on its own schedule.
+
+   THE SHAPE OF THIS REGION IS A COMPATIBILITY CONTRACT, NOT AN IMPLEMENTATION DETAIL. It is exactly
+   PSEMU_FLASH_SIZE bytes of raw card image, in the same layout a .mcr file already uses. That is what
+   makes a host-written dump of this region - a RetroArch .srm, for instance - byte-for-byte a .mcr:
+   psemu_identify_content reads it straight back as PSEMU_CONTENT_CARD, and external PS1 memory-card
+   tools open it directly, which is how a user gets their card back out of this emulator. Narrowing
+   this to an app's own blocks for .mcs/.pss content, or prefixing a header, would silently invalidate
+   every file already written by an older build. Don't. */
+uint8_t *psemu_flash_data(psemu_t *ps);
+
+/* A stable, writable pointer to PSEMU_RAM_SIZE bytes of work RAM. Same lifetime and stability rules as
+   psemu_flash_data.
+
+   This is live working memory, NOT save data. psemu_reset zeroes it, and a frontend must not persist
+   it - flash is where anything durable lives. It exists for host-side introspection, where the host
+   wants to watch the machine's RAM as it runs: libretro exposes it as RETRO_MEMORY_SYSTEM_RAM, which
+   is what drives RetroArch's cheat search and memory viewers. */
+uint8_t *psemu_ram_data(psemu_t *ps);
 
 /* Determines the content type of `data` from its size and content, not from a file extension.
    Loads `data` using the matching loader.

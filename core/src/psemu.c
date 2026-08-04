@@ -153,6 +153,16 @@ psemu_status psemu_save_flash_image(const psemu_t *ps, uint8_t *buf, size_t size
     return PSEMU_OK;
 }
 
+/* See the header for why the layout these two expose is a contract rather than an implementation
+   detail. Both are plain arrays inside psemu_t, so their addresses hold for the instance's lifetime. */
+uint8_t *psemu_flash_data(psemu_t *ps) {
+    return ps->flash.data;
+}
+
+uint8_t *psemu_ram_data(psemu_t *ps) {
+    return ps->bus.ram;
+}
+
 psemu_status psemu_save_app_image(const psemu_t *ps, uint8_t *buf, size_t size) {
     return flash_save_app(&ps->flash, buf, size);
 }

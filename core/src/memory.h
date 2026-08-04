@@ -6,7 +6,8 @@
 #include "psemu/psemu.h"
 
 #define PSEMU_RAM_BASE 0x00000000u
-#define PSEMU_RAM_SIZE 0x800u
+/* PSEMU_RAM_SIZE is public, and lives in psemu/psemu.h (included above) - a frontend needs it to
+   expose RAM to its host. Everything else in this map is internal. */
 #define PSEMU_FLASH1_BASE 0x02000000u
 #define PSEMU_BIOS_BASE 0x04000000u
 #define PSEMU_FLASH_CTRL_BASE 0x06000000u
