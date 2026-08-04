@@ -60,16 +60,20 @@ typedef struct {
     uint32_t cycle_accumulator; /* raw cycles not yet consumed by the divisor */
 } single_timer_t;
 
+/* Named psemu_timer_t, not timer_t: POSIX already declares timer_t in <sys/types.h>
+   (via <time.h>/<stdlib.h>), so the shorter name is a redefinition error on every
+   non-Windows target. MSVC has no POSIX timer_t, which is why this only ever broke
+   the Linux/macOS/Android/webOS CI jobs and never the Windows ones. */
 typedef struct timer {
     single_timer_t timers[TIMER_COUNT];
-} timer_t;
+} psemu_timer_t;
 
-void timer_init(timer_t *timer);
-uint8_t timer_read8(timer_t *timer, uint32_t offset);
-void timer_write8(timer_t *timer, uint32_t offset, uint8_t value);
+void timer_init(psemu_timer_t *timer);
+uint8_t timer_read8(psemu_timer_t *timer, uint32_t offset);
+void timer_write8(psemu_timer_t *timer, uint32_t offset, uint8_t value);
 
 /* Advances every running timer by `cycles`.
    Asserts the matching INT_TIMERn line through `intc` on each expiry. */
-void timer_tick(timer_t *timer, struct intc *intc, uint32_t cycles);
+void timer_tick(psemu_timer_t *timer, struct intc *intc, uint32_t cycles);
 
 #endif

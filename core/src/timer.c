@@ -2,7 +2,7 @@
 
 #include "intc.h"
 
-void timer_init(timer_t *timer) {
+void timer_init(psemu_timer_t *timer) {
     uint32_t i;
     for (i = 0; i < TIMER_COUNT; i++) {
         timer->timers[i].period = 0;
@@ -25,7 +25,7 @@ static uint32_t timer_divisor(uint32_t control) {
     }
 }
 
-uint8_t timer_read8(timer_t *timer, uint32_t offset) {
+uint8_t timer_read8(psemu_timer_t *timer, uint32_t offset) {
     uint32_t index = offset / TIMER_BLOCK_SIZE;
     uint32_t local = offset % TIMER_BLOCK_SIZE;
     uint32_t word_index = local / 4u;
@@ -52,7 +52,7 @@ uint8_t timer_read8(timer_t *timer, uint32_t offset) {
     return (uint8_t)(value >> shift);
 }
 
-void timer_write8(timer_t *timer, uint32_t offset, uint8_t value) {
+void timer_write8(psemu_timer_t *timer, uint32_t offset, uint8_t value) {
     uint32_t index = offset / TIMER_BLOCK_SIZE;
     uint32_t local = offset % TIMER_BLOCK_SIZE;
     uint32_t word_index = local / 4u;
@@ -97,7 +97,7 @@ void timer_write8(timer_t *timer, uint32_t offset, uint8_t value) {
     *reg = ((*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift)) & TIMER_REG_MASK;
 }
 
-void timer_tick(timer_t *timer, struct intc *intc, uint32_t cycles) {
+void timer_tick(psemu_timer_t *timer, struct intc *intc, uint32_t cycles) {
     static const uint32_t int_lines[TIMER_COUNT] = {INT_TIMER0, INT_TIMER1, INT_TIMER2};
     uint32_t i;
 

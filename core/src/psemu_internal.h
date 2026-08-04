@@ -21,7 +21,7 @@ struct psemu {
     intc_t intc;
     flash_t flash;
     ir_t ir;
-    timer_t timer;
+    psemu_timer_t timer;
     rtc_t rtc;
     dac_t dac;
     clk_t clk;
