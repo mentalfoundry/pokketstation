@@ -1,37 +1,42 @@
-/* Verification tool for ir_link.c's real Windows named-pipe transport. Run it by hand.
-   It is not part of the automated CTest suite.
-   tests/ir_test.c covers core/src/ir.c's state machine instead, with no transport at all.
+/* A verification tool for the real Windows named-pipe transport in ir_link.c. Start it manually.
+   It is not part of the automatic CTest suite.
+   tests/ir_test.c tests the state machine in core/src/ir.c, with no transport.
 
-   This drives two ir_link_t endpoints, a host and a client, over a real named pipe inside one process.
-   It writes an edge on one psemu_t's IR TX registers.
-   It then confirms that the edge asserts INT_IRDA on a completely separate psemu_t, after the pipe relays it.
-   Two real pokketstation.exe instances use that same path, without the two-process split.
+   This tool operates two ir_link_t endpoints, a host and a client, on a real named pipe in one process.
+   It writes an edge to the IR TX registers of one psemu_t instance.
+   It then confirms that the pipe relays the edge, and that the edge asserts INT_IRDA on a separate
+   psemu_t instance.
+   Two real pokketstation.exe instances use that same path, but with two processes.
 
-   With arguments, it instead runs a full message transfer end to end over that same real pipe:
+   With arguments, this tool instead does a full message transfer on that same real pipe:
 
      ir_link_selftest <bios.bin> <app.mcs> <quicksave.dat> [frames]
 
-   That mode is the one that matters for "does the desktop IR Link actually work". The single-edge test
-   above proves only that one edge survives the pipe; it says nothing about whether a bit-banged message
-   keeps its timing across a real transport, which is what an app actually needs. Both instances load the
-   same save, so they are given distinct hardware ids and the verdict is whether each ends up holding the
-   other's - a real IR message carries the sender's id, and neither side can learn it any other way.
-   tools/ir_probe.c runs the same transfer with an in-process relay; this runs it through ir_link.c.
+   That mode answers the question "does the desktop IR link operate correctly?". The single-edge test
+   above shows only that one edge crosses the pipe. It gives no data about the timing of a bit-banged
+   message on a real transport, which is what an app needs. Both instances load the same save. Thus this
+   tool gives them different hardware IDs, and the result is whether each instance then holds the ID of
+   the other. A real IR message contains the ID of the sender, and no other method can give that ID to
+   the receiver.
+   tools/ir_probe.c does the same transfer with an in-process relay. This tool does it through
+   ir_link.c.
 
-   Finally, one side per process, which is the only mode that reproduces what two real windows do:
+   The last mode uses one side for each process. It is the only mode that reproduces the operation of two
+   real windows:
 
      ir_link_selftest --host   <bios.bin> <app.mcs> <quicksave.dat> [frames] [frames_before_connecting]
      ir_link_selftest --client <bios.bin> <app.mcs> <quicksave.dat> [frames] [frames_before_connecting]
 
-   Launch both, host first. Each runs the desktop main loop's real pacing, psemu_run followed by a ~31ms
-   sleep, so emulated time falls behind wall time exactly as it does in the frontend.
+   Start both, and start the host first. Each process uses the real pacing of the desktop main loop:
+   psemu_run, and then a sleep of approximately 31ms. Thus emulated time falls behind wall time, exactly
+   as it does in the frontend.
 
-   The single-process modes cannot expose a whole class of bug, and did not: with both endpoints sharing one
-   scheduler their clocks drift identically, so the drift cancels. Split across two processes it does not,
-   and a transfer that passed every single-process check still failed in one direction, with every arriving
-   edge scheduled into the receiver's past. frames_before_connecting reproduces the real order of
-   operations - both units are already sitting on the app's IR screen, with very different amounts of
-   emulated time behind them, before the link is established at all. */
+   The single-process modes cannot show one class of fault, and they did not show it. When both endpoints
+   use one scheduler, their clocks drift by the same quantity, thus the drift cancels. With two
+   processes, the drift does not cancel. A transfer that passed each single-process test still failed in
+   one direction, and each arriving edge was scheduled into the past of the receiver.
+   frames_before_connecting reproduces the real order of operations: both units are already on the IR
+   screen of the app, with very different quantities of emulated time, before the link exists. */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -89,8 +94,9 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
     return buf;
 }
 
-/* Searches an instance's low RAM for a 32-bit value. A message carries the sender's hardware id, so finding
-   one instance's id in the other's RAM is proof that message content crossed the link. */
+/* Searches the low RAM of an instance for a 32-bit value. A message contains the hardware ID of the
+   sender. Thus the ID of one instance in the RAM of the other instance is proof that message content
+   crossed the link. */
 static int ram_holds_word(psemu_t *ps, uint32_t needle, uint32_t *out_addr) {
     uint32_t addr;
     for (addr = 0x300u; addr + 4u <= 0x800u; addr++) {
@@ -106,8 +112,8 @@ static int ram_holds_word(psemu_t *ps, uint32_t needle, uint32_t *out_addr) {
     return 0;
 }
 
-/* Runs the real Chocobo World IR transfer between two instances, over the real named-pipe transport, pumping
-   the link once per emulated frame exactly as the desktop frontend's main loop does. */
+/* Does a real IR transfer between two instances, on the real named-pipe transport. It pumps the link
+   one time for each emulated frame, exactly as the main loop of the desktop frontend does. */
 static int run_transfer(const char *bios_path, const char *app_path, const char *save_path, long frames) {
     size_t bios_size = 0, app_size = 0, save_size = 0;
     uint8_t *bios = read_file(bios_path, &bios_size);
@@ -164,8 +170,8 @@ static int run_transfer(const char *bios_path, const char *app_path, const char 
     printf("hardware ids: A=0x%08X B=0x%08X\n", psemu_get_hardware_id(a), psemu_get_hardware_id(b));
 
     for (f = 0; f < frames; f++) {
-        /* The same button script tools/ir_probe.c drives the transfer with: both instances pick their side
-           of the IR menu, then confirm. */
+        /* The same button sequence that tools/ir_probe.c uses for the transfer: each instance selects
+           its side of the IR menu, and then confirms the selection. */
         uint32_t btn_a = 0, btn_b = 0;
         if (f >= 20 && f < 30) {
             btn_a = PSEMU_BUTTON_UP;
@@ -204,13 +210,14 @@ static int run_transfer(const char *bios_path, const char *app_path, const char 
     return (b_has_a && a_has_b) ? 0 : 1;
 }
 
-/* One side of a genuinely two-process run.
+/* One side of a true two-process run.
 
-   run_transfer above drives both endpoints inside one process, which hides everything that only two real
-   processes produce: independent frame pacing, independent OS scheduling, and two clocks that drift apart
-   because each process renders at its own speed. This mode reproduces the desktop main loop's actual timing
-   instead - psemu_run(33000) followed by a ~31ms sleep, so emulated time advances more slowly than wall
-   time exactly as it does in the real frontend - and is meant to be launched twice, once per role. */
+   run_transfer above operates both endpoints in one process. That method conceals each condition that
+   only two real processes make: independent frame pacing, independent scheduling by the operating
+   system, and two clocks that drift apart because each process renders at its own speed. This mode
+   instead reproduces the true timing of the desktop main loop: psemu_run(33000), and then a sleep of
+   approximately 31ms. Thus emulated time advances more slowly than wall time, exactly as in the real
+   frontend. Start this mode two times, one time for each role. */
 static int run_role(int is_host, const char *bios_path, const char *app_path, const char *save_path,
     long frames, long pre_frames) {
     size_t bios_size = 0, app_size = 0, save_size = 0;
@@ -251,11 +258,12 @@ static int run_role(int is_host, const char *bios_path, const char *app_path, co
     }
     psemu_set_hardware_id(ps, own_id);
 
-    /* The real workflow connects the two units only after both have already been sitting on the app's IR
-       screen for a while, because reaching that screen means loading a save and walking a menu first. Both
-       instances therefore have very different amounts of emulated time on their clocks by the time the link
-       comes up, and they got there at different wall-clock moments. Running frames before connecting
-       reproduces that; connecting immediately at startup, as this test did at first, does not. */
+    /* In the real procedure, a user connects the two units only after both units are on the IR screen
+       of the app for some time. To get to that screen, a user must load a save and move through a
+       menu. Thus the two instances have very different quantities of emulated time on their clocks
+       when the link starts, and they got to that screen at different wall-clock times. To execute
+       frames before the connection reproduces this condition. To connect immediately at startup, which
+       this test did at first, does not reproduce it. */
     {
         long p;
         for (p = 0; p < pre_frames; p++) {
@@ -357,8 +365,8 @@ int main(int argc, char **argv) {
     }
     printf("connected: host=%s client=%s\n", ir_link_status_text(&host_link), ir_link_status_text(&client_link));
 
-    /* Drain the connect-time HELLO handshake messages both sides queue in on_connected, so the assertions below
-       see only the real edge this test produces next. */
+    /* Remove the HELLO handshake messages that both sides put into the queue in on_connected. Thus the
+       tests below see only the real edge that this test makes next. */
     {
         int i;
         for (i = 0; i < 50; i++) {
@@ -376,12 +384,12 @@ int main(int argc, char **argv) {
     {
         int i;
         int seen = 0;
-        /* ir_link.c schedules an incoming edge IR_LINK_PLAYOUT_DELAY_US into the receiver's own future.
-           That is the jitter buffer. See ir_link.h.
-           ps_rx's IR clock must therefore advance that far before the edge becomes due.
-           Nothing else in this test calls psemu_run, so this advances the clock by hand.
-           1056 cycles per loop iteration matches the 1ms this loop already sleeps each iteration.
-           That figure is PSEMU_ASSUMED_CPU_HZ divided by 1000. */
+        /* ir_link.c schedules an incoming edge IR_LINK_PLAYOUT_DELAY_US into the future of the
+           receiver. This is the jitter buffer. See ir_link.h.
+           Thus the IR clock of ps_rx must advance that quantity before the edge is due.
+           No other code in this test calls psemu_run, thus this loop advances the clock directly.
+           The value of 1056 cycles for each iteration agrees with the 1ms sleep in each iteration of
+           this loop. That value is PSEMU_ASSUMED_CPU_HZ divided by 1000. */
         for (i = 0; i < 3000 && !seen; i++) {
             ir_link_pump(&host_link, ps_tx);
             ir_link_pump(&client_link, ps_rx);

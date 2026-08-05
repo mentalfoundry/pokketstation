@@ -295,19 +295,22 @@ int main(int argc, char **argv) {
             }
             psemu_set_buttons(ps, buttons);
         } else if (button_sim == 6) {
-            /* Diagnostic: reproduce a report that Chocobo World
-               crashes/freezes "upon getting into an event" during real
-               interactive play. Real play involves wandering the
-               overworld map for a variable, human amount of time before
-               a random encounter triggers - button_sim=3's repeating
-               BIOS-menu-shaped Down/Fire/Right/Fire pattern was never
-               meant to simulate that, and never varies. This mode runs
-               the same confirmed real launch sequence ONCE (not looped,
-               unlike button_sim=3), then switches to a long,
-               deterministically-pseudo-randomized single-button-at-a-time
-               exploration pattern (Up/Down/Left/Right/Fire, ~150000-
-               instruction taps with gaps, matching button_sim=3's real-
-               tap-duration finding) for the rest of the run. */
+            /* A diagnostic mode. It reproduces a report that one console
+               game's companion app stops "upon getting into an event"
+               during real interactive use. Real use includes movement on
+               the overworld map for a variable, human quantity of time,
+               before a random encounter starts. The repeating
+               Down, Fire, Right, Fire pattern of button_sim=3 has the
+               shape of the BIOS menu. It cannot simulate that use, and it
+               never changes. This mode does the confirmed real start
+               sequence ONE time, and it does not repeat that sequence
+               (button_sim=3 does repeat it). It then changes to a long
+               exploration pattern with one button at a time
+               (Up, Down, Left, Right, and Fire). That pattern is
+               pseudo-random but deterministic, and it uses presses of
+               approximately 150000 instructions with gaps between them.
+               That press duration agrees with the real press duration
+               that button_sim=3 found. */
             static const uint32_t explore_choices[5] = {
                 PSEMU_BUTTON_UP, PSEMU_BUTTON_DOWN, PSEMU_BUTTON_LEFT, PSEMU_BUTTON_RIGHT, PSEMU_BUTTON_FIRE};
             if (i < 200000) {

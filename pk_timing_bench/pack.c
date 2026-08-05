@@ -1,9 +1,10 @@
-/* pack.c - wraps the assembled+linked 8KB PocketStation app body (produced
- * by the Makefile via arm-none-eabi-as/ld/objcopy) in a real PS1
- * single-save directory frame, producing the final pk_timing_bench.mcs.
- * See README.md for what this app does and docs/app-notes.md for the
- * container format. No Python, no scripting language - just a C compiler,
- * matching the rest of this project's toolchain. */
+/* pack.c puts the assembled and linked 8KB PocketStation app body into a real
+ * PS1 single-save directory frame. The result is the final
+ * pk_timing_bench.mcs file. The Makefile makes the app body with the
+ * assembler, the linker, and the object-copy tool.
+ * See README.md for the function of this app, and docs/app-notes.md for the
+ * container format. This tool needs only a C compiler. It uses no scripting
+ * language, which agrees with the toolchain of this project. */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,13 +49,14 @@ int main(int argc, char **argv) {
     frame[0x08] = 0xFF;
     frame[0x09] = 0xFF; /* end of chain */
 
-    /* Product-code-style identifier (20 bytes @ 0x0A-0x1D), mirroring the
-     * real PS1 convention of a maker/region prefix + product code, but
-     * made up since there's no real registered code for homebrew -
-     * "BAPKTM" (6-byte prefix, echoing real codes like "BASLUS") + the
-     * mandatory 'P' flag at byte 0x10 (see docs/app-notes.md's
-     * "App-selection and dispatch" section for why that byte is
-     * load-bearing) + a readable suffix, filling the field exactly. */
+    /* An identifier in the form of a product code. It is 20 bytes, at 0x0A to
+     * 0x1D. It uses the real PS1 convention of a maker and region prefix, and
+     * then a product code. This project made the value, because homebrew has
+     * no registered code. The value is "BAPKTM", which is a prefix of 6 bytes
+     * in the form of a real code such as "BASLUS". Then it has the mandatory
+     * 'P' flag at byte 0x10 (see the "App-selection and dispatch" section of
+     * docs/app-notes.md for the reason that this byte is necessary). Then it
+     * has a readable suffix, which fills the field exactly. */
     memcpy(&frame[0x0A], "BAPKTM"
                           "P"
                           "TIMEBENCH0001",

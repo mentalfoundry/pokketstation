@@ -25,7 +25,7 @@
 
    - The F_SN cross-check (each instance gets a distinct hardware id, and finding one side's id in the
      other's RAM proves data crossed) is decisive when the protocol carries F_SN, and silent otherwise.
-     Chocobo World carries it; Yu-Gi-Oh Forbidden Memories sends card data with no serial number, and this
+     The serial-carrying app carries it; the card-data app sends card data with no serial number, and this
      check reported "not seen" for a transfer that had demonstrably succeeded. It is supplementary now.
    - Everything read out of a fixed RAM address - the receive state machine, the sync-window pulse table,
      the message-buffer window - belongs to one app's build and reports unrelated bytes for any other. All
@@ -53,8 +53,8 @@
    usage: ir_probe <bios.bin> <app.mcs> <quicksaveA[,quicksaveB]> [slice_cycles] [frames] [scriptA] [scriptB]
                    [trace]
      quicksave     one state, loaded into both instances, when the app reaches its send/receive choice from a
-                   single shared screen (Chocobo World). Two comma-separated states instead, when each role
-                   has to be armed separately and no button script can reach both from one state (Yu-Gi-Oh
+                   single shared screen (the serial-carrying app). Two comma-separated states instead, when each role
+                   has to be armed separately and no button script can reach both from one state (the card-data app
                    Forbidden Memories parks the sender and the receiver on different screens).
      slice_cycles  emulated cycles to run each instance before exchanging edges. 33000 = one frontend frame
                    (the frontend's real behavior). Smaller = finer interleaving, but see the note above on
@@ -100,10 +100,10 @@
 /* Base address of the running app's own IR state block in RAM, or 0 to skip every readout that depends on
    one. Zero by default, on purpose: this address is a property of one specific app's build, recovered from
    the literal its INT_IRDA handler loads, and pointing it at a different app reports whatever unrelated
-   bytes happen to live there. That is not a harmless nuisance - a Yu-Gi-Oh run once printed "max state
-   reached = 17" from a Chocobo World address, which reads as a working receive state machine and is pure
+   bytes happen to live there. That is not a harmless nuisance - a card-data-app run once printed "max state
+   reached = 17" from an address of the serial-carrying app, which reads as a working receive state machine and is pure
    noise. The default verdict is analyze_direction, which needs no such address.
-   Set IR_PROBE_STATE_BLOCK=0x3C4 to re-enable the Chocobo World readouts (its state block, the sync-window
+   Set IR_PROBE_STATE_BLOCK=0x3C4 to re-enable the readouts of the serial-carrying app (its state block, the sync-window
    pulse-quality table, and the low-RAM message window), which is where this project's transmit-timing
    measurements came from. */
 static uint32_t app_state_block = 0;
@@ -155,7 +155,7 @@ static void flash_write_watch(uint32_t addr, uint8_t value, uint32_t pc) {
 
 /* "watch" list: does execution ever reach a given app address, on either side, over the whole run?
    The flash-write hook above answers what an app wrote. This answers the question that comes first, and
-   that a write hook cannot: whether the app even called the routine that would have written. Yu-Gi-Oh's
+   that a write hook cannot: whether the app even called the routine that would have written. The card-data app's
    PS1-save writer is a syscall wrapper behind a gate (docs/app-notes.md), so "no write attempt" has two
    very different causes - the gate refused, or nothing ever called the wrapper - and only one of them is
    about this emulator.
@@ -232,8 +232,8 @@ static void capture_edge(link_capture_t *cap, uint64_t t, int level) {
 /* Judges one direction of the link without knowing anything about the app running on either side.
 
    This replaces a verdict that only ever worked for one app. The old check scanned the receiver's RAM for
-   the sender's F_SN, which is decisive when the protocol carries F_SN (Chocobo World) and silent when it
-   does not (Yu-Gi-Oh Forbidden Memories carries card data and no serial number, so the check reported "not
+   the sender's F_SN, which is decisive when the protocol carries F_SN (the serial-carrying app) and silent when it
+   does not (the card-data app carries card data and no serial number, so the check reported "not
    seen" for a transfer that had in fact succeeded). Reading a fixed RAM address for a "receive state
    machine" was worse: that address belongs to one app's state block, and for any other app it reports
    whatever unrelated bytes happen to live there.
@@ -292,8 +292,8 @@ static uint32_t longest_run_in_ram(const psemu_t *rx, const uint8_t *bytes, uint
    that explains. Used for both encoding families this project has seen (see analyze_direction).
 
    Deliberately clusters rather than quantizing against integer multiples of a unit, because real apps do not
-   oblige. Yu-Gi-Oh Forbidden Memories' two gap lengths are 205 and 406, near enough 1:2 that a
-   multiple-of-a-unit test works. Chocobo World's two pulse widths are 804 and 1407 - a ratio of 1.75, on a
+   oblige. The two gap lengths of the card-data app two gap lengths are 205 and 406, near enough 1:2 that a
+   multiple-of-a-unit test works. The two pulse widths of the serial-carrying app are 804 and 1407 - a ratio of 1.75, on a
    constant 404 gap - and a multiple test reads its short symbol as 0.5 units, rounds it to 1, and reports a
    single-symbol stream with nothing to decode. An external register reference describing these pulses as
    "long is usually twice as long as short" is approximate, and building the detector on that number made it
@@ -392,7 +392,7 @@ static void analyze_direction(const char *name, const link_capture_t *cap, const
         return;
     }
     /* Two measurements, because the two real apps this project has traced encode along different axes.
-       Yu-Gi-Oh Forbidden Memories varies the gap between fixed-width pulses (pulse-distance); Chocobo World
+       The card-data app varies the gap between fixed-width pulses (pulse-distance); the serial-carrying app
        varies the width of the pulses themselves (pulse-width, "long is about twice as long as short").
        Measuring only rise-to-rise intervals reads the first correctly and the second as a single-symbol
        stream with nothing to decode. Both are collected and whichever separates into two symbols more
@@ -589,7 +589,7 @@ static psemu_t *make_instance(const uint8_t *bios, size_t bios_size, const uint8
    before two-state runs existed.
    It is not zero when each role is armed from its own separately-captured state: those two states were saved
    at different points in emulated time, so their IR clocks are offset by however far apart the two capture
-   moments were. Measured at 9306433 reference cycles (~8.8s) for the Yu-Gi-Oh sender/receiver pair. Relaying
+   moments were. Measured at 9306433 reference cycles (~8.8s) for the sender and receiver pair of the card-data app. Relaying
    raw across that offset puts every edge ~8.8s into the receiver's past, so ir_tick releases the entire
    message in one shot, the spacing that encodes each bit collapses, and the RX edge queue overruns.
    The offset is latched once at startup and held for the whole run, never resampled. Both instances get
@@ -1106,11 +1106,11 @@ int main(int argc, char **argv) {
                 a_has_b = 1;
             }
         }
-        /* Supplementary, not the verdict. This is positive evidence when it fires and says nothing at all
-           when it does not: only a protocol that actually puts F_SN in its message can satisfy it. Chocobo
-           World does; Yu-Gi-Oh Forbidden Memories sends card data with no serial number in it, and reported
-           "not seen" for a transfer that had demonstrably succeeded. Read the app-independent link analysis
-           above for the actual result. */
+        /* This test is supplementary. It is not the result. It gives positive evidence when it
+           succeeds, and it gives no data when it fails: only a protocol that puts F_SN in its message
+           can satisfy this test. The serial-carrying app does this. The card-data app sends card data
+           with no serial number, and this test reported "not seen" for a transfer that was clearly
+           successful. Read the app-independent link analysis above for the true result. */
         printf("\nF_SN cross-check (only meaningful if the app's protocol carries F_SN): A->B %s, B->A %s\n",
             b_has_a ? "id found" : "not seen", a_has_b ? "id found" : "not seen");
         if (b_has_a && a_has_b) {

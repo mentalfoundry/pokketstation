@@ -5,42 +5,42 @@
 #define TITLE_SECTOR_HEADER_SIZE 0x80u
 #define TITLE_SECTOR_MAGIC_OFFSET 0x52u
 
-/* A real PS1 memory card directory has 16 128-byte frames in block 0.
-   Frame 0 is the card header. Frames 1-15 describe blocks 1-15.
+/* A real PS1 memory card directory has 16 frames of 128 bytes in block 0.
+   Frame 0 is the card header. Frames 1-15 give the properties of blocks
+   1-15.
    Frame layout:
-   - byte 0: in-use marker (0x51 first/solo, 0x52 middle, 0x53 last,
-     0xA0 free).
-   - bytes 4-7: total file size, little-endian. Valid only in a file's
-     first frame.
-   - bytes 8-9: next-block link, little-endian, 0-based among the 15 data
-     blocks. Add 1 to get the physical block number. 0xFFFF marks end of
-     chain.
-   - byte 0x7F: XOR checksum of the preceding 127 bytes. */
+   - byte 0: the in-use marker (0x51 for the first or only frame, 0x52 for
+     a middle frame, 0x53 for the last frame, and 0xA0 for a free frame).
+   - bytes 4-7: the total file size, little-endian. This value is valid
+     only in the first frame of a file.
+   - bytes 8-9: the link to the next block, little-endian. The value is
+     0-based among the 15 data blocks. Add 1 to get the physical block
+     number. The value 0xFFFF is the end of the chain.
+   - byte 0x7F: the XOR checksum of the 127 bytes before it. */
 #define DIRECTORY_FRAME_SIZE 128u
-#define DIRECTORY_MAX_APP_BLOCKS 15u /* block 0 is reserved for the directory itself */
+#define DIRECTORY_MAX_APP_BLOCKS 15u /* block 0 holds the directory */
 
-/* Confirmed requirement, isolated by bisecting a real card dump one byte
-   at a time. The BIOS's menu-browsing code requires byte 6 of the
-   filename field (frame offset 0x10) to be ASCII 'P'. This code is
-   separate from the app-selection/dispatch routine documented above,
-   and runs before it; it is what lets a user navigate to and select an
-   entry.
+/* A confirmed requirement. A byte-by-byte bisection of a real card dump
+   isolated it. The menu-browsing code of the BIOS requires byte 6 of the
+   file-name field (frame offset 0x10) to be the ASCII character 'P'.
+   This code is separate from the app-selection and dispatch routine
+   above, and it executes before that routine. It lets a user move to an
+   entry and select it.
 
-   Two real directory entries confirm the pattern. A normal PS1 save
-   ID's mandatory region-code hyphen (for example "SLUS-00892") is
-   replaced with 'P' when the save bundles a PocketStation app:
-   "BASLUSP00892...", "BISLPMP86247...". The second example's
-   product-code prefix `SLPM` already contains an unrelated,
-   naturally-occurring 'P'. This is what made isolating the real marker
-   byte take two rounds of bisection.
+   Two real directory entries confirm the pattern. A usual PS1 save ID
+   has a mandatory hyphen in its region code, for example "SLUS-00892".
+   When the save also contains a PocketStation app, a 'P' replaces that
+   hyphen: "BASLUSP00892..." and "BISLPMP86247...". The product-code
+   prefix `SLPM` of the second example already contains a different 'P'.
+   Because of this, the isolation of the real marker byte needed two
+   rounds of bisection.
 
-   Confirmed empirically: a real, working card still dispatches
-   correctly with every other filename byte garbage or zeroed, as long
-   as this one byte is 'P'. The card stops dispatching if this byte is
-   changed, even with an otherwise realistic name in place. There is no
-   real product code to put here for an arbitrary loaded app, so the
-   rest of the field is left blank. Only this one flag byte is
-   load-bearing. */
+   Confirmed by test: a real card that operates correctly continues to
+   dispatch when each other byte of the file name is incorrect or zero,
+   if this one byte is 'P'. The card stops dispatch if this byte changes,
+   even with a realistic name in the field. For an arbitrary loaded app
+   there is no real product code to write here, thus this code leaves the
+   remainder of the field empty. Only this one flag byte is necessary. */
 #define DIRECTORY_POCKETSTATION_FLAG_OFFSET 0x10u
 
 void flash_reset_registers(flash_t *flash) {
@@ -55,10 +55,10 @@ void flash_init(flash_t *flash) {
     flash_reset_registers(flash);
     flash->f_sn_lo = (uint16_t)(FLASH_DEFAULT_SERIAL & 0xFFFFu);
     flash->f_sn_hi = (uint16_t)((FLASH_DEFAULT_SERIAL >> 16) & 0xFFFFu);
-    /* Documented reset default (001Ah), per official register documentation.
-       Unrelated to the ID feature. This is just a starting value;
-       FlashWriteSerial always rewrites this register verbatim rather than
-       computing it. */
+    /* The recorded reset default is 001Ah. This value has no relation to
+       the ID function. It is only an initial value. FlashWriteSerial
+       always writes this register again without a change. It does not
+       calculate the value. */
     flash->f_cal = 0x001Au;
 }
 
@@ -106,19 +106,19 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
 
     memset(flash->data, 0, sizeof(flash->data));
 
-    /* Real hardware's app-selection routine (docs/app-notes.md,
-       "App-selection and dispatch") requires FLASH2 to carry a real
-       memory-card directory. The app's own bytes at offset 0 are not
-       enough by themselves. The routine reads the selected slot's
-       directory frame, walks its block-chain link, and only then locates
-       the entry point at the resulting physical block.
+    /* The app-selection routine of real hardware (docs/app-notes.md,
+       "App-selection and dispatch") requires a real memory-card directory
+       in FLASH2. The bytes of the app at offset 0 are not sufficient. The
+       routine reads the directory frame of the selected slot, follows the
+       block-chain link, and only then finds the entry point at the
+       physical block that the chain gives.
 
-       This function synthesizes a minimal one-entry card so the loaded
-       app is reachable that way: a card header, one directory frame per
-       app block chained starting at slot 1 (matching "Right from the
-       clock screen moves to the first app in the list"), and the app's
-       own data starting at physical block 1, right after the
-       directory. */
+       This function synthesizes a minimal card with one entry, thus the
+       routine can find the loaded app. The card has a card header, one
+       directory frame for each app block, and a chain that starts at slot
+       1. Slot 1 agrees with the rule "Right from the clock screen moves
+       to the first app in the list". The data of the app starts at
+       physical block 1, immediately after the directory. */
     flash->data[0x00] = 'M';
     flash->data[0x01] = 'C';
     flash->data[0x7F] = directory_frame_xor(flash->data);
@@ -152,51 +152,53 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
     return PSEMU_OK;
 }
 
-/* F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are real hardware's flash
-   unlock-sequence trigger addresses. A real BIOS write routine writes
-   FFAAh/FF55h/FFA0h to these addresses in sequence, before it writes
-   sector data. This is the standard command-latch idiom NOR flash chips
-   use.
+/* F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are the flash
+   unlock-sequence trigger addresses of real hardware. A real BIOS write
+   routine writes FFAAh, FF55h, and FFA0h to these addresses in sequence,
+   before it writes sector data. This is the standard command-latch
+   method that NOR flash chips use.
 
-   These are NOT storage locations. Real flash hardware intercepts
-   writes to these addresses as unlock commands. It does not pass them
-   through to the data array, so the byte physically at that address is
-   unaffected.
+   These addresses are NOT storage locations. Real flash hardware
+   intercepts writes to these addresses as unlock commands. It does not
+   send them to the data array. Thus the byte at that physical address
+   does not change.
 
-   Bug, fixed: found via a real crash report (see docs/hardware-notes.md,
-   "Flash memory"). This emulator did not intercept these addresses.
-   Every real flash-write operation permanently corrupted a live data
-   byte at whichever physical offset numerically coincided with these
-   two fixed addresses. That offset happens to fall inside live app
-   code, partway through Chocobo World's own compiled binary. This
-   turned an ordinary in-game save into silent code corruption, which
-   surfaced only later, once execution reached the mangled bytes. */
+   A corrected fault, found through a real crash report (see
+   docs/hardware-notes.md, "Flash memory"). This emulator did not
+   intercept these addresses. Thus each real flash-write operation
+   permanently corrupted a live data byte, at the physical offset with
+   the same number as one of these two fixed addresses. That offset is
+   inside live app code, in the compiled binary of one commercial app.
+   Thus a usual in-game save caused code corruption with no error
+   message. The corruption became visible only later, when execution got
+   to the changed bytes. */
 #define FLASH_KEY1_OFFSET 0x2A54u
 #define FLASH_KEY2_OFFSET 0x55AAu
 
-/* Both keys are written as a 16-bit halfword on real hardware
-   ([8002A54h]=FF55h). Both bytes of each halfword need guarding, not
-   just the base offset. A 32-bit store, for example, still touches the
-   two bytes past the base address. */
+/* On real hardware, each key write is one 16-bit halfword
+   ([8002A54h]=FF55h). This code must guard both bytes of each halfword,
+   and not only the base offset. For example, a 32-bit store also writes
+   the two bytes after the base address. */
 static int flash_is_unlock_key_offset(uint32_t offset) {
     return offset == FLASH_KEY1_OFFSET || offset == FLASH_KEY1_OFFSET + 1u || offset == FLASH_KEY2_OFFSET ||
            offset == FLASH_KEY2_OFFSET + 1u;
 }
 
-/* Real hardware's WRITE-side address for F_SN/F_CAL. This is distinct
-   from where the value is READ from: F_EXTRA, FLASH_CTRL+0x300 (see
-   F_SN_LO_OFFSET/F_SN_HI_OFFSET/F_CAL_OFFSET above).
+/* The WRITE address for F_SN and F_CAL on real hardware. This address is
+   different from the READ address: F_EXTRA, at FLASH_CTRL+0x300 (see
+   F_SN_LO_OFFSET, F_SN_HI_OFFSET, and F_CAL_OFFSET above).
 
-   Confirmed two ways:
-   - Official register documentation states: "[8000000h]=new F_SN_LO value
-     [8000002h]=new F_SN_HI value".
-   - Disassembling a real ID-editing homebrew's flash-write routine
-     shows it performs the real F_KEY1/F_KEY2 unlock sequence, then
-     writes the new serial to physical offset 0/2 and F_CAL to offset 8.
+   Two sources confirm this address:
+   - The available register description gives "[8000000h]=new F_SN_LO
+     value [8000002h]=new F_SN_HI value".
+   - A disassembly of the flash-write routine of a real homebrew ID
+     editor shows that the routine does the real F_KEY1/F_KEY2 unlock
+     sequence. It then writes the new serial number to physical offset 0
+     and 2, and F_CAL to offset 8.
 
-   Confirmed working on real retail hardware, via real-hardware testing
-   this session. See docs/hardware-notes.md, "Hardware ID (F_SN)", for
-   the full investigation. */
+   A test on real retail hardware confirms that this address operates
+   correctly. See docs/hardware-notes.md, "Hardware ID (F_SN)", for the
+   full investigation. */
 #define FLASH_HEADER_WRITE_SN_LO_OFFSET 0x0000u
 #define FLASH_HEADER_WRITE_SN_HI_OFFSET 0x0002u
 #define FLASH_HEADER_WRITE_CAL_OFFSET 0x0008u
@@ -211,45 +213,45 @@ uint8_t flash_read8(flash_t *flash, uint32_t addr) {
     return flash->data[addr % PSEMU_FLASH_SIZE];
 }
 
-/* Physical offset 0/2/8 doubles as ordinary card-data storage (normally
-   block 0's directory header) and as the real write-side target for
-   F_SN/F_CAL. Which one a write means depends on whether the real
-   3-step unlock sequence just armed it, not on the address alone. See
-   flash_is_unlock_key_offset's comment and FLASH_HEADER_WRITE_SN_LO_OFFSET
-   above.
+/* Physical offset 0, 2, and 8 have two functions. They are usual
+   card-data storage (usually the directory header of block 0). They are
+   also the real write target for F_SN and F_CAL. The applicable function
+   depends on whether the real 3-step unlock sequence armed the addresses
+   immediately before the write. It does not depend on the address alone.
+   See the comment on flash_is_unlock_key_offset, and
+   FLASH_HEADER_WRITE_SN_LO_OFFSET above.
 
-   `unlock_step` (see flash.h) tracks progress through that sequence,
-   based only on which key address is hit next. This matches how this
-   emulator has always treated these addresses as commands, not data: it
-   does not validate the values written. The sequence arms once all 3
-   steps land in order.
+   `unlock_step` (see flash.h) holds the position in that sequence. It
+   uses only the next key address. This agrees with the method that this
+   emulator always uses for these addresses: it treats them as commands
+   and not as data, and it does not validate the values. The sequence
+   arms when all 3 steps occur in the correct order.
 
-   This redirect is deliberately gated, not an unconditional address
-   alias. Chocobo World's own real save-write mechanism independently
-   uses this same unlock-then-write-FLASH2 mechanism for its own save
-   data (see the F_KEY1/F_KEY2 corruption bug above). An unconditional
-   alias would risk misrouting a legitimate data write that lands on
-   offset 0/2/8.
+   This redirection has a condition. It is not an unconditional address
+   alias. The real save-write mechanism of one commercial app uses this
+   same unlock-then-write-FLASH2 method for its own save data (see the
+   F_KEY1/F_KEY2 corruption fault above). An unconditional alias can send
+   a correct data write at offset 0, 2, or 8 to the wrong destination.
 
-   The armed state stays set across multiple writes. A real header
-   update is 3 separate halfword writes (F_SN_LO, F_SN_HI, F_CAL) after
-   a single unlock. The armed state disarms on the first write to any
-   other offset, signaling that the write session moved on to unrelated
-   data. */
+   The armed state continues across more than one write. A real header
+   update is 3 separate halfword writes (F_SN_LO, F_SN_HI, and F_CAL)
+   after one unlock sequence. The armed state stops at the first write to
+   a different offset. That write shows that the write session moved to
+   other data. */
 void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
     uint32_t offset = addr % PSEMU_FLASH_SIZE;
 
     if (flash_is_unlock_key_offset(offset)) {
-        /* A real key write is one 16-bit halfword (psemu_bus_write16),
-           always low byte then high byte. See its own definition and
-           exec_halfword_transfer's STRH path; this is the only real way
-           these get written. psemu_bus_write8 sees that as two separate
-           calls.
+        /* A real key write is one 16-bit halfword (psemu_bus_write16).
+           It is always the low byte and then the high byte. See the
+           definition of that function, and the STRH path of
+           exec_halfword_transfer. This is the only real method for these
+           writes. psemu_bus_write8 receives two separate calls.
 
-           Only the low byte (the base offset, not +1) advances
-           `unlock_step`. The high byte is just the second half of the
-           same real write. It must be a no-op here, not a fresh,
-           step-resetting event of its own. */
+           Only the low byte (the base offset, and not +1) advances
+           `unlock_step`. The high byte is the second half of the same
+           real write. Thus the high byte must do nothing here. It must
+           not be a new event that resets the step counter. */
         int is_high_byte = offset == FLASH_KEY1_OFFSET + 1u || offset == FLASH_KEY2_OFFSET + 1u;
         int is_key2 = offset == FLASH_KEY2_OFFSET;
         int is_key1 = offset == FLASH_KEY1_OFFSET;
@@ -286,11 +288,10 @@ void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
     flash->data[offset] = value;
 }
 
-/* Resolves which physical 8KB block backs a given FLASH1 virtual bank
-   (0-15). F_BANK_VAL is indexed by PHYSICAL bank: table[p] = v. This is
-   deliberately the reverse direction from a typical page table.
-   Resolving virtual to physical requires a reverse linear search over
-   the 16 entries. */
+/* Finds the physical 8KB block for a given FLASH1 virtual bank (0-15).
+   The index of F_BANK_VAL is the PHYSICAL bank: table[p] = v. This is
+   the opposite direction from a usual page table. Thus a conversion from
+   virtual to physical needs a reverse linear search of the 16 entries. */
 static uint32_t flash_resolve_physical_bank(const flash_t *flash, uint32_t virtual_bank) {
     uint32_t p;
     uint32_t lowest = 0;
@@ -300,18 +301,18 @@ static uint32_t flash_resolve_physical_bank(const flash_t *flash, uint32_t virtu
             return p;
         }
     }
-    /* No F_BANK_VAL entry explicitly claims this virtual slot. Its reset
-       value is 0 for every physical bank, matching real hardware's
-       reset state for this register. Fall back to this emulator's
-       previously-validated behavior: treat the enabled physical blocks
-       as one contiguous run, starting at the lowest-numbered enabled
-       block.
+    /* No F_BANK_VAL entry selects this virtual slot. The reset value of
+       the register is 0 for each physical bank, which agrees with the
+       reset state of real hardware. Thus this code uses the earlier
+       validated behavior: it treats the enabled physical blocks as one
+       contiguous group, which starts at the enabled block with the
+       lowest number.
 
-       Confirmed via real disassembly: this emulator's app-selection
-       routine (see "App-selection and dispatch" in docs/app-notes.md)
-       only ever writes F_BANK_FLG, never F_BANK_VAL. This fallback is
-       what keeps ordinary multi-block app dispatch and execution
-       working, for every case already tested this session. */
+       A disassembly confirms this: the app-selection routine (see
+       "App-selection and dispatch" in docs/app-notes.md) writes only
+       F_BANK_FLG. It never writes F_BANK_VAL. This fallback keeps usual
+       multi-block app dispatch and execution correct, for each tested
+       condition. */
     for (p = 0; p < FLASH_BANK_VAL_COUNT; p++) {
         if (flash->bank_mask & (1u << p)) {
             lowest = p;
@@ -333,10 +334,10 @@ void flash1_write8(flash_t *flash, uint32_t addr, uint8_t value) {
     uint32_t offset_in_bank = addr % FLASH_BLOCK_SIZE;
     uint32_t physical_bank = flash_resolve_physical_bank(flash, virtual_bank);
     uint32_t offset = (physical_bank * FLASH_BLOCK_SIZE + offset_in_bank) % PSEMU_FLASH_SIZE;
-    /* F_KEY1/F_KEY2 unlock addresses are a real hardware chip decode,
-       not data storage. See flash_write8's comment. This applies
-       regardless of which bus window reaches the same physical offset:
-       this virtual one, or FLASH2 direct. */
+    /* The F_KEY1 and F_KEY2 unlock addresses are a chip decode in real
+       hardware. They are not data storage. See the comment on
+       flash_write8. This is true for each bus window that gets to the
+       same physical offset: this virtual window, or FLASH2 directly. */
     if (flash_is_unlock_key_offset(offset)) {
         return;
     }
@@ -352,10 +353,11 @@ uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {
         return (uint8_t)(flash->bank_val[bank_index] >> ((offset % 4u) * 8u));
     }
 
-    /* F_EXTRA (see flash.h). F_SN_LO/F_SN_HI/F_CAL are real, backed
-       registers within it. Every other byte in the 256-byte region is
-       unidentified and unused; it reads back 0. This matches the
-       documented defaults for the bytes that were not identified. */
+    /* F_EXTRA (see flash.h). F_SN_LO, F_SN_HI, and F_CAL are real
+       registers with storage in this region. Each other byte in the
+       256-byte region is unidentified and unused, and it reads back as
+       0. This agrees with the recorded defaults for the bytes with no
+       identification. */
     if (offset == FLASH_SN_LO_OFFSET || offset == FLASH_SN_LO_OFFSET + 1u) {
         return (uint8_t)(flash->f_sn_lo >> ((offset - FLASH_SN_LO_OFFSET) * 8u));
     }
@@ -368,12 +370,13 @@ uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {
     if (offset >= FLASH_EXTRA_OFFSET && offset < FLASH_EXTRA_OFFSET + FLASH_EXTRA_SPAN) {
         return 0u;
     }
-    /* Gap between F_BANK_VAL's end (+0x140) and F_EXTRA's start (+0x300):
-       unmapped and unidentified, same as before this span was extended.
-       This must NOT fall into the word_index switch below. That switch
-       exists only to cover +0x0/+0x4/+0x8/+0x10. Now that
-       FLASH_CTRL_SPAN reaches past this gap, the switch would otherwise
-       wrongly mirror last_command across the whole gap. */
+    /* The range between the end of F_BANK_VAL (+0x140) and the start of
+       F_EXTRA (+0x300). This range is unmapped and unidentified, the
+       same as before this code made the span longer.
+       This range must NOT go to the word_index selection below. That
+       selection covers only +0x0, +0x4, +0x8, and +0x10. FLASH_CTRL_SPAN
+       now continues past this range. Without this test, the selection
+       incorrectly mirrors last_command across the full range. */
     if (offset >= 0x140u) {
         return 0u;
     }
@@ -382,26 +385,27 @@ uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {
     if (word_index == 2u) {
         reg = flash->bank_mask;
     } else if (word_index == 0u) {
-        /* +0 is write-command/read-status on real hardware, not a plain
-           mirror. Bug, fixed: a real BIOS routine writes a command here,
-           then busy-waits on this same address's bit 0 reading back 1
-           ("ready"). This emulator's bank commit always completes
-           synchronously, so bit 0 is always ready immediately after any
-           write. Before this fix, this code echoed back the raw command
-           value. That value's bit 0 happened to be 0 for the observed
-           command (2), so the loop spun forever. This silently blocked
-           every real app launch this session traced this far into the
-           real BIOS. */
+        /* On real hardware, +0 is a write-command and read-status
+           register. It is not a simple mirror. A corrected fault: a real
+           BIOS routine writes a command here. It then waits for bit 0 of
+           this same address to read back as 1 ("ready"). The bank commit
+           of this emulator always completes immediately, thus bit 0 is
+           always ready after a write. Before the correction, this code
+           returned the raw command value. Bit 0 of that value was 0 for
+           the observed command (2), thus the loop continued for an
+           unlimited time. This stopped each real app launch, and gave no
+           error. */
         reg = flash->last_command | 1u;
     } else if (word_index == 4u) {
-        /* +0x10 (F_WAIT2): a second, confirmed busy-wait bug, fixed. A
-           real app's own flash-write routine polls bit 2 here,
-           expecting it to read back set once the write completes. This
-           register was not modeled at all before this fix; the span
-           stopped at +0xC. A default, unmapped read of 0 left this loop
-           spinning forever too, right after the +0 bug above was fixed.
-           This emulator's writes complete instantly, so always report
-           "not busy". */
+        /* +0x10 (F_WAIT2): a second confirmed busy-wait fault, now
+           corrected. The flash-write routine of a real app reads bit 2
+           here. It waits for the bit to read back as set after the write
+           completes. This emulator did not model the register before the
+           correction; the span stopped at +0xC. An unmapped read gave a
+           default of 0, thus this loop also continued for an unlimited
+           time, immediately after the correction of the +0 fault above.
+           The writes of this emulator complete immediately, thus this
+           code always reports "not busy". */
         reg = 0x04u;
     } else {
         reg = flash->last_command;
@@ -421,11 +425,11 @@ void flash_ctrl_write8(flash_t *flash, uint32_t offset, uint8_t value) {
         return;
     }
 
-    /* F_EXTRA: see flash_ctrl_read8. A real app uses FlashWriteSerial
-       (SWI 0Fh) to change F_SN on real hardware. Direct writes here
-       model the same effect at the register level. This matters for an
-       ID-editing homebrew, which pokes these bytes itself instead of
-       going through the SWI. */
+    /* F_EXTRA: see flash_ctrl_read8. On real hardware, an app uses
+       FlashWriteSerial (SWI 0Fh) to change F_SN. Direct writes here give
+       the same effect at the register level. This is important for a
+       homebrew ID editor, which writes these bytes directly and does not
+       use the SWI. */
     if (offset == FLASH_SN_LO_OFFSET || offset == FLASH_SN_LO_OFFSET + 1u) {
         uint32_t extra_shift = (offset - FLASH_SN_LO_OFFSET) * 8u;
         flash->f_sn_lo = (uint16_t)((flash->f_sn_lo & ~(0xFFu << extra_shift)) | ((uint32_t)value << extra_shift));
@@ -442,23 +446,24 @@ void flash_ctrl_write8(flash_t *flash, uint32_t offset, uint8_t value) {
         return;
     }
     if (offset >= FLASH_EXTRA_OFFSET && offset < FLASH_EXTRA_OFFSET + FLASH_EXTRA_SPAN) {
-        return; /* unknown/reserved F_EXTRA byte */
+        return; /* an unknown or reserved F_EXTRA byte */
     }
     if (offset >= 0x140u) {
-        return; /* gap between F_BANK_VAL and F_EXTRA - unmapped */
+        return; /* the unmapped range between F_BANK_VAL and F_EXTRA */
     }
 
     reg_index = offset / 4u;
     shift = (offset % 4u) * 8u;
 
-    if (reg_index == 2u) { /* +8: block bitmask (F_BANK_FLG) */
+    if (reg_index == 2u) { /* +8: the block bitmask (F_BANK_FLG) */
         flash->bank_mask = (flash->bank_mask & ~(0xFFu << shift)) | ((uint32_t)value << shift);
         return;
     }
-    if (reg_index == 0u) { /* +0: commit/activate trigger */
+    if (reg_index == 0u) { /* +0: the activate trigger */
         flash->last_command = (flash->last_command & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        /* No cached offset to recompute. flash1_read8/write8 resolve
-           F_BANK_FLG/F_BANK_VAL live on every access. */
+        /* There is no cached offset to calculate again. flash1_read8 and
+           flash1_write8 resolve F_BANK_FLG and F_BANK_VAL at each
+           access. */
         return;
     }
 }

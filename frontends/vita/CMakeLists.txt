@@ -19,5 +19,5 @@ target_link_libraries(pokketstation_vita PRIVATE
 vita_create_self(pokketstation_vita.self pokketstation_vita)
 vita_create_vpk(pokketstation_vita.vpk "POKKETST01" pokketstation_vita.self
     VERSION "01.00"
-    NAME "PokketStation"
+    NAME "pokketstation"
 )

@@ -5,27 +5,29 @@
 
 #define INTC_REG_SPAN 0x14u
 
-/* Real PocketStation interrupt controller and sources.
-   Independently corrected against a real BIOS disassembly; see docs/hardware-notes.md.
+/* The real PocketStation interrupt controller and its sources.
+   A disassembly of a real BIOS corrected this data independently. See docs/hardware-notes.md.
 
    Registers at 0x0A000000:
-   - hold (+0x0): read-only from software's view. Real hardware treats a write here as invalid.
-   - status (+0x4): likewise read-only.
-   - enable (+0x8): a write ORs bits in.
-   - mask (+0xC): a write ANDs matching bits out of enable.
-   - acknowledge (+0x10): write-only. Clears matching bits from both hold and status.
+   - hold (+0x0): read-only to software. Real hardware treats a write here as invalid.
+   - status (+0x4): also read-only.
+   - enable (+0x8): a write ORs bits into the register.
+   - mask (+0xC): a write ANDs the applicable bits out of enable.
+   - acknowledge (+0x10): write-only. It clears the applicable bits from hold and from status.
 
-   Every asserted source latches into HOLD. HOLD, gated by ENABLE, drives the CPU's IRQ/FIQ lines.
-   Button presses and the RTC tick (bits within INT_STATUS_MASK) also latch into STATUS.
-   STATUS lets code poll a source directly without disturbing the interrupt-delivery state, for example the
-   RTC wait-for-pulse loop.
+   Each asserted source latches into HOLD. ENABLE gates HOLD, and HOLD then operates the IRQ line and
+   the FIQ line of the CPU.
+   Button presses and the RTC tick (the bits in INT_STATUS_MASK) also latch into STATUS.
+   STATUS lets code read a source directly, with no effect on the interrupt-delivery state. The RTC
+   wait-for-pulse loop is one example.
 
-   History: this codebase's own interrupt-routing logic originally put STATUS_MASK bits into `status` only,
-   never into `hold`. A real BIOS disassembly showed this was wrong.
-   The BIOS's top-level IRQ handler tests `hold & enable & 0x200` (RTC).
-   Its installed periodic callback tests `hold & 1` (Action button).
-   Both land on real handlers, confirmed by tracing them, that could never run under the old status-only routing.
-   Real hardware asserts these sources into both registers; this emulator now matches that. */
+   History: the interrupt-routing logic of this codebase first put STATUS_MASK bits only into
+   `status`, and never into `hold`. A disassembly of a real BIOS showed that this was incorrect.
+   The top-level IRQ handler of the BIOS tests `hold & enable & 0x200` (RTC).
+   The periodic callback that the BIOS installs tests `hold & 1` (the Action button).
+   Both tests reach real handlers, and a trace confirms this. Those handlers could never execute with
+   the earlier status-only routing.
+   Real hardware asserts these sources into both registers. This emulator now does the same. */
 #define INT_BTN_ACTION 0x00000001u
 #define INT_BTN_RIGHT 0x00000002u
 #define INT_BTN_LEFT 0x00000004u
@@ -42,35 +44,36 @@
 #define INT_TIMER2 0x00002000u
 #define INT_IRQ_MASK 0x00001FBFu
 #define INT_FIQ_MASK 0x00002040u
-/* Sources whose live signal level is visible in STATUS.
-   Real documentation calls that register INT_INPUT, "Raw Interrupt Signal Levels", at 0x0A000004.
+/* The sources whose live signal level STATUS shows.
+   The name of that register is INT_INPUT, "Raw Interrupt Signal Levels", at 0x0A000004.
    See docs/hardware-notes.md, "Buttons".
-   Buttons (bits 0-4) and RTC (bit 9) were confirmed here first.
-   INT_IRDA (bit 12) came later, from a disassembly of a real app's IR receive handler.
-   That handler acknowledges the interrupt. It then reads STATUS, isolates bit 12, and compares that live
-   level against the level it expected. It bails out at once on a mismatch.
-   While bit 12 was missing from this mask, STATUS bit 12 always read back 0.
-   That comparison could therefore never succeed, and no IR transfer could ever decode.
-   See core/src/ir.c's apply_rx_level, and docs/hardware-notes.md, "IR / IR Link". */
+   The buttons (bits 0-4) and the RTC (bit 9) were confirmed first.
+   INT_IRDA (bit 12) came later, from a disassembly of the IR receive handler of a real app.
+   That handler acknowledges the interrupt. It then reads STATUS, isolates bit 12, and compares that
+   live level against the level that it expects. It stops immediately if the two levels differ.
+   While bit 12 was absent from this mask, STATUS bit 12 always read back as 0.
+   Thus that comparison could never succeed, and no IR transfer could decode.
+   See apply_rx_level in core/src/ir.c, and docs/hardware-notes.md, "IR / IR Link". */
 #define INT_STATUS_MASK 0x0000121Fu
 
-/* Sources whose STATUS bit is a continuously-driven signal level, not a latched request.
+/* The sources whose STATUS bit is a continuous signal level, and not a latched request.
    An acknowledge write does NOT clear these bits.
-   A disassembly of a real app's INT_IRDA handler confirms this for IR.
-   That handler acknowledges INT_IRDA, and only then reads STATUS back to sample the live line level.
-   That order makes sense only if an acknowledge leaves the level alone.
-   Otherwise the handler always reads the after-effect of its own acknowledge, which is 0, instead of the real
-   signal. That is exactly what happened before this mask existed.
-   Buttons are in this mask for the same reason. docs/hardware-notes.md, "Buttons", states that `status`
-   tracks the live button level for code that polls it directly. An acknowledge used to clear that level, so
-   a button that was still physically held read back as released for as long as nothing pressed it again.
-   The confirmed real-hardware finding about buttons is about HOLD, not STATUS: HOLD is a momentary edge
-   pulse per press, which intc_clear_hold_only and psemu_set_buttons implement and
-   test_button_hold_pulses_not_sustained covers. That finding says nothing about STATUS, and this mask does
-   not change it.
-   A real app depends on the live level. pk_timing_bench holds Action to open its exit prompt, and counts
-   75000 consecutive polls of STATUS to detect the hold. Only a level that survives an acknowledge can
-   accumulate that. */
+   A disassembly of the INT_IRDA handler of a real app confirms this behavior for IR.
+   That handler acknowledges INT_IRDA. Only then does it read STATUS to sample the live line level.
+   That order is correct only if an acknowledge does not change the level. If an acknowledge changes
+   the level, the handler always reads the result of its own acknowledge, which is 0, in place of the
+   real signal. This is what occurred before this mask was added.
+   The buttons are in this mask for the same reason. docs/hardware-notes.md, "Buttons", gives that
+   `status` follows the live button level for code that reads the register directly. An acknowledge
+   cleared that level before. Thus a button that the user still held read back as released, until
+   something pressed the button again.
+   The confirmed real-hardware finding about buttons applies to HOLD, not to STATUS. HOLD is a
+   momentary edge pulse for each press. intc_clear_hold_only and psemu_set_buttons do this, and
+   test_button_hold_pulses_not_sustained tests it. That finding gives no data about STATUS, and this
+   mask does not change it.
+   A real app depends on the live level. pk_timing_bench holds Action to open its exit prompt, and
+   counts 75000 sequential reads of STATUS to detect the hold. Only a level that continues after an
+   acknowledge can accumulate that count. */
 #define INT_LEVEL_MASK     (INT_IRDA | INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP)
 
 typedef struct intc {
@@ -79,8 +82,9 @@ typedef struct intc {
     uint32_t enable;
     uint32_t mask;
     /* Byte-write accumulators.
-       Real code always performs a clean 32-bit store.
-       This emulator applies the semantic effect (OR into enable, etc.) once the top byte of that store lands. */
+       Real code always does a full 32-bit store.
+       This emulator applies the effect (an OR into enable, and the equivalent operations) when the
+       highest byte of that store arrives. */
     uint32_t enable_write_scratch;
     uint32_t mask_write_scratch;
     uint32_t ack_write_scratch;
@@ -90,36 +94,39 @@ void intc_init(intc_t *intc);
 uint8_t intc_read8(intc_t *intc, uint32_t offset);
 void intc_write8(intc_t *intc, uint32_t offset, uint8_t value);
 
-/* TEMPORARY diagnostic flag - see intc.c. */
+/* TEMPORARY diagnostic flag. See intc.c. */
 extern int psemu_intc_trace_enabled;
 
-/* Sets or clears an interrupt source (see INT_* above).
-   Routes it to STATUS or HOLD per INT_STATUS_MASK, mirroring real hardware's interrupt-routing logic.
-   Passing line=0 is a no-op.
-   intc_irq_asserted/intc_fiq_asserted always compute the asserted state on demand.
-   Unlike real hardware, there is no separate "recompute" step to trigger. */
+/* Sets or clears an interrupt source (see the INT_* values above).
+   It routes the source to STATUS or to HOLD, as INT_STATUS_MASK gives. This is the same
+   interrupt-routing logic that real hardware uses.
+   A call with line = 0 does nothing.
+   intc_irq_asserted and intc_fiq_asserted always calculate the asserted state when a caller asks
+   for it. Real hardware has a separate "recalculate" step, but this emulator does not. */
 void intc_set_line(intc_t *intc, uint32_t line, int state);
 uint32_t intc_get_line(intc_t *intc, uint32_t line);
 
-/* Clears `line` from HOLD only, leaving STATUS untouched.
-   Use this for sources whose HOLD pulse should represent only the initiating edge, not a sustained level.
+/* Clears `line` from HOLD only. It does not change STATUS.
+   Use this function for sources whose HOLD pulse must show only the initial edge, and not a
+   continuous level.
 
-   See psemu_set_buttons in psemu.c for why buttons need this.
-   A real BIOS callback branches on `hold` to decide which source to service.
-   A held button whose hold bit never clears would permanently starve every other source checked later in
-   that same branch chain.
+   See psemu_set_buttons in psemu.c for the reason that buttons need this function.
+   A real BIOS callback uses `hold` to select the source to service.
+   If the hold bit of a held button never clears, that button permanently starves each other source
+   that the callback tests later in the same chain.
 
-   This is confirmed via a real-hardware discrepancy: the button-action branch sits before the RTC check in
-   the callback. A continuously-set hold bit would block RTC-driven redraws for as long as the button stays held.
-   Real hardware instead keeps redrawing normally, and only acts on release. */
+   A difference from real hardware confirms this: the button-action branch is before the RTC test in
+   the callback. A hold bit that stays set blocks the RTC redraw operations while the user holds the
+   button. Real hardware continues to redraw the screen, and acts only at button release. */
 void intc_clear_hold_only(intc_t *intc, uint32_t line);
 
-/* Tracks `line`'s live signal level in STATUS.
-   It also latches an interrupt request in HOLD on every call, in both level directions.
-   IR receive needs exactly this split, and intc_set_line cannot express it.
-   The handler must run on both edges of a pulse, because that is how it measures the pulse width.
-   STATUS must keep reporting the real current line level, because the handler checks that level itself.
-   A call to intc_set_line with state=0 would instead clear HOLD and skip the interrupt. */
+/* Follows the live signal level of `line` in STATUS.
+   It also latches an interrupt request in HOLD at each call, for both level directions.
+   IR receive needs this exact division of function, and intc_set_line cannot give it.
+   The handler must execute at both edges of a pulse, because that is how the handler measures the
+   pulse width.
+   STATUS must continue to report the real line level, because the handler tests that level.
+   A call to intc_set_line with state = 0 clears HOLD and does not cause the interrupt. */
 void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level);
 
 int intc_irq_asserted(intc_t *intc);

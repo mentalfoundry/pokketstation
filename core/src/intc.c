@@ -4,11 +4,12 @@
 
 #include "cpu.h"
 
-/* Diagnostic flag; see cpu.h's psemu_debug_current_pc.
-   Off by default, so it costs nothing in normal use.
-   tools/inspect.c's `intctrace` flag turns it on, to log every real INTC access with its real PC.
-   Static disassembly cannot reliably tell ARM from Thumb code without tracking runtime mode.
-   This flag is permanent diagnostic infrastructure, not tied to any single investigation. */
+/* Diagnostic flag. See psemu_debug_current_pc in cpu.h.
+   This flag is off by default, thus it has no cost in normal use.
+   The `intctrace` flag in tools/inspect.c sets it, to record each real INTC access with its real PC.
+   A static disassembly cannot tell ARM code from Thumb code, because it does not track the mode during
+   execution.
+   This flag is permanent diagnostic equipment. It is not part of one investigation. */
 int psemu_intc_trace_enabled = 0;
 
 static const char *offset_name(uint32_t word_index) {
@@ -51,7 +52,7 @@ uint8_t intc_read8(intc_t *intc, uint32_t offset) {
     case 2:
         value = intc->enable;
         break;
-    default: /* mask (+0xC) and acknowledge (+0x10) read back as 0 on real hardware */
+    default: /* on real hardware, mask (+0xC) and acknowledge (+0x10) read back as 0 */
         value = 0;
         break;
     }
@@ -79,28 +80,29 @@ void intc_write8(intc_t *intc, uint32_t offset, uint8_t value) {
     }
 
     switch (word_index) {
-    case 0: /* hold: invalid write on real hardware, no effect */
-    case 1: /* status: invalid write on real hardware, no effect */
+    case 0: /* hold: an invalid write on real hardware. It has no effect. */
+    case 1: /* status: an invalid write on real hardware. It has no effect. */
         break;
-    case 2: /* enable: OR bits in once a full 32-bit store completes */
+    case 2: /* enable: OR the bits in after a full 32-bit store completes */
         accumulate_byte(&intc->enable_write_scratch, shift, value);
         if (shift == 24u) {
             intc->enable |= intc->enable_write_scratch;
         }
         break;
-    case 3: /* mask: clears matching enable bits, latches the mask value */
+    case 3: /* mask: clear the applicable enable bits, and latch the mask value */
         accumulate_byte(&intc->mask_write_scratch, shift, value);
         if (shift == 24u) {
             intc->enable &= ~intc->mask_write_scratch;
             intc->mask = intc->mask_write_scratch;
         }
         break;
-    default: /* acknowledge (+0x10): clears matching bits from hold, and from status except live-level bits */
+    default: /* acknowledge (+0x10): clear the applicable bits from hold, and from status except the live-level bits */
         accumulate_byte(&intc->ack_write_scratch, shift, value);
         if (shift == 24u) {
             intc->hold &= ~intc->ack_write_scratch;
-            /* INT_LEVEL_MASK bits are a continuously-driven signal level, not a latched request.
-               An acknowledge must not wipe them. See INT_LEVEL_MASK's comment in intc.h. */
+            /* The INT_LEVEL_MASK bits are a continuous signal level. They are not a latched
+               request. An acknowledge must not clear them. See the comment on INT_LEVEL_MASK in
+               intc.h. */
             intc->status &= ~(intc->ack_write_scratch & ~INT_LEVEL_MASK);
         }
         break;
@@ -112,34 +114,38 @@ void intc_set_line(intc_t *intc, uint32_t line, int state) {
         return;
     }
     if (state) {
-        /* Every asserted source latches into `hold`.
-           This drives real IRQ delivery via hold & enable & INT_IRQ_MASK.
-           STATUS_MASK bits (buttons, RTC) also latch into `status`, for direct polling.
+        /* Each asserted source latches into `hold`.
+           This causes real IRQ delivery, through hold & enable & INT_IRQ_MASK.
+           The STATUS_MASK bits (the buttons and the RTC) also latch into `status`, for a direct
+           read.
 
-           History: this code originally put STATUS_MASK bits into `status` only, never into `hold`.
-           Disassembling the real BIOS confirmed this was wrong.
-           The BIOS's top-level IRQ handler tests `hold & enable & 0x200` (RTC).
-           Its installed periodic callback tests `hold & 1` (Action button).
-           Both land on real handlers (RTC ack plus day-rollover bookkeeping; see docs/hardware-notes.md) that
-           never ran under the old status-only routing.
-           Under that old routing, buttons and RTC could never interrupt-deliver at all.
-           Code could only see them by polling `status` directly. */
+           History: this code first put the STATUS_MASK bits only into `status`, and never into
+           `hold`. A disassembly of the real BIOS confirmed that this was incorrect.
+           The top-level IRQ handler of the BIOS tests `hold & enable & 0x200` (RTC).
+           The periodic callback that the BIOS installs tests `hold & 1` (the Action button).
+           Both tests reach real handlers: the RTC acknowledge, and the day-rollover data (see
+           docs/hardware-notes.md). Those handlers never executed with the earlier status-only
+           routing.
+           With that routing, the buttons and the RTC could never deliver an interrupt. Code could
+           see them only through a direct read of `status`. */
         intc->hold |= line;
         intc->status |= line & INT_STATUS_MASK;
     } else {
-        /* History: an earlier version made only STATUS follow de-assertion here.
-           The reasoning: INT_INPUT ("Raw Interrupt Signal Levels") is distinct from INT_LATCH
-           ("Interrupt Request Flags"), and the real RTC handler does explicitly acknowledge its own bit.
+        /* History: an earlier version made only STATUS follow the de-assertion here.
+           The reasoning was that INT_INPUT ("Raw Interrupt Signal Levels") is different from
+           INT_LATCH ("Interrupt Request Flags"), and that the real RTC handler acknowledges its own
+           bit.
 
-           Real-hardware tracing disproved this: the real button-action callback, traced at 0x04003784, never
-           acknowledges bit 0. Leaving `hold` latched forever after a button release caused the CPU to
-           re-enter the IRQ handler on nearly every subsequent instruction after a single press.
-           One test measured 559034 re-entries in 20 million instructions.
-           A real, usable device does not behave this way.
+           A trace of real hardware showed that this reasoning was incorrect. The real button-action
+           callback, at 0x04003784, never acknowledges bit 0. A permanent latch of `hold` after a
+           button release caused the CPU to enter the IRQ handler again at almost each instruction
+           after one press. One test measured 559034 re-entries in 20 million instructions. A real
+           device that a person can use does not operate this way.
 
-           Buttons clear `hold` on release, the same as `status`.
-           Only RTC's real handler also acks explicitly.
-           This is harmless either way, because ack already clears both `hold` and `status`. */
+           The buttons clear `hold` at release, the same as `status`.
+           Only the real RTC handler also sends an acknowledge.
+           This has no effect either way, because an acknowledge already clears `hold` and
+           `status`. */
         intc->status &= ~line;
         intc->hold &= ~line;
     }
@@ -157,8 +163,8 @@ void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level) {
     if (line == 0) {
         return;
     }
-    /* Every edge latches an interrupt request, in both directions.
-       See this function's comment in intc.h. */
+    /* Each edge latches an interrupt request, for both directions.
+       See the comment on this function in intc.h. */
     intc->hold |= line;
     if (level) {
         intc->status |= line & INT_STATUS_MASK;

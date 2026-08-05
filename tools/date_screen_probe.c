@@ -1,11 +1,12 @@
-/* Diagnostic: run the real boot sequence through psemu_run's actual
-   per-frame loop (like the desktop frontend), navigate to the
-   time-setting/blink screen via button presses timed in FRAMES (not
-   raw instructions, since CLK_MODE now makes instructions-per-frame
-   variable), and report how many real frames elapse between RTC
-   int_line toggles (the documented blink driver) alongside CLK_MODE,
-   to check whether blink pacing matches the pre-CLK_MODE-work
-   baseline or has drifted. */
+/* A diagnostic tool. It executes the real boot sequence through the per-frame
+   loop of psemu_run, the same as the desktop frontend. It then moves to the
+   time-setting and blink screen with button presses. The timing of those
+   presses is in FRAMES, and not in raw instructions, because CLK_MODE now
+   makes the instructions for each frame variable.
+   The tool reports the number of real frames between the transitions of the
+   RTC int_line, which is the source of the blink. It reports CLK_MODE at the
+   same time. Use this tool to confirm whether the blink rate agrees with the
+   baseline from before the CLK_MODE work, or has changed. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,9 +63,10 @@ int main(int argc, char **argv) {
     uint32_t last_260 = 0xFFFFFFFFu;
 
     for (long f = 0; f < frames; f++) {
-        /* Down for a stretch around frame 100 (well after the beep
-           ends, ~frame 55), then Action around frame 140 - generous
-           margins, exact real timing doesn't matter for this probe. */
+        /* Hold Down for a period near frame 100, which is well after the end
+           of the sound at approximately frame 55. Then press Action near
+           frame 140. These margins are large, because the exact timing has no
+           importance for this tool. */
         uint32_t buttons = 0;
         if (f >= 100 && f < 110) {
             buttons = PSEMU_BUTTON_DOWN;

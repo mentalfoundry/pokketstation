@@ -1,5 +1,5 @@
-/* See the note at the top of cpu_test.c: a Release build's NDEBUG compiles every assert() away, so this
-   suite has to keep them itself. Must precede <assert.h>. */
+/* See the comment at the top of cpu_test.c. NDEBUG in a Release build removes each assert() call, thus
+   this test suite must keep them. This code must come before <assert.h>. */
 #undef NDEBUG
 
 #include <assert.h>
@@ -25,21 +25,23 @@ int main(void) {
 
     psemu_reset(ps);
     uint32_t ran = psemu_run(ps, 100);
-    /* Not "ran >= 100": psemu_run's argument is a time budget at a
-       reference clock rate (see clk.h), and CLK_MODE defaults to the
-       low-power idle rate until something writes it - a slower real
-       clock than the reference means fewer raw cycles fit in the same
-       budget. Just check forward progress happened at all. */
+    /* This test does not use "ran >= 100". The argument of psemu_run is a
+       time budget at a reference clock rate (see clk.h). CLK_MODE has a
+       default of the low-power idle rate, until code writes the register.
+       A real clock that is slower than the reference rate fits less raw
+       cycles in the same budget. Thus this test only confirms that the
+       emulator advanced. */
     assert(ran >= 1);
 
     const uint8_t *fb = psemu_get_framebuffer(ps);
     assert(fb != NULL);
 
-    /* psemu_flash_data/psemu_ram_data hand a frontend's host a pointer it keeps and writes to on its
-       own schedule (libretro's RETRO_MEMORY_SAVE_RAM works this way), so the addresses have to stay
-       put across everything a session does - a state load especially, since that one memcpy's over the
-       whole psemu_t. Nothing warns if that stops being true; the host just scribbles on freed memory
-       or silently persists a stale region. */
+    /* psemu_flash_data and psemu_ram_data give the host of a frontend a pointer. The host keeps that
+       pointer and writes to it on its own schedule. The save-memory interface of libretro operates
+       this way. Thus the addresses must stay constant through each operation of a session. A state
+       load is the most important operation, because it copies over the full psemu_t structure. No
+       code gives a warning if this stops being true: the host then writes to memory that is no
+       longer valid, or it keeps an old region and gives no message. */
     uint8_t *flash_ptr = psemu_flash_data(ps);
     uint8_t *ram_ptr = psemu_ram_data(ps);
     assert(flash_ptr != NULL);
@@ -60,10 +62,10 @@ int main(void) {
     assert(psemu_flash_data(ps) == flash_ptr);
     assert(psemu_ram_data(ps) == ram_ptr);
 
-    /* A host dump of this region is a .mcr, and that is a contract users depend on: the saves section
-       of docs/libretro_readme.md tells them to open a .srm in external memory-card tools. Narrowing
-       the region or prefixing a header would break every file an older build already wrote, so pin the
-       property that makes it true. */
+    /* A dump of this region by a host is a .mcr file. This is a contract that users depend on: the
+       saves section of docs/libretro_readme.md tells them to open the save file in external
+       memory-card tools. A smaller region, or an added header, makes each file from an older build
+       invalid. Thus this test protects the property that makes the contract true. */
     assert(psemu_identify_content(flash_ptr, PSEMU_FLASH_SIZE) == PSEMU_CONTENT_CARD);
 
     psemu_destroy(ps);

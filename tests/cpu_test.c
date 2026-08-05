@@ -1,12 +1,13 @@
-/* Every check in this file is an assert(), and a Release build defines NDEBUG, which compiles assert()
-   to nothing. This whole suite therefore ran as a few hundred no-ops and a printf per test in any
-   Release configuration - reporting "all cpu tests passed" while verifying nothing at all. The release
-   workflows (.github/workflows/) run ctest in Release, so that is where it mattered most.
-   Proven, not inferred: an assert(0) placed at the top of main still exited 0 and printed the full
-   passing output in a Release build.
-   Undefining NDEBUG right here keeps the checks in whatever configuration this is built as, and needs
-   nothing from the build files. It must come before <assert.h>, which decides what assert() means at
-   include time. */
+/* Each test in this file is an assert() call. A Release build defines NDEBUG, and NDEBUG makes each
+   assert() call do nothing. Thus this full test suite executed as a few hundred empty operations, and
+   one printf call for each test, in each Release configuration. It reported "all cpu tests passed",
+   and it tested nothing. The release workflows (.github/workflows/) execute ctest in Release, thus
+   this fault was most important there.
+   A test proves this. It is not an inference: an assert(0) call at the top of main still gave an exit
+   code of 0, and it printed the full passing output in a Release build.
+   The #undef below keeps the tests in each configuration, and it needs no change to the build files.
+   It must come before <assert.h>, because that header gives the definition of assert() at the time of
+   its inclusion. */
 #undef NDEBUG
 
 #include <assert.h>
@@ -174,10 +175,10 @@ static void test_arm_memory(void) {
     assert(ps->cpu.r[9] == 0x22u);
     assert(ps->cpu.r[4] == 0x208u);
 
-    /* Register-offset addressing (I=1 in the single-transfer encoding) is a
-       data field within the "01" class, not a class discriminator - this
-       regressed once already (real BIOS code hit it before any hand-written
-       test did), so pin it down explicitly. */
+    /* Register-offset addressing (I = 1 in the single-transfer encoding) is a
+       data field in the "01" class. It is not a class selector. This code was
+       incorrect one time before, and real BIOS code found the fault before a
+       manual test did. Thus this test confirms the behavior explicitly. */
     ps->cpu.r[10] = 0x200;
     ps->cpu.r[11] = 0x10;
     uint32_t str_reg_offset =
@@ -197,18 +198,20 @@ static void test_arm_memory(void) {
 }
 
 static void test_arm_ldrh_misaligned_quirks(void) {
-    /* A real, confirmed ARM7TDMI hardware quirk (see exec_halfword_transfer
-       in arm_exec.c and docs/hardware-notes.md, "CPU"):
-       a misaligned halfword load doesn't just silently round down to the
-       aligned halfword below it - real silicon rotates the loaded LDRH
-       value right by 8 bits (swapping its two bytes), while a misaligned
-       LDRSH instead behaves as a sign-extended BYTE load (LDRSB) from that
-       same odd address. Found via a real PocketStation ID-editing
-       homebrew's font-glyph routine, which reads a byte-packed table
-       via `LDRH Rd,[Rn],#1` (post-increment by 1, not 2) masked to the low
-       byte - a real, working idiom on real hardware that depends entirely
-       on this rotation to recover each individual byte; without it, every
-       other byte read came back wrong, corrupting every glyph drawn. */
+    /* A real, confirmed hardware quirk of the ARM7TDMI (see
+       exec_halfword_transfer in arm_exec.c, and docs/hardware-notes.md,
+       "CPU"):
+       a misaligned halfword load does not round down to the aligned halfword
+       below it. Real silicon rotates the loaded LDRH value right by 8 bits,
+       which exchanges its two bytes. A misaligned LDRSH instead operates as a
+       sign-extended BYTE load (LDRSB) from that same odd address. The
+       font-glyph routine of a real PocketStation homebrew ID editor found
+       this behavior. That routine reads a byte-packed table with
+       `LDRH Rd,[Rn],#1`, which is a post-increment of 1 and not 2, and masks
+       the result to the low byte. That method operates correctly on real
+       hardware, and it depends fully on this rotation to get each byte.
+       Without the rotation, every second byte was incorrect, and each glyph
+       on the screen was incorrect. */
     psemu_t *ps = make_arm_cpu();
 
     psemu_bus_write8(&ps->bus, 0x100, 0x11u);
@@ -225,10 +228,10 @@ static void test_arm_ldrh_misaligned_quirks(void) {
     arm7tdmi_step(&ps->cpu);
     assert(ps->cpu.r[1] == 0x2211u);
 
-    /* LDRH R2, [R0, #1] - misaligned (address 0x101): rotates the
-       aligned-down halfword (0x2211) right by 8 -> 0x1122, putting the
-       byte actually at the odd address (0x22) in the low 8 bits, matching
-       what the real font routine's byte-wise reader expects. */
+    /* LDRH R2, [R0, #1] is misaligned, at address 0x101. It rotates the
+       aligned halfword (0x2211) right by 8 bits, which gives 0x1122. Thus the
+       byte at the odd address (0x22) is in the low 8 bits. This result agrees
+       with the byte reader of the real font routine. */
     uint32_t ldrh_odd = (0xEu << 28) | (1u << 24) | (1u << 23) | (1u << 22) | (1u << 20) | (0u << 16) | (2u << 12) |
                          (0u << 8) | (1u << 7) | (1u << 5) | (1u << 4) | 1u;
     put32(ps, 4, ldrh_odd);
@@ -244,10 +247,10 @@ static void test_arm_ldrh_misaligned_quirks(void) {
     arm7tdmi_step(&ps->cpu);
     assert(ps->cpu.r[3] == 0x00002211u);
 
-    /* LDRSH R4, [R0, #3] - misaligned (address 0x103): behaves as a
-       sign-extended BYTE load from 0x103 (0x80, sign bit set), NOT a
-       rotated halfword read - real hardware's documented divergence from
-       LDRH's rotation behavior above. */
+    /* LDRSH R4, [R0, #3] is misaligned, at address 0x103. It operates as a
+       sign-extended BYTE load from 0x103 (0x80, with the sign bit set). It is
+       NOT a rotated halfword read. This is the recorded difference of real
+       hardware from the LDRH rotation behavior above. */
     uint32_t ldrsh_odd = (0xEu << 28) | (1u << 24) | (1u << 23) | (1u << 22) | (1u << 20) | (0u << 16) |
                           (4u << 12) | (0u << 8) | (1u << 7) | (1u << 6) | (1u << 5) | (1u << 4) | 3u;
     put32(ps, 12, ldrsh_odd);
@@ -306,11 +309,12 @@ static void test_arm_exceptions_and_psr(void) {
     assert(ps->cpu.r[14] == 0x54u); /* return address = pc + 4 */
     assert(ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)] == old_cpsr);
 
-    /* MRS/MSR round trip on the control byte (mode + I/F/T bits) - done
-       here, still in SVC mode (privileged) from the SWI above, since a
-       write to CPSR's control byte only succeeds from a privileged mode
-       on real hardware (see test_msr_user_mode_control_byte_is_ignored
-       for the User-mode-restricted case). */
+    /* An MRS and MSR round trip on the control byte, which holds the mode and
+       the I, F, and T bits. This test executes here, in SVC mode from the SWI
+       above. SVC mode is privileged. On real hardware, a write to the control
+       byte of the CPSR is successful only from a privileged mode. See
+       test_msr_user_mode_control_byte_is_ignored for the User-mode
+       condition. */
     ps->cpu.r[0] = ARM_MODE_SVC | CPSR_I; /* value to load into CPSR control byte */
     uint32_t msr_instr = (0xEu << 28) | (1u << 24) | (1u << 21) | (1u << 16) | (0xFu << 12) | 0u;
     put32(ps, 0x58, msr_instr);
@@ -334,15 +338,16 @@ static void test_arm_exceptions_and_psr(void) {
 }
 
 static void test_msr_user_mode_control_byte_is_ignored(void) {
-    /* Real ARM7TDMI/ARMv4T silicon: MSR to CPSR from User mode can only
-       change the condition flags (top byte) - the control byte (mode, T,
-       F, I) is protected and silently ignored, regardless of which of
-       those bits the instruction asks for. Found via a real homebrew app
-       (pk_timing_bench) that unintentionally relied on the emulator
-       previously getting this wrong: it wrote CPSR_I/F from User mode
-       expecting a real-hardware no-op, but the write actually took
-       effect here, leaving interrupts globally masked for the app's
-       entire runtime in a way real hardware never would - see
+    /* On real ARM7TDMI and ARMv4T silicon, an MSR to the CPSR from User mode
+       can change only the condition flags, which are the highest byte. The
+       control byte (the mode, T, F, and I) is protected. The hardware ignores
+       a write to it and gives no error. This is true for each control bit
+       that the instruction selects. A real homebrew app (pk_timing_bench)
+       found this behavior. That app depended on the earlier incorrect
+       behavior of this emulator without intent: it wrote CPSR_I and CPSR_F
+       from User mode, and expected no effect on real hardware. But the write
+       took effect here. Thus the interrupts stayed masked globally for the
+       full runtime of the app, which real hardware never does. See
        docs/hardware-notes.md. */
     psemu_t *ps = make_arm_cpu();
     arm_set_mode(&ps->cpu, ARM_MODE_USR);
@@ -455,9 +460,9 @@ static void test_arm_ldm_exception_return(void) {
     assert(ps->cpu.r[15] == 0x54u);
     assert(ps->cpu.cpsr == old_cpsr);
     assert((ps->cpu.cpsr & CPSR_MODE_MASK) == ARM_MODE_USR);
-    /* Writeback lands in SVC's own r13 (0x308) before the mode switch back
-       to USR swaps in USR's own banked r13 (0x9000) - the SVC-mode value
-       is still safely preserved in its bank, just not the visible register. */
+    /* The writeback goes into the r13 of SVC mode (0x308). The change back to
+       USR mode then loads the banked r13 of USR mode (0x9000). The SVC-mode
+       value stays in its bank. It is only not in the visible register. */
     assert(ps->cpu.r[13] == 0x9000u);
 
     psemu_destroy(ps);
@@ -532,8 +537,10 @@ static void test_thumb_memory_and_control(void) {
     assert(ps->cpu.r[4] == 0x34u);
     assert(ps->cpu.r[13] == 0x700u);
 
-    /* Unconditional branch: at pc=0x40, imm11 offset such that target = pc+4+offset.
-       offset field = 4 (word count in the 11-bit signed field, *2 applied by decode) -> +8 bytes. */
+    /* An unconditional branch at pc = 0x40. The imm11 offset gives
+       target = pc + 4 + offset.
+       The offset field is 4. That field is a signed 11-bit count, and the decode
+       operation multiplies it by 2. Thus the offset is +8 bytes. */
     put16(ps, 0x40, (uint16_t)((0x1Cu << 11) | 4u));
     ps->cpu.r[15] = 0x40;
     arm7tdmi_step(&ps->cpu);
@@ -579,14 +586,15 @@ static void test_thumb_bl_bx_lr_stays_thumb(void) {
 }
 
 static void test_cpu_faulted_flag(void) {
-    /* psemu_cpu_faulted() (added while investigating a real, reproducible
-       Chocobo World crash - see docs/hardware-notes.md - where the
-       desktop frontend had no way to tell the CPU had run into an
-       unrecognized opcode and silently kept stepping it, corrupting
-       state forever with zero diagnostic). 0xB800 is a Thumb "format
-       12/13/14" pattern (top3=101) that matches none of exec_load_address
-       /exec_add_sp_offset/exec_push_pop's checks, falling to the
-       unimplemented default. */
+    /* psemu_cpu_faulted(). This project added that function during an
+       investigation of a real, repeatable crash (see
+       docs/hardware-notes.md). In that crash, the desktop frontend had no
+       method to find that the CPU met an unrecognized opcode. It continued to
+       execute instructions, corrupted the state permanently, and gave no
+       diagnostic data. 0xB800 is a Thumb "format 12/13/14" pattern, with the
+       top 3 bits equal to 101. It agrees with no test in exec_load_address,
+       exec_add_sp_offset, or exec_push_pop. Thus it goes to the unimplemented
+       default. */
     psemu_t *ps = make_thumb_cpu();
     assert(!psemu_cpu_faulted(ps));
     put16(ps, 0, 0xB800u);
@@ -597,17 +605,17 @@ static void test_cpu_faulted_flag(void) {
 }
 
 static void test_faulted_cpu_stops_advancing(void) {
-    /* A real, confirmed bug found via a real desktop-app crash report:
-       arm7tdmi_step only gated on `halted` (which nothing ever sets),
-       not `unimplemented` - so a caller that doesn't check the flag
-       after every single instruction (psemu_run's whole-cycle-budget
-       loop, unlike tools/inspect.c's own per-instruction loop) kept
-       fetching and executing from whatever garbage the CPU landed on,
-       potentially thousands of instructions past the real fault site,
-       corrupting registers/PC before anyone ever noticed. Confirms both
-       that r15 stops moving and that the trace ring buffer stops
-       recording once faulted, so a crash report reflects the original
-       fault, not wherever unchecked continued execution wandered to. */
+    /* A real, confirmed fault that a crash report from the desktop app found.
+       arm7tdmi_step tested only `halted`, and no code sets that flag. It did
+       not test `unimplemented`. Thus a caller that does not test the flag
+       after each instruction continued to fetch and execute from incorrect
+       addresses. The cycle-budget loop of psemu_run is such a caller. The
+       per-instruction loop of tools/inspect.c is not. That continued
+       execution can be thousands of instructions after the real fault, and it
+       corrupts the registers and the PC before a user finds the condition.
+       This test confirms two conditions: r15 stops, and the trace ring buffer
+       stops its record after the fault. Thus a crash report shows the original
+       fault, and not the later addresses. */
     psemu_t *ps = make_thumb_cpu();
     uint32_t pc_at_fault;
 
@@ -627,12 +635,13 @@ static void test_faulted_cpu_stops_advancing(void) {
 }
 
 static void test_crash_report_contents(void) {
-    /* psemu_write_crash_report() - added so the desktop frontend can
-       write a real diagnostic file instead of just a one-line stderr
-       message when something goes wrong (see docs/hardware-notes.md,
-       the Chocobo World crash investigation this was built for). Checks
-       the report names the actual fault opcode/address and includes the
-       executed-PC trace, not just that it doesn't crash. */
+    /* psemu_write_crash_report(). This project added that function so that
+       the desktop frontend can write a real diagnostic file. Before it, the
+       frontend wrote only a one-line stderr message at a fault. See
+       docs/hardware-notes.md for the crash investigation that caused this
+       work. This test confirms that the report gives the true fault opcode
+       and its address, and that the report contains the executed-PC trace. It
+       does not test only that the function does not crash. */
     psemu_t *ps = make_thumb_cpu();
     FILE *f = tmpfile();
     char buf[8192];
@@ -663,15 +672,16 @@ static void test_crash_report_contents(void) {
 static void test_intc_status_sources_also_latch_hold(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Buttons and the RTC tick (INT_STATUS_MASK bits) must latch into
-       BOTH status and hold, not status only. An earlier version of
-       intc_set_line only set `status` for these bits - confirmed wrong by
-       disassembling the real BIOS: its top-level IRQ handler tests
-       `hold & enable & INT_RTC` and its installed periodic callback
-       tests `hold & INT_BTN_ACTION`, both driving real handlers that
-       could never run if these bits never reached `hold`. Without this,
-       button presses and RTC ticks could be polled via `status` but
-       could never actually raise a real IRQ. */
+    /* The buttons and the RTC tick (the INT_STATUS_MASK bits) must latch into
+       BOTH status and hold. They must not latch into status only. An earlier
+       version of intc_set_line set only `status` for these bits. A
+       disassembly of the real BIOS confirms that this was incorrect: the
+       top-level IRQ handler of the BIOS tests `hold & enable & INT_RTC`, and
+       the periodic callback that it installs tests `hold & INT_BTN_ACTION`.
+       Both tests reach real handlers, and those handlers can never execute if
+       these bits never get to `hold`. Without this behavior, code can read
+       button presses and RTC ticks through `status`, but they can never cause
+       a real IRQ. */
     ps->intc.enable |= INT_RTC;
     intc_set_line(&ps->intc, INT_RTC, 1);
     assert((ps->intc.hold & INT_RTC) != 0u);
@@ -683,20 +693,19 @@ static void test_intc_status_sources_also_latch_hold(void) {
     assert((ps->intc.hold & INT_BTN_ACTION) != 0u);
     assert((ps->intc.status & INT_BTN_ACTION) != 0u);
 
-    /* Clearing (e.g. a button release, or the RTC's own alternating
-       tick) drops both. A tempting-looking alternative was tried and
-       disproved empirically: making only STATUS follow de-assertion
-       (leaving HOLD latched until an explicit acknowledge, matching
-       the INT_INPUT-vs-INT_LATCH naming and the real RTC handler's
-       own explicit ack) sounds plausible, but the real button-action
-       callback (traced at 0x04003784) never acknowledges its bit -
-       making a button release leave it latched forever caused the CPU
-       to re-enter the IRQ handler on nearly every subsequent instruction
-       after a single press (559034 re-entries across a 20M-instruction
-       real-BIOS run). A real, usable device can't work that way, so
-       buttons (and by extension everything else, for consistency -
-       ack already clears both regardless) clear both hold and status
-       on release. */
+    /* A clear operation, for example a button release or the alternating RTC
+       tick, clears both registers. This project tested a different method and
+       a test disproved it. That method made only STATUS follow the
+       de-assertion, and left HOLD latched until an explicit acknowledge. It
+       agreed with the INT_INPUT and INT_LATCH names, and with the explicit
+       acknowledge of the real RTC handler. But the real button-action
+       callback, at address 0x04003784, never acknowledges its bit. Thus a
+       button release left the bit latched permanently, and the CPU entered
+       the IRQ handler again at almost each instruction after one press. A
+       real-BIOS run of 20 million instructions gave 559034 re-entries. A real
+       device that a person can use cannot operate this way. Thus the buttons,
+       and each other source for consistency, clear both hold and status at a
+       release. An acknowledge already clears both registers. */
     intc_set_line(&ps->intc, INT_RTC, 0);
     assert((ps->intc.hold & INT_RTC) == 0u);
     assert((ps->intc.status & INT_RTC) == 0u);
@@ -708,19 +717,19 @@ static void test_intc_status_sources_also_latch_hold(void) {
 static void test_button_hold_pulses_not_sustained(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* A real, confirmed bug found via direct real-hardware testing: on
-       the real device, holding Action does nothing (whatever's blinking
-       keeps blinking normally) and only releasing it confirms - but this
-       emulator's button HOLD bit used to stay latched as a sustained
-       level for the entire physical hold duration. A real BIOS callback
-       branches on `hold & INT_BTN_ACTION` *before* its RTC-driven redraw
-       check, so a continuously-set hold bit permanently skipped that
-       redraw path for as long as the button was held, confirmed via a
-       runtime watchpoint showing the RTC-driven blink counter frozen
-       throughout a sustained hold. Fixed: HOLD only pulses on the press
-       edge; a still-held button clears HOLD again (but not STATUS,
-       which keeps tracking the live level) on the next
-       psemu_set_buttons call with no new edge. */
+    /* A real, confirmed fault that a direct test on real hardware found. On
+       the real device, a held Action button does nothing: an item that blinks
+       continues to blink normally. Only a release confirms the selection. But
+       the button HOLD bit of this emulator stayed latched as a continuous
+       level for the full time of the hold. A real BIOS callback tests
+       `hold & INT_BTN_ACTION` *before* its RTC redraw test. Thus a hold bit
+       that stays set permanently prevented that redraw path while the user
+       held the button. A watchpoint during execution confirmed this: the
+       RTC blink counter did not change during a long hold. The correction:
+       HOLD pulses only at the press edge. For a button that the user still
+       holds, the next psemu_set_buttons call with no new edge clears HOLD
+       again. That call does not clear STATUS, which continues to follow the
+       live level. */
     ps->intc.enable |= INT_BTN_ACTION;
 
     psemu_set_buttons(ps, PSEMU_BUTTON_FIRE); /* press edge */
@@ -742,19 +751,22 @@ static void test_button_hold_pulses_not_sustained(void) {
 static void test_button_status_survives_acknowledge(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* docs/hardware-notes.md, "Buttons": `status` tracks the live button level,
-       for code that polls it directly. An acknowledge clears a latched interrupt
-       REQUEST, so it must clear HOLD. It must not clear that live level.
+    /* docs/hardware-notes.md, "Buttons": `status` follows the live button
+       level, for code that reads the register directly. An acknowledge clears
+       a latched interrupt REQUEST, thus it must clear HOLD. It must not clear
+       that live level.
 
-       This used to fail. Buttons were missing from INT_LEVEL_MASK, so any
-       acknowledge wiped their STATUS bit and a button that was still physically
-       held read back as released until something pressed it again. The real BIOS
-       acknowledges button interrupts during boot, so an app that polled STATUS
-       for a held button saw nothing.
+       This test failed before. The buttons were absent from INT_LEVEL_MASK,
+       thus each acknowledge cleared their STATUS bit. A button that the user
+       still held then read back as released, until something pressed the
+       button again. The real BIOS acknowledges the button interrupts during
+       its boot sequence. Thus an app that read STATUS for a held button saw
+       nothing.
 
-       A real app depends on this: pk_timing_bench opens its exit prompt by
-       counting 75000 consecutive polls of STATUS with Action held, and waits on
-       the same level to see the button released again before it departs. */
+       A real app depends on this behavior: pk_timing_bench opens its exit
+       prompt after 75000 sequential reads of STATUS with Action held. It then
+       waits on the same level to see the release of the button before it
+       exits. */
     ps->intc.enable |= INT_BTN_ACTION;
 
     psemu_set_buttons(ps, PSEMU_BUTTON_FIRE); /* press edge */
@@ -784,12 +796,13 @@ static void test_button_status_survives_acknowledge(void) {
 static void test_timer_and_irq(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Timer0: period=count=10, enabled; also enable its source in the INTC -
-       hold alone isn't enough to assert IRQ, matching real hardware.
-       Control bits 0-1 are left at 0 -> the slowest selectable divisor is
-       actually /2 (0 and 3 both mean /2) - confirmed real hardware
-       behavior, not a raw 1:1 cycle-to-count ratio, so the cycle counts below are
-       doubled relative to `period` to account for it. */
+    /* Timer0: period and count are 10, and the timer is enabled. This code
+       also enables its source in the INTC, because hold alone does not assert
+       an IRQ. This behavior agrees with real hardware.
+       Control bits 0-1 stay at 0. Thus the divisor is /2, because 0 and 3
+       both give /2. This is confirmed real hardware behavior. The ratio of
+       cycles to counts is not 1:1. Thus the cycle counts below are two times
+       the `period` value. */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 10u); /* period */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 10u); /* count */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x8, TIMER_CTRL_ENABLE);
@@ -799,10 +812,12 @@ static void test_timer_and_irq(void) {
     timer_tick(&ps->timer, &ps->intc, 10u);
     assert(!intc_irq_asserted(&ps->intc)); /* fewer than `period` /2-divided ticks: no expiry yet */
     timer_tick(&ps->timer, &ps->intc, 10u);
-    /* 10 more /2-divided ticks bring count to exactly 0 - but zero is a state the real counter actually
-       occupies, so it reloads and fires on the NEXT tick, giving a real period of P+1 rather than P.
-       Confirmed by direct real-hardware measurement; see timer.c's timer_tick and
-       pk_timing_bench/VERIFICATION.md. This assertion used to expect the IRQ one tick earlier. */
+    /* 10 more /2 ticks make count exactly 0. But zero is a state of the real
+       counter. Thus the counter reloads and expires at the NEXT tick, and the
+       real period is P+1 and not P. A direct measurement on real hardware
+       confirms this. See timer_tick in timer.c, and
+       pk_timing_bench/VERIFICATION.md. This assertion expected the IRQ one
+       tick earlier before. */
     assert(!intc_irq_asserted(&ps->intc));
     timer_tick(&ps->timer, &ps->intc, 2u); /* one more /2-divided tick: now it reloads and fires */
     assert(intc_irq_asserted(&ps->intc));
@@ -836,22 +851,23 @@ static void test_timer_and_irq(void) {
 }
 
 static void test_fiq_delivery_and_priority(void) {
-    /* A real, confirmed bug this session (see docs/hardware-notes.md,
-       "Interrupt controller"): FIQ was never actually delivered
-       by this emulator, for any app, ever - intc_fiq_asserted (intc.c)
-       already existed and was already verified correct against real
-       hardware's bit-mapping, but arm7tdmi_step only ever checked
-       intc_irq_asserted. Found by tracing why a real homebrew's
-       Timer2-driven (FIQ, not IRQ) confirmation beep produced silence:
-       Timer2's period/enable registers were being written and INT_TIMER2
-       latched into the interrupt controller's hold register,
-       but the CPU's mode never left USR - the interrupt sat asserted
-       forever, unconsumed. */
+    /* A real, confirmed fault (see docs/hardware-notes.md, "Interrupt
+       controller"). This emulator never delivered a FIQ, for any app.
+       intc_fiq_asserted (intc.c) already existed, and a comparison against
+       the bit mapping of real hardware already confirmed it. But
+       arm7tdmi_step tested only intc_irq_asserted. A trace found this fault.
+       That trace examined the reason that the Timer2 confirmation sound of a
+       real homebrew app gave silence. Timer2 uses FIQ, and not IRQ. The app
+       wrote the period register and the enable register of Timer2, and
+       INT_TIMER2 latched into the hold register of the interrupt controller.
+       But the CPU mode never left USR. Thus the interrupt stayed asserted
+       permanently, and nothing serviced it. */
     psemu_t *ps = make_arm_cpu();
 
-    /* Timer2 (not Timer0/1 - real hardware's FIQ source, per
-       docs/hardware-notes.md's confirmed INT_FIQ_MASK bit mapping),
-       same setup pattern as test_timer_and_irq's Timer0/IRQ case. */
+    /* Timer2, and not Timer0 or Timer1. Timer2 is the FIQ source of real
+       hardware, from the confirmed INT_FIQ_MASK bit mapping in
+       docs/hardware-notes.md. The setup pattern is the same as the Timer0 and
+       IRQ pattern of test_timer_and_irq. */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x20, 10u); /* period */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x24, 10u); /* count */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x28, TIMER_CTRL_ENABLE);
@@ -876,9 +892,9 @@ static void test_fiq_delivery_and_priority(void) {
     assert(ps->cpu.r[15] == ARM_FIQ_VECTOR);
     assert(ps->cpu.r[14] == 0x34u); /* 0x30 + 4, per the SUBS PC,LR,#4 exit convention */
     assert(ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)] == old_cpsr);
-    /* Real ARM7TDMI sets BOTH F and I on FIQ entry (unlike IRQ, which only
-       sets I) - prevents a second FIQ from recursively interrupting the
-       handler before it saves state. */
+    /* A real ARM7TDMI sets BOTH F and I at FIQ entry. IRQ entry sets only I.
+       F prevents a second FIQ from an interruption of the handler before the
+       handler saves its state. */
     assert(ps->cpu.cpsr & CPSR_F);
     assert(ps->cpu.cpsr & CPSR_I);
 
@@ -895,9 +911,9 @@ static void test_fiq_delivery_and_priority(void) {
 }
 
 static void test_fiq_takes_priority_over_irq(void) {
-    /* Real ARM7TDMI checks FIQ before IRQ - FIQ has strictly higher
-       priority in the exception scheme. With both pending and
-       unmasked simultaneously, the CPU must enter FIQ, not IRQ. */
+    /* A real ARM7TDMI tests FIQ before IRQ, because FIQ has a higher priority
+       in the exception scheme. While both are pending and unmasked, the CPU
+       must enter FIQ. It must not enter IRQ. */
     psemu_t *ps = make_arm_cpu();
 
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x20, 1u); /* Timer2/FIQ: period */
@@ -931,14 +947,13 @@ static void test_fiq_takes_priority_over_irq(void) {
 static void test_timer_clock_divisor(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Control bits 0-1 = 1 selects /32 - an earlier
-       version of timer_tick ignored this entirely and decremented count
-       by raw cycles directly, which would fire this timer 16x too often
-       relative to the /2 case. period=count=1, and the real period is P+1
-       selected ticks (see timer.c), so an expiry needs two /32 ticks - 64
-       raw cycles. The divisor is what this test is actually pinning down:
-       were it ignored, the timer would expire within the first couple of
-       raw cycles instead. */
+    /* Control bits 0-1 with the value 1 select the /32 divisor. An earlier
+       version of timer_tick did not use this field. It decreased count by the
+       raw cycles directly, which makes this timer expire 16 times too
+       frequently against the /2 condition. period and count are 1, and the
+       real period is P+1 selected ticks (see timer.c). Thus an expiry needs
+       two /32 ticks, which is 64 raw cycles. This test confirms the divisor.
+       Without the divisor, the timer expires in the first few raw cycles. */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x0, 1u); /* period */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x4, 1u); /* count */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x8, TIMER_CTRL_ENABLE | 1u); /* /32, enabled */
@@ -958,12 +973,14 @@ static void test_timer_clock_divisor(void) {
 static void test_timer_registers_are_16_bit(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* period and count are 16-bit on real hardware; a wider store keeps only the low half
-       (see TIMER_REG_MASK in timer.h, and docs/hardware-notes.md, "Timers").
-       This emulator used to model both as full uint32_t. Pop'n Music's FIQ audio timer
-       programs Timer2 with a value whose upper half is nonzero; retaining it stretched the
-       period from 851 ticks to about 52.6 million, so the audio interrupt never fired and
-       the game ran silently. */
+    /* On real hardware, period and count are 16-bit registers. A wider store
+       keeps only the low half (see TIMER_REG_MASK in timer.h, and
+       docs/hardware-notes.md, "Timers").
+       This emulator modeled both registers as a full uint32_t before. The FIQ
+       audio timer of one music app programs Timer2 with a value whose upper
+       half is not zero. If the register keeps that half, the period increases
+       from 851 ticks to approximately 52.6 million. Thus the audio interrupt
+       never occurred, and the app made no sound. */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x20, 0x03240353u); /* Timer2 period */
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x24, 0x0323B1FDu); /* Timer2 count */
     assert(ps->timer.timers[2].period == 0x0353u);
@@ -975,8 +992,9 @@ static void test_timer_registers_are_16_bit(void) {
     psemu_bus_write32(&ps->bus, PSEMU_TIMER_BASE + 0x28, TIMER_CTRL_ENABLE);
     assert(ps->timer.timers[2].count == 0x0353u);
 
-    /* The reload on expiry is masked too, so a state carried over from the old 32-bit model
-       converges instead of staying stuck at a huge count. */
+    /* The reload at an expiry also uses the mask. Thus a state from the older
+       32-bit model becomes correct. It does not stay at a very large
+       count. */
     ps->timer.timers[2].period = 0x00FF0010u;
     ps->timer.timers[2].count = 0u;
     ps->intc.enable |= INT_TIMER2;
@@ -990,29 +1008,31 @@ static void test_timer_registers_are_16_bit(void) {
 static void test_boot_ready_stub(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Real BIOS polls this address (LDR/TST #0x10/BEQ) before flash-control
-       init; see docs/hardware-notes.md. Must read back with bit 4 set or
-       a real boot sequence hangs forever. */
+    /* The real BIOS reads this address (LDR, TST #0x10, BEQ) before it
+       initializes the flash control. See docs/hardware-notes.md. The register
+       must read back with bit 4 set. If it does not, a real boot sequence
+       continues for an unlimited time. */
     assert(psemu_bus_read32(&ps->bus, PSEMU_CLK_BASE) & 0x10u);
 
-    /* Bit 9 of INT_INPUT is the RTC's toggling interrupt line, not a static
-       flag - see test_rtc_defaults_and_increment for its actual behavior. */
+    /* Bit 9 of INT_INPUT is the interrupt line of the RTC, which changes
+       state. It is not a static flag. See test_rtc_defaults_and_increment for
+       its behavior. */
 
     psemu_destroy(ps);
     printf("test_boot_ready_stub OK\n");
 }
 
 static void test_clk_mode_scales_run_speed(void) {
-    /* Real hardware runs more raw instructions per real frame when
-       CLK_MODE is elevated. Confirmed by tracing a real boot+beep
-       sequence: the BIOS sets mode 7 (~4MHz, per the CLK_MODE/
-       SetCpuSpeed table in clk.c) for the whole HELLO/heart/beep
-       window, then drops to a slower mode. psemu_run's cycle budget
-       uses the PSEMU_ASSUMED_CPU_HZ reference rate. Raising CLK_MODE
-       to max runs more raw cycles in the same budget than the idle
-       default (mode 0). Timer scales with CLK_MODE too (see
-       test_timer_scales_with_clk_mode). RTC and DAC stay pinned to
-       real time (see test_clk_mode_keeps_rtc_dac_on_real_time). */
+    /* Real hardware executes more raw instructions in each real frame at a
+       higher CLK_MODE. A trace of a real boot and sound sequence confirms
+       this: the BIOS sets mode 7 (approximately 4MHz, from the CLK_MODE and
+       SetCpuSpeed table in clk.c) for the full HELLO, heart, and sound
+       period. It then changes to a slower mode. The cycle budget of psemu_run
+       uses the PSEMU_ASSUMED_CPU_HZ reference rate. Thus the maximum CLK_MODE
+       executes more raw cycles in the same budget than the idle default,
+       which is mode 0. The Timer also scales with CLK_MODE (see
+       test_timer_scales_with_clk_mode). The RTC and the DAC stay at real time
+       (see test_clk_mode_keeps_rtc_dac_on_real_time). */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
@@ -1023,9 +1043,10 @@ static void test_clk_mode_scales_run_speed(void) {
     uint32_t ran_idle = psemu_run(ps_idle, 100000u);
     uint32_t ran_max = psemu_run(ps_max, 100000u);
 
-    /* Mode 7 (~4MHz) is ~122x mode 0's ~32.768kHz - assert a conservative
-       lower bound (10x) to avoid coupling this test to the exact table
-       values while still catching a completely unscaled psemu_run. */
+    /* Mode 7 (approximately 4MHz) is approximately 122 times mode 0
+       (approximately 32.768kHz). This test uses a lower limit of 10 times.
+       Thus the test does not depend on the exact table values, and it still
+       finds a psemu_run function that applies no scale at all. */
     assert(ran_max > ran_idle * 10u);
 
     psemu_destroy(ps_idle);
@@ -1034,25 +1055,26 @@ static void test_clk_mode_scales_run_speed(void) {
 }
 
 static void test_timer_scales_with_clk_mode(void) {
-    /* This function's history (see docs/hardware-notes.md, "CLK_MODE"
-       for the current, settled behavior): Timer was
-       twice made to stay pinned to real time like RTC/DAC, reasoning
-       that it drives the app's Timer1-IRQ audio-generation loop
-       and shouldn't race ahead of real time. That fixed a real "beep plays far too fast"
-       complaint, but direct measurement later showed it broke something
-       else: with Timer decoupled, the HELLO animation (driven by the
-       SAME Timer1 heartbeat - both audio and general GUI ticking are
-       confirmed real uses of the same IRQ) ran ~4x too slow during
-       CLK_MODE=7, and a date-setting screen's blink ran ~2x too fast
-       during CLK_MODE=4 - both errors matching the ratio between those
-       CLK_MODEs' real Hz and the fixed reference rate almost exactly.
-       Real timers are clocked by the
-       System Clock, which varies with CLK_MODE. Timer now
-       tracks CLK_MODE like the outer loop's own throughput - the
-       earlier "beep too fast" complaint is inferred to be the
-       separate DAC output-pacing bug fixed by
-       test_clk_mode_keeps_rtc_dac_on_real_time below, not a result
-       of Timer following CLK_MODE. */
+    /* The history of this function. See docs/hardware-notes.md, "CLK_MODE",
+       for the current behavior. Earlier work two times made the Timer stay at
+       real time, the same as the RTC and the DAC. The reasoning was that the
+       Timer operates the Timer1 IRQ audio loop of the app, and thus it must
+       not advance faster than real time. That change corrected a real report
+       that a sound played much too fast. But a later direct measurement showed
+       that the change broke a different function: with the Timer independent
+       of CLK_MODE, the HELLO animation was approximately 4 times too slow at
+       CLK_MODE 7. The same Timer1 heartbeat drives that animation, and both
+       the audio and the general GUI ticks are confirmed real uses of the same
+       IRQ. Also, the blink on a date-setting screen was approximately 2 times
+       too fast at CLK_MODE 4. Both errors agree almost exactly with the ratio
+       between the real Hz value of those CLK_MODE settings and the fixed
+       reference rate.
+       The System Clock clocks the real timers, and that clock changes with
+       CLK_MODE. Thus the Timer now follows CLK_MODE, the same as the
+       throughput of the outer loop. The earlier "sound too fast" report is an
+       inference: it came from the separate DAC output-pacing fault that
+       test_clk_mode_keeps_rtc_dac_on_real_time below now covers. It was not a
+       result of a Timer that follows CLK_MODE. */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1;
@@ -1060,18 +1082,20 @@ static void test_timer_scales_with_clk_mode(void) {
 
     psemu_bus_write32(&ps_max->bus, PSEMU_CLK_BASE, 7u);
 
-    /* period/count large enough that it never expires (and hence never
-       reloads/wraps) within this test's budget, at either CLK_MODE - so
-       (initial count - final count), in ticks, cumulatively reflects
-       total raw cycles fed, unlike cycle_accumulator (which is only the
-       sub-divisor remainder, not cumulative).
-       That means the largest period the hardware can actually hold: these
-       registers are 16-bit (see TIMER_REG_MASK in timer.h). This test used
-       to load 100000000, which no real timer can store; once the emulator
-       started masking to the real width that value wrapped almost
-       immediately and the tick arithmetic below became meaningless.
-       The budget is halved to match: at 0xFFFF and the /2 divisor, mode 7
-       accumulates ~50k of the 65535 available ticks over ~0.05s, so it
+    /* The period and the count are large. Thus the timer never expires, and
+       it never reloads or wraps, in the budget of this test, at either
+       CLK_MODE value. Thus the difference (initial count - final count), in
+       ticks, gives the total raw cycles. cycle_accumulator cannot give that
+       total, because it holds only the remainder below the divisor.
+       This value is the largest period that the hardware can hold: these
+       registers are 16-bit (see TIMER_REG_MASK in timer.h). This test loaded
+       100000000 before, and no real timer can store that value. After the
+       emulator started to mask the value to the real width, that value
+       wrapped almost immediately, and the tick arithmetic below had no
+       meaning.
+       The budget is one half of the earlier budget, to agree with this value.
+       At 0xFFFF and the /2 divisor, mode 7 accumulates approximately 50000 of
+       the 65535 available ticks over approximately 0.05s. Thus the counter
        still never wraps. */
     uint32_t big = TIMER_REG_MASK;
     psemu_bus_write32(&ps_idle->bus, PSEMU_TIMER_BASE + 0x10, big); /* T1 period */
@@ -1102,13 +1126,14 @@ static void test_timer_scales_with_clk_mode(void) {
 }
 
 static void test_clk_mode_keeps_rtc_dac_on_real_time(void) {
-    /* Unlike Timer (see test_timer_scales_with_clk_mode), RTC is a
-       separate, CPU-clock-independent real 1Hz oscillator (confirmed
-       via real hardware: the RTC ticks flat regardless of CPU_FREQ), and this
-       emulator's DAC resampling needs the same real-time independence
-       for its fixed PSEMU_DAC_SAMPLE_RATE_HZ output rate - regardless of
-       CLK_MODE, RTC/DAC progress must come out the same for the same
-       real-time budget. */
+    /* The Timer follows CLK_MODE (see test_timer_scales_with_clk_mode), but
+       the RTC does not. The RTC is a separate real 1Hz oscillator, and it is
+       independent of the CPU clock. A test on real hardware confirms this:
+       the RTC ticks at a constant rate for each CPU_FREQ value. The DAC
+       resample function of this emulator needs the same independence from the
+       CPU clock, for its fixed PSEMU_DAC_SAMPLE_RATE_HZ output rate. Thus, for
+       each CLK_MODE value, the RTC and the DAC must advance by the same
+       quantity for the same real-time budget. */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1;
@@ -1121,15 +1146,15 @@ static void test_clk_mode_keeps_rtc_dac_on_real_time(void) {
     psemu_run(ps_max, budget);
 
     long rtc_diff = (long)ps_idle->rtc.tick_accumulator - (long)ps_max->rtc.tick_accumulator;
-    /* Small final-step overshoot only - but the bound is wider than it
-       used to be now that arm7tdmi_step returns a real, region-dependent
-       cycle cost (see docs/hardware-notes.md, "Memory access timing")
-       instead of a flat 1: this test's own zero-filled instruction stream
-       runs off the end of the 2KB WRAM region partway through the
-       budget, after which every step costs 2 raw cycles instead of 1, up
-       to doubling the worst-case single-step overshoot this assert has
-       to tolerate (observed ~38 vs the old flat-cost model's headroom
-       under 20). */
+    /* Only a small overshoot at the last step. But this limit is larger than
+       the earlier limit, because arm7tdmi_step now returns a real cycle cost
+       that depends on the memory region (see docs/hardware-notes.md, "Memory
+       access timing"). It does not return a flat value of 1. The instruction
+       stream of this test is all zeros, and it continues past the end of the
+       2KB WRAM region during the budget. After that point, each step costs 2
+       raw cycles and not 1. Thus the worst-case overshoot of one step can be
+       two times the earlier value. The observed value is approximately 38.
+       The earlier flat-cost model needed less than 20. */
     assert(rtc_diff > -60 && rtc_diff < 60);
 
     int16_t buf_idle[4096], buf_max[4096];
@@ -1146,17 +1171,19 @@ static void test_clk_mode_keeps_rtc_dac_on_real_time(void) {
 static void test_rtc_defaults_and_increment(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Real silicon power-on-reset values:
-       date 1998-01-01, time 00:00:00 with day-of-week BCD 4 - see
-       rtc.h for why this isn't the previously-assumed arbitrary 1999-01-01. */
+    /* The power-on-reset values of real silicon: the date is 1998-01-01, and
+       the time is 00:00:00 with the day of the week as BCD 4. See rtc.h for
+       the reason that these values are not the earlier assumption of
+       1999-01-01. */
     assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0xC) == 0x00980101u); /* date: day,month,year,(unused) */
     assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) == 0x04000000u); /* time: sec,min,hour,dow */
 
-    /* Writing 1 to control while it's already 1 increments the field
-       selected by mode>>1 (4 = day) - the real "write 1 twice" idiom.
-       mode's bit0 (PRGSEL) is left clear (0 = paused/program mode) so the
-       later auto-advance-on-tick check below doesn't also perturb `date`
-       via the manual write path under test here. */
+    /* A write of 1 to control while control holds 1 increases the field that
+       mode>>1 selects. The value 4 selects the day. This is the real "write 1
+       two times" method.
+       Bit 0 of mode (PRGSEL) stays clear, and 0 is the paused or program
+       mode. Thus the automatic-advance test below does not also change `date`
+       through the manual write path that this test covers. */
     psemu_bus_write32(&ps->bus, PSEMU_RTC_BASE + 0x0, (4u << 1) | 1u); /* mode = day, paused */
     psemu_bus_write8(&ps->bus, PSEMU_RTC_BASE + 0x4, 1u);       /* control: 0 -> 1, just stored */
     assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0xC) == 0x00980101u); /* unchanged so far */
@@ -1164,10 +1191,12 @@ static void test_rtc_defaults_and_increment(void) {
     assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0xC) == 0x00980102u); /* day is now 2 */
     assert(psemu_bus_read8(&ps->bus, PSEMU_RTC_BASE + 0x4) == 0u);           /* control reset to 0 */
 
-    /* Real BIOS waits for a full pulse (rising then falling) on the RTC's
-       line in INTC status, not just a level - a constant value can't
-       satisfy that. Still paused (mode bit0 set above), so this exercises
-       the faster ~4096Hz paused tick rate and must NOT auto-advance time. */
+    /* The real BIOS waits for a full pulse on the RTC line in the INTC status
+       register. A full pulse is a rise and then a fall. The BIOS does not
+       wait for a level, thus a constant value cannot satisfy the wait.
+       The RTC is still paused, because bit 0 of mode is set above. Thus this
+       test covers the faster paused tick rate of approximately 4096Hz, and
+       the RTC must NOT advance the time. */
     uint32_t time_before_tick = psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8);
     rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_PAUSED);
     assert(intc_get_line(&ps->intc, INT_RTC) != 0u);
@@ -1177,13 +1206,14 @@ static void test_rtc_defaults_and_increment(void) {
     assert((psemu_bus_read32(&ps->bus, PSEMU_INTC_BASE + 0x4) & INT_RTC) == 0u);
     assert(psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) == time_before_tick); /* paused: no auto-advance */
 
-    /* Switch to running mode (bit0 clear) and confirm the tick now both
-       pulses INT_RTC and auto-advances the seconds field - the behavior
-       missing entirely before this fix (only the interrupt line toggled,
-       the clock itself never moved on its own). */
+    /* Change to the running mode (bit 0 clear), and confirm two conditions:
+       the tick pulses INT_RTC, and the tick advances the seconds field. This
+       emulator did not have the second behavior before the correction. Only
+       the interrupt line changed state, and the clock never advanced. */
     psemu_bus_write32(&ps->bus, PSEMU_RTC_BASE + 0x0, 0u); /* mode = running */
-    /* Two transitions, because a second is one full pulse and hardware makes two transitions per pulse
-       (see rtc.h). One transition alone must NOT move the clock. */
+    /* Two transitions, because one second is one full pulse, and the hardware
+       makes two transitions for each pulse (see rtc.h). One transition alone
+       must NOT advance the clock. */
     rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_RUN);
     assert((psemu_bus_read32(&ps->bus, PSEMU_RTC_BASE + 0x8) & 0xFFu) == 0x00u);
     rtc_tick(&ps->rtc, &ps->intc, RTC_TICK_CYCLES_RUN);
@@ -1222,14 +1252,14 @@ static void test_flash_bank_select(void) {
 }
 
 static void test_flash_bank_val_remapping(void) {
-    /* F_BANK_VAL is indexed by
-       PHYSICAL bank (table[p]=v, deliberately the "backwards" direction
-       from a typical page table, see docs/hardware-notes.md, "Flash
-       memory") - FLASH1 windowing is a real, potentially-reordering
-       remapping table, not just a simple linear offset. This test exercises a non-contiguous
-       mapping: physical blocks 2 and 5 enabled, with block 5 explicitly
-       assigned to virtual bank 0 and block 2 to virtual bank 1 - the
-       reverse of what a linear-offset model would produce. */
+    /* The index of F_BANK_VAL is the PHYSICAL bank: table[p] = v. This is the
+       opposite direction from a usual page table (see
+       docs/hardware-notes.md, "Flash memory"). The FLASH1 window is a real
+       remapping table, and it can change the order of the blocks. It is not a
+       simple linear offset. This test covers a mapping that is not
+       contiguous: physical blocks 2 and 5 are enabled, block 5 goes to
+       virtual bank 0, and block 2 goes to virtual bank 1. That order is the
+       reverse of the order that a linear-offset model gives. */
     psemu_t *ps = make_arm_cpu();
 
     psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 2 * 8192, 0x22222222u);
@@ -1240,9 +1270,9 @@ static void test_flash_bank_val_remapping(void) {
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x100 + 2 * 4, 1u);        /* F_BANK_VAL[2] = virtual 1 */
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u);                    /* commit */
 
-    /* Virtual bank 0 (FLASH1 offset 0) -> physical block 5, not the
-       lowest-numbered enabled block (2) a linear-offset model would
-       have picked. */
+    /* Virtual bank 0 (FLASH1 offset 0) goes to physical block 5. It does not
+       go to the enabled block with the lowest number (block 2), which a
+       linear-offset model selects. */
     assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH1_BASE) == 0x55555555u);
     /* Virtual bank 1 (FLASH1 offset 8192) -> physical block 2. */
     assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH1_BASE + 8192) == 0x22222222u);
@@ -1258,25 +1288,27 @@ static void test_flash_bank_val_remapping(void) {
 static void test_flash_ctrl_busy_wait_bits(void) {
     psemu_t *ps = make_arm_cpu();
 
-    /* Two real, confirmed bugs, both busy-wait loops in real BIOS/app code
-       that this emulator silently hung forever - found only once real app
-       execution got far enough to reach them (see
-       docs/app-notes.md's app-dispatch investigation). */
+    /* Two real, confirmed faults. Both are busy-wait loops in real BIOS code
+       or app code, and this emulator made both loops continue for an
+       unlimited time with no message. This project found the faults only
+       after real app execution got to them (see the app-dispatch
+       investigation in docs/app-notes.md). */
 
-    /* Bug 1: +0 (command/commit trigger) is write-command/read-status on
-       real hardware, not a plain mirror. A real routine writes 2 here
-       then busy-waits on this same address's bit 0 reading back 1
-       ("ready"). Echoing back the raw command value (bit 0 of 2 is 0)
-       left that loop spinning forever. */
+    /* Fault 1: on real hardware, +0 is a write-command and read-status
+       register. It is not a simple mirror. A real routine writes 2 here, and
+       then waits for bit 0 of this same address to read back as 1 ("ready").
+       A return of the raw command value gives bit 0 as 0, because the command
+       is 2. Thus that loop continued for an unlimited time. */
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u);
     assert((psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0) & 1u) != 0u);
 
-    /* Bug 2: +0x10 (F_WAIT2, waitstates and FLASH-Write-
-       Control-and-Status) wasn't modeled at all (span stopped at +0xC) -
-       a real app's own flash-write routine polls bit 2 here, expecting
-       it to read back set once the write completes. A default/unmapped
-       read of 0 left that loop spinning too. Since writes complete
-       instantly here, it should always report "not busy". */
+    /* Fault 2: this emulator did not model +0x10 (F_WAIT2, which holds the
+       waitstates and the flash write control and status). The span stopped at
+       +0xC. The flash-write routine of a real app reads bit 2 here, and waits
+       for the bit to read back as set after the write completes. An unmapped
+       read gave a default of 0, thus that loop also continued for an unlimited
+       time. Writes complete immediately here, thus this register must always
+       report "not busy". */
     assert((psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x10) & 0x04u) != 0u);
 
     psemu_destroy(ps);
@@ -1284,13 +1316,14 @@ static void test_flash_ctrl_busy_wait_bits(void) {
 }
 
 static void test_flash_serial_number_default_and_override(void) {
-    /* F_SN (see docs/hardware-notes.md, "Hardware ID (F_SN)") defaults to
-       0x410000D3 ("410000D3" in hex form) - low 24 bits 211, Chocobo World (FF8) masks off the
-       high byte, reads the rest via SWI 0Ah, and uses its last 3 decimal
-       digits as an "ID" stat that alone determines rank; 211 is the
-       community-documented best rank. The high byte ('A') is the ASCII
-       letter real hardware prints as part of its serial sticker - see
-       psemu_parse_hardware_id/psemu_format_hardware_id. */
+    /* F_SN (see docs/hardware-notes.md, "Hardware ID (F_SN)") has a default
+       of 0x410000D3, which is "410000D3" in hex form. Its low 24 bits are
+       211. The companion app of one console game removes the high byte, reads
+       the remainder with SWI 0Ah, and uses the last 3 decimal digits as an
+       "ID" statistic. That statistic alone sets the rank, and public research
+       gives 211 as the best rank. The high byte ('A') is the ASCII letter
+       that real hardware prints on its serial sticker. See
+       psemu_parse_hardware_id and psemu_format_hardware_id. */
     psemu_t *ps = make_arm_cpu();
     assert(psemu_get_hardware_id(ps) == (((uint32_t)'A' << 24) | 211u));
 
@@ -1302,17 +1335,16 @@ static void test_flash_serial_number_default_and_override(void) {
 }
 
 static void test_hardware_id_string_conversion(void) {
-    /* The only accepted form: exactly 8 plain hex digits, matching
-       exactly what a real "ID rewriter" homebrew displays/edits on real
-       hardware - confirmed via real-hardware testing that there's no
-       "first digit must be a letter" restriction at all: a real unit
-       happily accepts and persists "EEEEEEEE". Deliberately NOT also
-       accepting the letter+8-decimal-digit "sticker" form real units
-       print under their front cover (e.g. "A02374684") - what's in a
-       persisted hardware-ID string is exactly the raw value, nothing
-       hidden or silently translated; a sticker-to-raw-value converter, if
-       ever wanted, belongs as a separate desktop-app feature. See
-       docs/hardware-notes.md, "Hardware ID (F_SN)". */
+    /* The only accepted form is exactly 8 hex digits. A real homebrew "ID
+       rewriter" app shows and changes this same form on real hardware. A test
+       on real hardware confirms that the first digit does not have to be a
+       letter: a real unit accepts and keeps the value "EEEEEEEE". This code
+       deliberately does NOT accept the "sticker" form of one letter and 8
+       decimal digits that real units print below the front cover, for example
+       "A02374684". A hardware-ID string that this app keeps holds the raw
+       value exactly. It hides nothing and translates nothing. A converter
+       from the sticker form to the raw value belongs in the desktop app, as a
+       separate function. See docs/hardware-notes.md, "Hardware ID (F_SN)". */
     uint32_t id;
     char buf[PSEMU_HARDWARE_ID_STRING_SIZE];
 
@@ -1345,20 +1377,19 @@ static void test_hardware_id_string_conversion(void) {
 }
 
 static void test_flash_serial_number_register_access(void) {
-    /* F_SN_LO/F_SN_HI live at FLASH_CTRL+0x300/+0x302 (F_EXTRA, see
-       flash.h) - real hardware requires these read via two separate 16-bit
-       halfword loads, not a single 32-bit one, but the underlying bytes
-       are addressable the same way regardless; this exercises the bus at
-       the halfword granularity real code actually uses. An ID-editing
-       homebrew pokes these registers directly rather than going through
-       the SWI, so the bus-level path needs to work independent of
-       psemu_set_hardware_id. */
+    /* F_SN_LO and F_SN_HI are at FLASH_CTRL+0x300 and FLASH_CTRL+0x302
+       (F_EXTRA, see flash.h). Real hardware needs two separate 16-bit
+       halfword loads for these registers. It does not accept one 32-bit load.
+       But the bytes have the same addresses in both conditions. This test
+       uses the halfword size that real code uses. A homebrew ID editor writes
+       these registers directly, and does not use the SWI. Thus the bus path
+       must operate independently of psemu_set_hardware_id. */
     psemu_t *ps = make_arm_cpu();
 
-    /* Default is "A00000211" (see FLASH_DEFAULT_SERIAL) - F_SN_LO carries
-       the low 16 bits (211, unaffected by the high byte), F_SN_HI carries
-       the high 16 bits, which includes the 'A' letter byte (0x41) in its
-       own top half. */
+    /* The default value is "A00000211" (see FLASH_DEFAULT_SERIAL). F_SN_LO
+       holds the low 16 bits, which are 211, and the high byte has no effect
+       on them. F_SN_HI holds the high 16 bits, which include the letter byte
+       'A' (0x41) in its own upper half. */
     assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x300) == 211u);
     assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x302) == 0x4100u);
 
@@ -1366,17 +1397,16 @@ static void test_flash_serial_number_register_access(void) {
     psemu_bus_write16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x302, 0xCAFEu);
     assert(psemu_get_hardware_id(ps) == 0xCAFEBEEFu);
 
-    /* F_CAL (+0x308) is a real, separate register in the same F_EXTRA
-       region - defaults to the documented reset value and is
-       independently read/writable. */
+    /* F_CAL (+0x308) is a real, separate register in the same F_EXTRA region.
+       It has the recorded reset value as its default, and code can read it
+       and write it independently. */
     assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308) == 0x001Au);
     psemu_bus_write16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308, 0x0099u);
     assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x308) == 0x0099u);
 
-    /* The gap between F_BANK_VAL's end (+0x140) and F_EXTRA's start
-       (+0x300) is unmapped and must stay 0, not mirror
-       last_command now that FLASH_CTRL_SPAN reaches all the way to
-       F_EXTRA. */
+    /* The range between the end of F_BANK_VAL (+0x140) and the start of
+       F_EXTRA (+0x300) is unmapped. It must stay at 0. It must not mirror
+       last_command, because FLASH_CTRL_SPAN now continues to F_EXTRA. */
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u); /* nonzero last_command */
     assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x200) == 0u);
 
@@ -1388,8 +1418,9 @@ static void test_flash_serial_number_register_access(void) {
     printf("test_flash_serial_number_register_access OK\n");
 }
 
-/* Builds a card carrying one named save, with `data_fill` in its data area, so a test can change what
-   is stored without changing what the card is. */
+/* Builds a card with one named save. `data_fill` fills the data area of that
+   save. Thus a test can change the stored data without a change to the identity
+   of the card. */
 static void make_identity_card(uint8_t *card, const char *name, uint8_t data_fill) {
     memset(card, 0, PSEMU_FLASH_SIZE);
     memcpy(card, "MC", 2);
@@ -1406,9 +1437,10 @@ static void make_identity_card(uint8_t *card, const char *name, uint8_t data_fil
 }
 
 static void test_content_identity_hash_survives_a_save(void) {
-    /* The property this exists for: a save state has to keep matching the card it was made from after
-       an app writes to that card, now that a frontend writes the card back to disk. Hashing the file
-       cannot do that - the file is what changed. See psemu_content_identity_hash. */
+    /* The purpose of this function: a save state must continue to agree with
+       its own card after an app writes to that card. A frontend now writes the
+       card back to disk. A hash of the file cannot give this result, because
+       the file is the data that changed. See psemu_content_identity_hash. */
     static uint8_t card[PSEMU_FLASH_SIZE];
     static uint8_t other[PSEMU_FLASH_SIZE];
     static uint8_t app[8192];
@@ -1428,8 +1460,9 @@ static void test_content_identity_hash_survives_a_save(void) {
     make_identity_card(other, "BASCUS-94163-CHOCOBO", 0x11);
     assert(psemu_content_identity_hash(other, sizeof(other)) != before);
 
-    /* So is the same card with a file added or removed - that is a real change of identity, not of
-       stored data, and refusing a state across it is correct. */
+    /* The same card with an added file or a removed file also gives a different
+       hash. That change is a real change of identity, and not a change of the
+       stored data. Thus a refusal of a state across that change is correct. */
     make_identity_card(other, "BASLUS-01411-YUGIOH", 0x11);
     other[2 * 128u] = 0x51u;
     assert(psemu_content_identity_hash(other, sizeof(other)) != before);
@@ -1468,16 +1501,16 @@ static void test_content_identity_hash_survives_a_save(void) {
 }
 
 static void test_flash_load_app_synthesizes_directory(void) {
-    /* A real, confirmed bug (see docs/app-notes.md, "App-selection and
-       dispatch"): the real BIOS's app-selection routine requires FLASH2 to
-       carry a real memory-card directory, not just the app's own bytes at
-       offset 0 - flash_load_app used to write the raw Title Sector straight
-       to offset 0, so a loaded single app could never actually be reached
-       through the real menu. This test locks down the fix: a synthesized
-       one-entry directory at slot 1, with the specific byte (frame offset
-       0x10 = 'P') the real BIOS's menu-browsing code was empirically found
-       to require - see the comment on DIRECTORY_POCKETSTATION_FLAG_OFFSET
-       in flash.c for how that byte was isolated against a real card dump. */
+    /* A real, confirmed fault (see docs/app-notes.md, "App-selection and
+       dispatch"). The app-selection routine of the real BIOS needs a real
+       memory-card directory in FLASH2. The bytes of the app at offset 0 are
+       not sufficient. flash_load_app wrote the raw Title Sector directly to
+       offset 0 before. Thus the real menu could never reach a loaded single
+       app. This test protects the correction: a synthesized directory with
+       one entry at slot 1, and the specific byte that the menu-browsing code
+       of the real BIOS needs (frame offset 0x10 = 'P'). See the comment on
+       DIRECTORY_POCKETSTATION_FLAG_OFFSET in flash.c for the method that
+       isolated that byte against a real card dump. */
     psemu_t *ps = make_arm_cpu();
 
     uint8_t app[2 * 8192];
@@ -1491,9 +1524,10 @@ static void test_flash_load_app_synthesizes_directory(void) {
     assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 0x00) == 'M');
     assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 0x01) == 'C');
 
-    /* Slot 1 (first directory frame, at FLASH2 + 1*128): in-use/first
-       marker, real file size, the PocketStation flag byte, and a link to
-       slot 2 (0-based data-block index 1, since this is a 2-block chain). */
+    /* Slot 1 is the first directory frame, at FLASH2 + 1*128. It holds the
+       in-use and first marker, the real file size, the PocketStation flag
+       byte, and a link to slot 2. That link is the 0-based data-block index
+       1, because this is a chain of 2 blocks. */
     assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128) == 0x51u);
     assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 128 + 0x04) == sizeof(app));
     assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128 + 0x10) == 'P');
@@ -1521,12 +1555,12 @@ static void test_flash_load_app_synthesizes_directory(void) {
 }
 
 static void test_flash_load_app_rejects_oversized_app(void) {
-    /* flash_load_app now reserves physical block 0 for the synthesized
-       directory (see test_flash_load_app_synthesizes_directory above), so
-       the largest an app can be is 15 blocks, not the full 16-block flash -
-       one less than it used to accept before that fix. Locks in the exact
-       boundary so a future change can't silently widen or narrow it without
-       a test noticing. */
+    /* flash_load_app now keeps physical block 0 for the synthesized directory
+       (see test_flash_load_app_synthesizes_directory above). Thus the maximum
+       app size is 15 blocks, and not the full 16 blocks of flash. That is one
+       block less than the earlier limit. This test protects the exact limit,
+       thus a later change cannot make it larger or smaller without a test
+       failure. */
     psemu_t *ps = make_arm_cpu();
 
     static uint8_t max_size_app[15 * 8192];
@@ -1544,14 +1578,15 @@ static void test_flash_load_app_rejects_oversized_app(void) {
 }
 
 static void test_psemu_load_mcs_validates_and_unwraps(void) {
-    /* psemu_load_mcs had no direct test coverage at all - only ever
-       exercised manually while adding .mcs support. Locks in: a
-       well-formed single-save .mcs (real PS1 directory frame + data
-       blocks) unwraps into the same synthesized-directory layout
-       psemu_load_app produces, and the three ways a malformed .mcs is
-       rejected (too short to contain a directory frame at all, a payload
-       that isn't a whole number of blocks, and a directory frame whose
-       stored file size doesn't match the actual payload). */
+    /* psemu_load_mcs had no direct test. Only a manual test covered it,
+       during the work that added .mcs support. This test protects two
+       properties. First, a correct single-save .mcs file, which is a real PS1
+       directory frame and then data blocks, gives the same
+       synthesized-directory layout that psemu_load_app gives. Second, this
+       code refuses an incorrect .mcs file in three conditions: the file is
+       too short for a directory frame, the payload is not a whole number of
+       blocks, and the file size in the directory frame does not agree with
+       the payload. */
     psemu_t *ps = make_arm_cpu();
 
     uint8_t mcs[0x80 + 8192];
@@ -1590,16 +1625,16 @@ static void test_psemu_load_mcs_validates_and_unwraps(void) {
 }
 
 static void test_psemu_load_content_dispatches_by_size(void) {
-    /* psemu_load_content centralizes the .mcr/.mcs/.pss priority dispatch
-       that used to be hand-duplicated in both frontends (and drifted out
-       of sync between them once already, when the priority order changed).
-       Locks in all four outcomes: full card, .mcs, bare .pss, and total
-       garbage. */
+    /* psemu_load_content holds the .mcr, .mcs, and .pss priority dispatch in
+       one location. Both frontends contained a copy of that logic before, and
+       the two copies became different one time, at a change to the priority
+       order. This test protects all four results: a full card, a .mcs file, a
+       .pss file, and data that no loader accepts. */
 
-    /* Full memory-card image: passed straight to psemu_load_flash_image,
-       not reinterpreted as a Title Sector - a synthesized directory would
-       force 'M','C' at offset 0, so a byte pattern that survives unchanged
-       there proves the raw path was taken. */
+    /* A full memory-card image goes directly to psemu_load_flash_image. This
+       code does not read it as a Title Sector. A synthesized directory writes
+       'M' and 'C' at offset 0. Thus a byte pattern that does not change at
+       that offset proves that the code used the raw path. */
     {
         psemu_t *ps = make_arm_cpu();
         static uint8_t card[PSEMU_FLASH_SIZE];
@@ -1610,9 +1645,9 @@ static void test_psemu_load_content_dispatches_by_size(void) {
         psemu_destroy(ps);
     }
 
-    /* .mcs-shaped input (directory frame + block-aligned payload): unwrapped
-       and synthesized into a directory the same way psemu_load_mcs alone
-       does. */
+    /* Input in the .mcs form, which is a directory frame and a block-aligned
+       payload. This code extracts the payload and makes a directory, the same
+       way that psemu_load_mcs does. */
     {
         psemu_t *ps = make_arm_cpu();
         uint8_t mcs[0x80 + 8192];
@@ -1628,10 +1663,11 @@ static void test_psemu_load_content_dispatches_by_size(void) {
         psemu_destroy(ps);
     }
 
-    /* Bare Title Sector, not shaped like a valid .mcs at all (8192 - 0x80
-       isn't a multiple of FLASH_BLOCK_SIZE, so psemu_load_mcs rejects it
-       on size alone before falling through to psemu_load_app). Still gets
-       the same synthesized-directory treatment .pss always does. */
+    /* A Title Sector body, which is not in a valid .mcs form. The value
+       8192 - 0x80 is not a multiple of FLASH_BLOCK_SIZE, thus psemu_load_mcs
+       refuses the data on its size alone, and the code then tries
+       psemu_load_app. This data still gets the synthesized directory that a
+       .pss file always gets. */
     {
         psemu_t *ps = make_arm_cpu();
         uint8_t pss[8192];
@@ -1656,15 +1692,15 @@ static void test_psemu_load_content_dispatches_by_size(void) {
 }
 
 static void test_flash_key_addresses_are_not_data_storage(void) {
-    /* A real, confirmed bug found via a real crash report (see
-       docs/hardware-notes.md, "Flash memory"):
-       F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are real hardware's
-       flash unlock-sequence trigger addresses, not data storage - real
-       flash chips intercept writes there as unlock commands rather than
-       actually storing them. This emulator used to just store them as
-       plain data, so any real flash-write's unlock sequence permanently
-       corrupted whatever byte happened to physically sit at those two
-       fixed addresses - in Chocobo World's case, live app code. */
+    /* A real, confirmed fault that a real crash report found (see
+       docs/hardware-notes.md, "Flash memory").
+       F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are the flash
+       unlock-sequence trigger addresses of real hardware. They are not data
+       storage. A real flash chip intercepts writes there as unlock commands,
+       and it does not store them. This emulator stored them as usual data
+       before. Thus the unlock sequence of each real flash write permanently
+       corrupted the byte at those two fixed addresses. For one commercial
+       app, that byte was live app code. */
     psemu_t *ps = make_arm_cpu();
 
     /* Real hardware writes these as a 16-bit halfword
@@ -1680,10 +1716,10 @@ static void test_flash_key_addresses_are_not_data_storage(void) {
     psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 0x2A50, 0x33333333u);
     assert(psemu_bus_read32(&ps->bus, PSEMU_FLASH2_BASE + 0x2A50) == 0x33333333u);
 
-    /* Same protection applies through the FLASH1 virtual window (which
-       indexes the same underlying data array directly, bypassing
-       flash_write8) - with the default untouched bank state, FLASH1
-       offset 0x2A54 resolves to the same physical offset. */
+    /* The same protection applies through the FLASH1 virtual window. That
+       window uses the same data array directly, and it does not call
+       flash_write8. With the default bank state, FLASH1 offset 0x2A54
+       resolves to the same physical offset. */
     psemu_bus_write16(&ps->bus, PSEMU_FLASH1_BASE + 0x2A54, 0xFF55u);
     assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH1_BASE + 0x2A54) == 0x0000u);
 
@@ -1691,10 +1727,10 @@ static void test_flash_key_addresses_are_not_data_storage(void) {
     printf("test_flash_key_addresses_are_not_data_storage OK\n");
 }
 
-/* Real, confirmed sequence (disassembled from a real ID-editing homebrew
-   and matching official register documentation: "[8000000h]=new F_SN_LO
-   value [8000002h]=new F_SN_HI value") - confirmed working on a real
-   retail-BIOS unit this session. See docs/hardware-notes.md,
+/* A real, confirmed sequence. A disassembly of a real homebrew ID editor gives
+   it, and it agrees with the available register description: "[8000000h]=new
+   F_SN_LO value [8000002h]=new F_SN_HI value". A test on a real retail-BIOS unit
+   confirms that the sequence operates correctly. See docs/hardware-notes.md,
    "Hardware ID (F_SN)". */
 static void flash_perform_unlock_sequence(psemu_t *ps) {
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFAAu); /* F_KEY2 */
@@ -1717,20 +1753,22 @@ static void test_flash_header_write_via_unlock_sequence(void) {
     printf("test_flash_header_write_via_unlock_sequence OK\n");
 }
 
-/* The path a PocketStation app uses to write the console game's PS1 save on the same card.
+/* The path that a PocketStation app uses to write the PS1 save of the console game on the same card.
 
-   An app can read that save directly - FLASH2 is the whole card, memory-mapped and unwindowed - but it
-   cannot write it that way. Writes go through kernel SWI 0x10, one 128-byte frame at a time. Reverse
-   engineered from the J110 BIOS handler at 0x0400126C, which: sets F_WAIT2 (FLASH_CTRL+0x10) to 0x21, runs
-   the three-step unlock above, copies 0x40 halfwords to FLASH2 + frame*128, waits for F_WAIT2 bit 2 to read
-   back set, and then *verifies* by comparing 32 words and returning 0 for success or 1 for mismatch. Yu-Gi-Oh
-   Forbidden Memories drives it from 0x020028FA, deriving the frame number as (save_pointer >> 7) and
-   retrying up to 10 times per frame.
+   An app can read that save directly, because FLASH2 is the full card in memory with no window. But
+   an app cannot write the save that way. Writes use kernel SWI 0x10, one frame of 128 bytes at a
+   time. Reverse engineering of the J110 BIOS handler at 0x0400126C gives this sequence. That handler
+   sets F_WAIT2 (FLASH_CTRL+0x10) to 0x21, does the three-step unlock above, copies 0x40 halfwords to
+   FLASH2 + frame*128, and waits for bit 2 of F_WAIT2 to read back as set. It then *verifies* the
+   write: it compares 32 words, and returns 0 for success or 1 for a difference. One trading-card app
+   uses this handler from 0x020028FA. That app calculates the frame number as (save_pointer >> 7), and
+   it tries a maximum of 10 times for each frame.
 
-   Every step of that has to work or the write fails silently: a retry loop that never succeeds simply gives
-   up, exactly like the mode-bit test that used to discard IR transmissions. This replays the sequence
-   directly rather than through the BIOS, so it needs no BIOS or app image and runs in CI. The readback
-   assertion is the same comparison the real handler makes to decide success. */
+   Each step must operate correctly. If one step fails, the write fails and gives no message: a retry
+   loop that is never successful simply stops. The mode-bit test that discarded IR transmissions had
+   the same behavior. This test does the sequence directly, and not through the BIOS. Thus it needs no
+   BIOS image and no app image, and it can execute in CI. The readback assertion is the same
+   comparison that the real handler uses to decide success. */
 static void test_flash_frame_write_lands_in_a_ps1_save_block(void) {
     psemu_t *ps = make_arm_cpu();
     /* Block 1 + 0x200: where a PS1 save's data starts, past its title/icon header. Frame 68 of the card. */
@@ -1751,8 +1789,8 @@ static void test_flash_frame_write_lands_in_a_ps1_save_block(void) {
     for (i = 0; i < 64; i++) {
         assert(psemu_bus_read16(&ps->bus, dest + (uint32_t)i * 2u) == (uint16_t)(0xC0DEu + i));
     }
-    /* The unlock must not have redirected save data into F_SN/F_CAL: those cover FLASH2 offsets 0/2/8, and
-       a frame this far into the card has to be stored as ordinary data instead. */
+    /* The unlock must not send save data to F_SN or F_CAL. Those registers cover FLASH2 offsets 0, 2,
+       and 8. A frame at this position in the card must go to usual data storage. */
     assert(psemu_get_hardware_id(ps) == PSEMU_DEFAULT_HARDWARE_ID);
 
     psemu_destroy(ps);
@@ -1760,14 +1798,15 @@ static void test_flash_frame_write_lands_in_a_ps1_save_block(void) {
 }
 
 static void test_flash_header_write_requires_unlock_first(void) {
-    /* The core safety property motivating the gated (not unconditional)
-       design: physical offset 0/2/8 is ALSO ordinary card-data storage
-       (block 0's directory header, in the normal case, and - confirmed
-       via the F_KEY1/F_KEY2 corruption bug above - real save-write
-       mechanisms, like Chocobo World's own, write elsewhere in
-       this same physical range). Without the real unlock
-       sequence immediately before, a write to these offsets must behave
-       as plain data, not silently redirect to F_SN/F_CAL. */
+    /* The safety property that makes this design conditional, and not
+       unconditional: physical offsets 0, 2, and 8 are ALSO usual card-data
+       storage. In the normal condition, they hold the directory header of
+       block 0. The F_KEY1 and F_KEY2 corruption fault above also confirms
+       that real save-write mechanisms, for example the mechanism of one
+       commercial app, write to other addresses in this same physical range.
+       Without the real unlock sequence immediately before it, a write to
+       these offsets must operate as a usual data write. It must not go to
+       F_SN or F_CAL. */
     psemu_t *ps = make_arm_cpu();
     uint32_t default_id = psemu_get_hardware_id(ps);
 
@@ -1783,10 +1822,10 @@ static void test_flash_header_write_requires_unlock_first(void) {
 }
 
 static void test_flash_header_write_disarms_after_unrelated_write(void) {
-    /* Armed state covers exactly one real write session (a real header
-       update is 3 separate halfword writes after a single unlock) and
-       must not leak into unrelated later writes just because they
-       happen to also land on offset 0/2/8. */
+    /* The armed state covers exactly one real write session. A real header
+       update is 3 separate halfword writes after one unlock sequence. The
+       armed state must not continue into later, different writes, only
+       because those writes also go to offset 0, 2, or 8. */
     psemu_t *ps = make_arm_cpu();
     uint32_t default_id = psemu_get_hardware_id(ps);
 
@@ -1820,10 +1859,11 @@ static void test_flash_header_write_requires_correct_key_order(void) {
 }
 
 static void test_lcd_mode_dison_and_rotate(void) {
-    /* LCD_MODE (0x0D000000) was previously entirely unmodeled: bit6 is DISON
-       (display on/off) and bit7 is ROT (rotate 180 degrees, set for
-       docked mode). psemu_get_framebuffer() now returns VRAM as filtered
-       through these bits rather than raw VRAM unconditionally. */
+    /* This emulator did not model LCD_MODE (0x0D000000) before. Bit 6 is
+       DISON, which sets the display on or off. Bit 7 is ROT, which rotates
+       the display 180 degrees, and hardware sets it for docked mode.
+       psemu_get_framebuffer() now applies these bits to the VRAM. It does not
+       return the raw VRAM. */
     psemu_t *ps = make_arm_cpu();
     const uint8_t *fb;
 
@@ -1841,13 +1881,14 @@ static void test_lcd_mode_dison_and_rotate(void) {
     fb = psemu_get_framebuffer(ps);
     assert(fb[0] == 0u && fb[1] == 0u && fb[4] == 0u && fb[5] == 0u);
 
-    /* ROT set (with DISON re-set): 180-degree rotation - row order
-       reversed, and each row's 32 bits reversed left-right. Row 0
-       (0x000000FF, little-endian bytes 0xFF,00,00,00) ends up as the
-       last row (offset 124-127) with bits reversed (0xFF000000, bytes
-       00,00,00,0xFF); row 1 (0x0000FF00, bytes 00,0xFF,00,00) ends up
-       second-to-last (offset 120-123), reversed to 0x00FF0000 (bytes
-       00,00,0xFF,00). */
+    /* ROT is set, and DISON is set again. The result is a rotation of 180
+       degrees: the order of the rows is reversed, and the 32 bits of each row
+       are reversed from left to right. Row 0 (0x000000FF, with little-endian
+       bytes 0xFF, 00, 00, 00) becomes the last row, at offset 124 to 127,
+       with its bits reversed (0xFF000000, with bytes 00, 00, 00, 0xFF). Row 1
+       (0x0000FF00, with bytes 00, 0xFF, 00, 00) becomes the second row from
+       the end, at offset 120 to 123, and it reverses to 0x00FF0000 (with
+       bytes 00, 00, 0xFF, 00). */
     psemu_bus_write32(&ps->bus, PSEMU_LCD_MODE_BASE, LCD_MODE_DISON | LCD_MODE_ROT);
     fb = psemu_get_framebuffer(ps);
     assert(fb[124] == 0x00u && fb[125] == 0x00u && fb[126] == 0x00u && fb[127] == 0xFFu);
@@ -1886,9 +1927,9 @@ static void test_dac_basic(void) {
     assert(n == 1u);
     assert(samples[0] == (int16_t)(-1 * 64));
 
-    /* Real hardware has no fixed sample rate of its own (software bit-
-       bangs DAC_DATA) - dac_tick resamples at a fixed internal rate, so
-       N cycles must produce N/DAC_CYCLES_PER_SAMPLE output samples. */
+    /* Real hardware has no fixed sample rate, because software controls
+       DAC_DATA bit by bit. dac_tick resamples at a fixed internal rate. Thus
+       N cycles must give N/DAC_CYCLES_PER_SAMPLE output samples. */
     dac_tick(&ps->dac, DAC_CYCLES_PER_SAMPLE * 3u);
     n = psemu_get_audio_samples(ps, samples, 4);
     assert(n == 3u);
@@ -1898,10 +1939,10 @@ static void test_dac_basic(void) {
 }
 
 static void test_iop_sound_gate_mutes_dac(void) {
-    /* Audio must be enabled via
-       BOTH DAC_CTRL bit0 AND IOP_STOP/IOP_START bit5 ("Sound Enable") -
-       an earlier version of this emulator didn't model IOP_STOP/START
-       at all, silently discarding writes to that address range. */
+    /* Two bits must be set before audio plays: DAC_CTRL bit 0, and bit 5 of
+       IOP_STOP and IOP_START ("Sound Enable"). An earlier version of this
+       emulator did not model IOP_STOP and IOP_START. It discarded each write
+       to that address range, and gave no message. */
     psemu_t *ps = make_arm_cpu();
     int16_t samples[4];
     uint32_t n;
@@ -1934,16 +1975,16 @@ static void test_iop_sound_gate_mutes_dac(void) {
 }
 
 static void test_iop_stop_start_take_effect_via_single_byte_writes(void) {
-    /* A real, confirmed bug found while investigating a "Chocobo World
-       plays no sound" report: direct BIOS/app tracing (see
-       docs/hardware-notes.md) showed real code writes IOP_STOP/IOP_START
-       via single-byte stores, not always full 32-bit ones. An earlier
-       version of iop_write8 only committed a STOP/START write's effect
-       once a full 32-bit store's top byte arrived (shift==24) -
-       single-byte writes to the low byte (shift==0, where bit5 "Sound
-       Enable" actually lives) never reached that gate and were silently
-       discarded, leaving IOP_STOP/START permanently inert whenever real
-       code uses single-byte stores instead of 32-bit ones. */
+    /* A real, confirmed fault. An investigation of a report that one app
+       played no sound found it. A direct trace of the BIOS and the app (see
+       docs/hardware-notes.md) showed that real code writes IOP_STOP and
+       IOP_START with single-byte stores. It does not always use a full 32-bit
+       store. An earlier version of iop_write8 applied the effect of a STOP or
+       START write only after the highest byte of a full 32-bit store arrived
+       (shift == 24). A single-byte write to the low byte (shift == 0, which
+       holds bit 5, "Sound Enable") never got to that gate, and this emulator
+       discarded it with no message. Thus IOP_STOP and IOP_START had no effect
+       at all when real code used single-byte stores. */
     psemu_t *ps = make_arm_cpu();
     int16_t samples[4];
     uint32_t n;
@@ -1971,13 +2012,13 @@ static void test_iop_stop_start_take_effect_via_single_byte_writes(void) {
 }
 
 static void test_psemu_reset_restores_defaults_and_preserves_content(void) {
-    /* psemu_reset must be a true hardware-level reset: every peripheral
-       register returns to its power-on default, but loaded content
-       (flash data, the hardware ID, RAM aside) is not content at all and
-       must survive. See psemu_reset's comment in psemu.c. Without this,
-       reloading a different BIOS/app mid-session left stale peripheral
-       state from the previous session in place, which is what caused
-       reload glitches. */
+    /* psemu_reset must be a true hardware-level reset: each peripheral
+       register goes back to its power-on default. But the loaded content, which
+       is the flash data and the hardware ID, is not a register, and it must
+       continue. RAM is a separate condition. See the comment on psemu_reset in
+       psemu.c. Without this behavior, a mid-session load of a different BIOS or
+       app left the peripheral state of the earlier session in position. That
+       state caused the errors on the screen after a load. */
     psemu_t *ps = make_arm_cpu();
     int16_t samples[4];
 
@@ -2028,9 +2069,10 @@ static void test_psemu_reset_restores_defaults_and_preserves_content(void) {
     printf("test_psemu_reset_restores_defaults_and_preserves_content OK\n");
 }
 
-/* The BIOS-owned settings that live in RAM rather than in a register.
-   See docs/hardware-notes.md, "System sound volume setting" and "Where the
-   date/time settings actually live", for how these addresses were traced. */
+/* The settings that the BIOS owns. These settings are in RAM, and not in a
+   register. See docs/hardware-notes.md, "System sound volume setting" and "Where
+   the date/time settings actually live", for the method that found these
+   addresses. */
 static void test_volume_override_writes_bios_setting_byte(void) {
     psemu_t *ps = psemu_create();
 
@@ -2049,12 +2091,12 @@ static void test_volume_override_writes_bios_setting_byte(void) {
     printf("test_volume_override_writes_bios_setting_byte OK\n");
 }
 
-/* psemu_set_volume alone is not enough to hold the setting, because emulated
-   code overwrites the byte - the BIOS clears RAM early in its own boot, before
-   it reads the volume during sound init, so a frontend that only writes
-   between frames is always too late and the boot chime plays at full volume.
-   psemu_set_volume_override closes that window by making the byte read-only to
-   emulated code and re-seeding it across resets. */
+/* psemu_set_volume alone cannot hold the setting, because emulated code writes
+   over the byte. The BIOS clears RAM early in its boot sequence, before it reads
+   the volume during the sound initialization. Thus a frontend that writes only
+   between frames is always too late, and the boot sound plays at full volume.
+   psemu_set_volume_override prevents this: it makes the byte read-only to
+   emulated code, and it writes the value again at each reset. */
 static void test_volume_override_survives_emulated_writes_and_reset(void) {
     psemu_t *ps = psemu_create();
 
@@ -2122,10 +2164,10 @@ static void test_set_datetime_writes_rtc_and_both_century_bytes(void) {
     printf("test_set_datetime_writes_rtc_and_both_century_bytes OK\n");
 }
 
-/* The BIOS sets the clock by issuing RTC_ADJUST increments in a loop until
-   each field reaches a target. Overwriting the registers underneath that
-   loop can stop it converging, so the setter has to stay out of the way
-   while PRGSEL is set and let the caller retry later. */
+/* The BIOS sets the clock with a loop of RTC_ADJUST increments, until each field
+   gets to a target value. A write to the registers during that loop can prevent
+   the loop from reaching its target. Thus the setter function must make no change
+   while PRGSEL is set, and the caller must try again later. */
 static void test_set_datetime_refuses_while_rtc_in_program_mode(void) {
     psemu_t *ps = psemu_create();
     assert(psemu_set_datetime(ps, 2026, 8, 1, 12, 45, 30, 7) == 1);
@@ -2168,9 +2210,9 @@ static void test_set_datetime_rejects_out_of_range_arguments(void) {
     printf("test_set_datetime_rejects_out_of_range_arguments OK\n");
 }
 
-/* The override addresses are only meaningful on BIOS revisions this project
-   has actually traced. Anything else has to fail closed, so a frontend can
-   disable the UI instead of corrupting unrelated kernel RAM. */
+/* The override addresses have a meaning only on the BIOS revisions that this
+   project traced. Each other revision must fail safe. Thus a frontend can disable
+   its controls, and it does not corrupt other kernel RAM. */
 static void test_settings_offsets_unknown_without_a_known_bios(void) {
     psemu_t *ps = psemu_create();
     assert(psemu_settings_offsets_known(ps) == 0); /* no BIOS loaded at all */
@@ -2184,9 +2226,10 @@ static void test_settings_offsets_unknown_without_a_known_bios(void) {
     printf("test_settings_offsets_unknown_without_a_known_bios OK\n");
 }
 
-/* The per-frame settings overrides above are only safe while the BIOS shell
-   owns its RAM. psemu_app_running is what tells a frontend when it no longer
-   does. See its comment in psemu/psemu.h for the bug that made it necessary. */
+/* The settings overrides above, which occur at each frame, are safe only while
+   the BIOS shell owns its RAM. psemu_app_running tells a frontend when the BIOS
+   shell no longer owns that RAM. See the comment on that function in
+   psemu/psemu.h for the fault that made it necessary. */
 static void test_app_running_follows_flash1_execution(void) {
     psemu_t *ps = psemu_create();
     ps->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
@@ -2194,9 +2237,9 @@ static void test_app_running_follows_flash1_execution(void) {
     /* Nothing has run yet, so the BIOS shell is presumed to own the machine. */
     assert(psemu_app_running(ps) == 0);
 
-    /* Park an app in FLASH1 that just spins: B . at the window's base, plus
-       the same instruction one bank in, so bank resolution is not what this
-       test depends on. */
+    /* Put an app in FLASH1 that only loops: a "B ." instruction at the base of
+       the window, and the same instruction one bank later. Thus this test does
+       not depend on the bank resolution. */
     psemu_bus_write32(&ps->bus, PSEMU_FLASH2_BASE + 0, 0xEAFFFFFEu);
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 8, 1u); /* F_BANK_FLG: enable block 0 */
     psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0, 2u); /* commit */
@@ -2207,18 +2250,18 @@ static void test_app_running_follows_flash1_execution(void) {
     psemu_run(ps, 1000u);
     assert(psemu_app_running(ps) == 1);
 
-    /* An app sits in the BIOS for the length of every SWI it issues. A short
-       excursion must not read as "the app exited", or the frontend resumes
-       stamping its overrides into the app's RAM mid-call. */
+    /* An app is inside the BIOS for the duration of each SWI that it issues. A
+       short period there must not read as "the app exited". If it does, the
+       frontend writes its overrides into the RAM of the app during that SWI. */
     put32(ps, 0, 0xEAFFFFFEu); /* B . in RAM, standing in for a BIOS routine */
     arm7tdmi_reset(&ps->cpu, 0);
     psemu_run(ps, 1000u);
     assert(psemu_app_running(ps) == 1);
 
-    /* Staying away long enough is a real handover back to the BIOS shell. The
-       grace period is a real-time duration at the reference rate, so a budget
-       in the same unit clears it at any CLK_MODE - which is the property that
-       makes this tractable to assert at all. */
+    /* A sufficiently long period outside FLASH1 is a true return of control to
+       the BIOS shell. The grace period is a real-time duration at the reference
+       rate. Thus a budget in the same unit is longer than the grace period at
+       each CLK_MODE value. That property makes this test possible. */
     psemu_run(ps, 4u * (uint32_t)PSEMU_ASSUMED_CPU_HZ);
     assert(psemu_app_running(ps) == 0);
 
@@ -2235,9 +2278,10 @@ static void test_app_running_follows_flash1_execution(void) {
 }
 
 static void test_fiq_banks_r8_to_r12(void) {
-    /* A real ARM7TDMI banks r8-r12 for FIQ and nothing else. That is what lets a FIQ handler use them as
-       scratch without saving them, and it is why "fast interrupt" is fast. This emulator banked only
-       r13/r14, so a FIQ handler silently destroyed the interrupted code's r8-r12. */
+    /* A real ARM7TDMI banks r8-r12 for FIQ only. That bank lets a FIQ handler use those registers as
+       scratch registers with no save operation, and it is the reason that a "fast interrupt" is fast.
+       This emulator banked only r13 and r14. Thus a FIQ handler destroyed r8-r12 of the interrupted
+       code, and gave no error. */
     psemu_t *ps = psemu_create();
     int i;
 
@@ -2286,10 +2330,11 @@ static void test_fiq_banks_r8_to_r12(void) {
 }
 
 static void test_ldm_stm_user_bank_transfer(void) {
-    /* "LDM/STM ...^" with PC absent from the list moves the USER mode's registers, not the current mode's.
-       The real BIOS uses it to save and restore an app's r13/r14 without switching modes to reach them
-       (STMIA r0!,{r13,r14}^ at 0x04001944, LDM at 0x04001B90). exec_block_transfer used to ignore the S
-       bit in this case entirely and transfer the current mode's registers. */
+    /* "LDM ...^" or "STM ...^" with the PC absent from the list moves the registers of USER mode. It
+       does not move the registers of the current mode. The real BIOS uses this form to save and
+       restore r13 and r14 of an app, with no mode change: STMIA r0!,{r13,r14}^ at 0x04001944, and the
+       LDM at 0x04001B90. exec_block_transfer ignored the S bit in this condition before, and it
+       transferred the registers of the current mode. */
     psemu_t *ps = psemu_create();
 
     /* Give User mode a known r13/r14, then leave it. */
@@ -2333,8 +2378,9 @@ static void test_ldm_stm_user_bank_transfer(void) {
 }
 
 static void test_rtc_date_rolls_over_at_midnight(void) {
-    /* Confirmed on real hardware: the date advances at midnight. This used to do nothing at all - the
-       per-second cascade stopped at day-of-week - so a device sat on one date forever. */
+    /* Confirmed on real hardware: the date advances at midnight. This emulator did not do this before.
+       The cascade for each second stopped at the day of the week. Thus a device stayed at one date
+       permanently. */
     struct {
         uint32_t date_before, time_before, date_after;
         const char *what;
@@ -2378,11 +2424,12 @@ static void test_rtc_date_rolls_over_at_midnight(void) {
 }
 
 static void test_rtc_keeps_real_time(void) {
-    /* The RTC drives a wall clock, so one emulated second has to last one real second. psemu_run's budget is
-       in PSEMU_ASSUMED_CPU_HZ reference cycles, which IS real elapsed time, so a budget of exactly that many
-       cycles must advance the clock by exactly one second - at any CLK_MODE, since the RTC runs from its own
-       oscillator. This caught RTC_TICK_CYCLES_RUN sitting at 4000000, which made the device's clock run
-       nearly 4x slow. */
+    /* The RTC operates a wall clock. Thus one emulated second must last one real second. The budget of
+       psemu_run is in PSEMU_ASSUMED_CPU_HZ reference cycles, and that unit IS real elapsed time. Thus
+       a budget of exactly that number of cycles must advance the clock by exactly one second. This is
+       true at each CLK_MODE value, because the RTC uses its own oscillator. This test found
+       RTC_TICK_CYCLES_RUN at the value 4000000, which made the device clock almost 4 times too
+       slow. */
     static const uint32_t modes[] = {0u, 4u, 7u};
     size_t m;
     for (m = 0; m < sizeof(modes) / sizeof(modes[0]); m++) {

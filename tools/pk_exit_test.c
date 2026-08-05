@@ -1,16 +1,18 @@
-/* Diagnostic: drive pk_timing_bench through its real continue/exit flow entirely in the emulator, and confirm
-   the release-wait fix in src/ui.s (pb_prompt_confirm_exit) actually blocks departure while Action stays
-   physically held, then lets it proceed once released.
+/* A diagnostic tool. It operates pk_timing_bench through its real continue and exit sequence, fully in
+   the emulator. It confirms the release-wait correction in src/ui.s (pb_prompt_confirm_exit): that
+   correction must prevent the exit while the user holds Action, and permit the exit after the release.
 
-   This exists because the bug it targets - departing while Action is still down, which made the real BIOS's
-   browse screen read that as a fresh press and relaunch the app at once - was reported only on real hardware.
-   That report has since been reproduced end-to-end in this emulator, against the real BIOS's own browse
-   screen: see tools/button_timing_probe.c, where an app that departs with Action still asserted is relaunched by
-   the browse screen on the release edge, exactly as described. The mechanism this test depends on - button
-   STATUS surviving an acknowledge, so a genuinely held button keeps reading as held - is real emulator
-   behavior (see core/src/intc.h's INT_LEVEL_MASK).
-   This confirms that mechanism actually stops departure at the point that matters: while the button is still
-   asserted, the CPU stays inside the small wait loop rather than reaching the departure SVC chain.
+   This tool is necessary because a report of the target fault came only from real hardware. In that
+   fault, the app exited while Action was still down. The browse screen of the real BIOS then read that
+   condition as a new press, and it started the app again immediately. This emulator has since
+   reproduced that report against the browse screen of the real BIOS. See
+   tools/button_timing_probe.c: an app that exits with Action still asserted starts again from the
+   browse screen at the release edge, exactly as the report gives.
+   This test depends on one mechanism: the button STATUS bit continues after an acknowledge, thus a
+   held button continues to read as held. That mechanism is real emulator behavior (see INT_LEVEL_MASK
+   in core/src/intc.h).
+   This test confirms that the mechanism stops the exit at the necessary point: while the button is
+   asserted, the CPU stays in the small wait loop, and it does not get to the exit SVC sequence.
 
    usage: pk_exit_test <bios.bin> <pk_timing_bench.mcs> */
 #include <stdio.h>
@@ -74,9 +76,10 @@ int main(int argc, char **argv) {
     }
     psemu_reset(ps);
 
-    /* Same repeating Down / Action / Right / Action power-on sequence bench_probe and tools/inspect.c's
-       button_sim=3 use, confirmed end-to-end against real hardware. It repeats so a press that lands too
-       early for whatever stage the BIOS animation is on still lands correctly on a later cycle. */
+    /* The same repeating power-on sequence of Down, Action, Right, and Action that bench_probe and
+       button_sim=3 in tools/inspect.c use. A test against real hardware confirms this sequence. The
+       sequence repeats: thus a press that occurs too early for the current stage of the BIOS
+       animation still occurs at the correct time in a later cycle. */
     for (f = 0; f < 600; f++) {
         long phase = f % 240;
         uint32_t buttons = 0;
@@ -97,10 +100,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Hold Fire/Action continuously until FIRE_HOLD_THRESHOLD trips and the app switches to its exit prompt
-       screen. One press call asserts the edge; nothing needs to call psemu_set_buttons again to represent
-       "still held" between here and the explicit release below, the same way a real held button keeps
-       asserting STATUS with no further edges. */
+    /* Hold the Fire (Action) button until FIRE_HOLD_THRESHOLD occurs and the app changes to its exit
+       prompt screen. One press call asserts the edge. No code must call psemu_set_buttons again for
+       the "still held" condition, between this point and the explicit release below. A real held
+       button also continues to assert STATUS with no more edges. */
     psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
     last_screen = psemu_bus_read32(&ps->bus, WRAM_SCREEN_INDEX);
     for (f = 0; f < 4000 && psemu_bus_read32(&ps->bus, WRAM_SCREEN_INDEX) != SCREEN_EXIT_PROMPT; f++) {
@@ -117,8 +120,9 @@ int main(int argc, char **argv) {
     }
     printf("PASS: reached the exit prompt after %ld frames of held Action\n", f);
 
-    /* Release, then select EXIT with a Down tap, matching how a real user actually operates this prompt:
-       they let go of the long Action hold that opened it, before choosing anything. */
+    /* Release the button, and then select EXIT with a short Down press. A real user operates this
+       prompt the same way: the user releases the long Action hold that opened the prompt, before the
+       user selects an item. */
     psemu_set_buttons(ps, 0);
     psemu_run(ps, 33000u);
     psemu_set_buttons(ps, PSEMU_BUTTON_DOWN);
@@ -131,11 +135,12 @@ int main(int argc, char **argv) {
     }
     printf("PASS: EXIT selected\n");
 
-    /* Press Action again to confirm EXIT, and KEEP HOLDING it - this is the exact scenario the bug report
-       described: a real finger is still on the button the instant EXIT is confirmed. Step in small slices
-       and watch the program counter. Before the fix, this would run straight through the departure SVC chain
-       into BIOS space on the very next slice, with Action still asserted. With the fix, it must stay inside
-       the small wait loop for as long as this test keeps Action held. */
+    /* Press Action again to confirm EXIT, and CONTINUE TO HOLD the button. This is the exact condition
+       in the fault report: the finger of the user is still on the button at the moment of the EXIT
+       confirmation. Execute in small periods, and monitor the program counter. Before the correction,
+       the CPU executed the exit SVC sequence into BIOS memory at the next period, with Action still
+       asserted. With the correction, the CPU must stay in the small wait loop while this test holds
+       Action. */
     psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
     {
         long i;
@@ -161,8 +166,9 @@ int main(int argc, char **argv) {
     }
     printf("PASS: stayed out of BIOS space for 2000 slices with Action still held (pc=0x%08X)\n", ps->cpu.r[15]);
 
-    /* Now release, and confirm departure actually completes: PC should reach BIOS space within a generous
-       number of further slices, proving the wait loop is not simply stuck forever. */
+    /* Now release the button, and confirm that the exit completes. The PC must get to BIOS memory in a
+       large number of further periods. That result proves that the wait loop does not continue for an
+       unlimited time. */
     psemu_set_buttons(ps, 0);
     {
         long i;

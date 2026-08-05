@@ -5,15 +5,17 @@
 
 #define CLK_REG_SPAN 0x8u
 
-/* CPU/timer clock speed control.
+/* CPU and timer clock speed control.
    Confirmed against real hardware behavior.
 
-   Writing `mode` (bits 0-3, an index into CPU_FREQ below) reprograms the ARM7's real oscillator rate.
-   Reading `mode` ORs in a "steady" bit (0x10). A real BIOS boot loop polls this bit before proceeding.
+   A write to `mode` (bits 0-3, an index into CPU_FREQ below) programs the real oscillator rate of
+   the ARM7 again.
+   A read of `mode` also sets a "steady" bit (0x10). A real BIOS boot loop reads this bit before it
+   continues.
 
-   Real hardware ties the timer, RTC, and DAC-bit-banging rates to this same shared clock.
-   All of them speed up and slow down together.
-   See clk_current_hz() and psemu_run()'s use of it. */
+   On real hardware, the timer rate, the RTC rate, and the DAC bit-bang rate all come from this same
+   shared clock. All of them become faster and slower together.
+   See clk_current_hz() and its use in psemu_run(). */
 typedef struct clk {
     uint32_t mode;
     uint32_t control;
@@ -25,37 +27,40 @@ void clk_init(clk_t *clk);
 uint8_t clk_read8(clk_t *clk, uint32_t offset);
 void clk_write8(clk_t *clk, uint32_t offset, uint8_t value);
 
-/* Effective CPU frequency in Hz for the currently-programmed mode. */
+/* The effective CPU frequency in Hz, for the mode that is programmed at this time. */
 uint32_t clk_current_hz(const clk_t *clk);
 
-/* `control` (+0x4) bit 0 is a stop/standby request: it halts the CPU, and with it everything else clocked
-   from the same oscillator, until an external signal wakes it. psemu_run implements the stop; see its
-   comment for which sources wake it and which peripherals keep running.
+/* Bit 0 of `control` (+0x4) is a stop/standby request. It halts the CPU, and thus also all other
+   parts that this oscillator clocks, until an external signal wakes the CPU. psemu_run does the
+   stop. Its comment gives the sources that wake the CPU, and the peripherals that continue to
+   operate.
 
-   Two separate claims here, at two different evidence levels.
+   There are two separate claims here, at two different levels of evidence.
 
-   THE BEHAVIOUR IS CONFIRMED ON REAL HARDWARE. A real retail unit running the app described below blanks
-   its screen about 37 seconds after the last button press, sleeps, and comes back on the next press. This
-   emulator has to stop the CPU somewhere for that to happen at all.
+   THE BEHAVIOR IS CONFIRMED ON REAL HARDWARE. A real retail unit that operates the app below makes
+   its screen blank approximately 37 seconds after the last button press. The unit then sleeps, and
+   comes on again at the next button press. This emulator must stop the CPU at some point for this
+   behavior to occur.
 
-   WHICH REGISTER DOES IT IS INFERRED, not confirmed. This register is undocumented, and this project has no
-   way to probe it directly. The app writes 1 here as the final step of an unmistakable power-down sequence,
-   in this order:
+   THE APPLICABLE REGISTER IS INFERRED. It is not confirmed. This register has no documentation, and
+   this project has no method to probe it directly. The app writes 1 here as the last step of a
+   clear power-down sequence, in this order:
 
      IOP_STOP      = 0x62          sound and other IOP subsystems off
      INTC mask     = 0x200         RTC interrupt disabled
-     LCD_MODE     &= ~0x48         DISON cleared - display off
-     CLK control   = 1             <- this
+     LCD_MODE     &= ~0x48         DISON clear - display off
+     CLK control   = 1             <- this register
 
-   and then runs a short delay loop and returns. Nothing else in that sequence could stop the CPU, and
-   treating this write as the stop reproduces the confirmed behaviour exactly.
+   The app then executes a short delay loop and returns. No other step in that sequence can stop the
+   CPU. If this emulator uses this write as the stop, the confirmed behavior occurs exactly.
 
-   Leaving it inert - which is what this emulator did - is not a harmless simplification. The app's idle
-   countdown is only written back AFTER its sleep call returns, so a CPU that keeps running re-enters the
-   same tick, reads the same expired count, and calls sleep again. That recursion is unbounded at 28 bytes a
-   level, and the app has only 388 bytes of stack before it reaches its own globals. It overruns them,
-   corrupts a saved return address, and the CPU ends up executing data. See docs/hardware-notes.md,
-   "CLK control (0x0B000004): stop/standby". */
+   To make this register inert - which this emulator did before - is not a safe simplification. The
+   app writes its idle countdown back only AFTER its sleep call returns. Thus a CPU that continues
+   to run enters the same tick again, reads the same expired count, and calls sleep again. This
+   recursion has no limit, at 28 bytes for each level, and the app has only 388 bytes of stack
+   before its own globals. The recursion overruns the stack, corrupts a saved return address, and
+   the CPU then executes data. See docs/hardware-notes.md, "CLK control (0x0B000004):
+   stop/standby". */
 int clk_stop_requested(const clk_t *clk);
 void clk_clear_stop(clk_t *clk);
 

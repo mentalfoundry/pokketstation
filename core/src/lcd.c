@@ -24,8 +24,9 @@ static void lcd_recompute_presented(lcd_t *lcd) {
         return;
     }
 
-    /* ROT: rotate 180 degrees.
-       Reverse scanline order, and reverse the 32 pixels within each scanline (bit0<->bit31, and so on). */
+    /* ROT: rotate the display 180 degrees.
+       Reverse the order of the scanlines, and reverse the 32 pixels in each scanline. Thus bit 0
+       exchanges with bit 31, and so on. */
     for (row = 0; row < rows; row++) {
         uint32_t src_word = (uint32_t)lcd->vram[row * 4u] | ((uint32_t)lcd->vram[row * 4u + 1u] << 8) |
                              ((uint32_t)lcd->vram[row * 4u + 2u] << 16) | ((uint32_t)lcd->vram[row * 4u + 3u] << 24);
@@ -67,7 +68,7 @@ void lcd_mode_write8(lcd_t *lcd, uint32_t offset, uint8_t value) {
     uint32_t word_index = offset / 4u;
     uint32_t shift = (offset % 4u) * 8u;
 
-    if (word_index == 1u) { /* LCD_CAL: passive value, no known side effect */
+    if (word_index == 1u) { /* LCD_CAL: a stored value with no known side effect */
         lcd->cal = (lcd->cal & ~(0xFFu << shift)) | ((uint32_t)value << shift);
         return;
     }

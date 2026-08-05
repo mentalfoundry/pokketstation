@@ -1,20 +1,22 @@
-/* Diagnostic: run a pk_timing_bench-style app to completion and read its results straight out of WRAM,
-   instead of reading hex digits off the 32x32 LCD by hand.
+/* A diagnostic tool. It executes an app in the pk_timing_bench form to completion, and it reads the
+   results directly from WRAM. Thus a person does not have to read hex digits from the 32x32 LCD.
 
-   pk_timing_bench runs all its measurements once at startup and leaves the raw values in a fixed WRAM block
-   (see pk_timing_bench/src/constants.inc: WRAM_RESULTS_BASE and the WRAM_DIAG_* slots). Reading that block
-   directly makes it possible to diff two builds of the app against each other automatically, which is what
-   this tool exists for: confirming a locally rebuilt .mcs is functionally identical to the committed,
-   real-hardware-verified one before trusting a modified build on real hardware.
+   pk_timing_bench does each of its measurements one time at startup. It leaves the raw values in a
+   fixed WRAM block (see pk_timing_bench/src/constants.inc: WRAM_RESULTS_BASE and the WRAM_DIAG_*
+   slots). A direct read of that block permits an automatic comparison of two builds of the app. That
+   comparison is the purpose of this tool: it confirms that a local rebuild of the .mcs file operates
+   the same as the committed file, which a test on real hardware confirmed. Do this comparison before
+   you use a changed build on real hardware.
 
    usage: bench_probe <bios.bin> <app.mcs> [frames]
 
-   The app is launched the same way a user would: the BIOS boots to its date/time screen, then Down+Action
-   gets past it, then Right+Action selects and launches the app from the card directory (see psemu_load_app's
-   comment in psemu/psemu.h).
+   This tool starts the app the same way that a user does. The BIOS boots to its date/time screen.
+   Down and Action then move past that screen. Right and Action then select the app in the card
+   directory and start it (see the comment on psemu_load_app in psemu/psemu.h).
 
-   Set BENCH_PROBE_DUMP_BIOS=1 to also dump raw BIOS ROM bytes (for offline disassembly) plus live INTC/CPSR
-   state. Useful when the app hangs partway through and the reason lives in BIOS code, not app code. */
+   Set BENCH_PROBE_DUMP_BIOS=1 to also write the raw BIOS ROM bytes, for a disassembly on a computer,
+   and the live INTC and CPSR state. This is useful when the app stops during its operation, and the
+   cause is in the BIOS code and not in the app code. */
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -95,11 +97,11 @@ int main(int argc, char **argv) {
     psemu_reset(ps);
 
     for (f = 0; f < frames; f++) {
-        /* The same repeating Down, Action, Right, Action power-on sequence that tools/inspect.c's
-           button_sim=3 uses. Real hardware confirms that sequence end to end.
-           This expresses it in frames rather than in raw instruction counts.
-           It repeats on purpose. If one cycle's press lands too early for the stage the BIOS animation has
-           reached, a later cycle still lands correctly. */
+        /* The same repeating power-on sequence of Down, Action, Right, and Action that button_sim=3
+           in tools/inspect.c uses. A test against real hardware confirms this sequence.
+           This code gives the sequence in frames, and not in raw instruction counts.
+           The sequence repeats deliberately. If a press in one cycle occurs too early for the current
+           stage of the BIOS animation, a press in a later cycle occurs at the correct time. */
         uint32_t buttons = 0;
         if (f < nav_frames) {
             long phase = f % 240;
@@ -117,9 +119,10 @@ int main(int argc, char **argv) {
         psemu_run(ps, 33000u);
     }
 
-    /* Page to the requested screen by tapping RIGHT until the app's own screen-index variable reads back the
-       target. Tapping a fixed number of times is not reliable: the launch sequence repeats, so its own RIGHT
-       presses have already advanced the screen an unpredictable number of times by the time the app is up. */
+    /* Move to the requested screen with short RIGHT presses, until the screen-index variable of the app
+       gives the target value. A fixed number of presses is not reliable: the start sequence repeats,
+       thus its own RIGHT presses already advanced the screen an unknown number of times before the app
+       was ready. */
     if (pages > 0) {
         int attempt;
         for (attempt = 0; attempt < 16 && psemu_bus_read32(&ps->bus, 0x25Cu) != (uint32_t)pages; attempt++) {
@@ -152,8 +155,8 @@ int main(int argc, char **argv) {
     for (i = 0; i < 4; i++) {
         printf("  [%d] 0x%08X\n", i, psemu_bus_read32(&ps->bus, WRAM_DIAG_SINGLE_BEFORE + (uint32_t)i * 4u));
     }
-    /* Experiment 6 (screen 6): Timer0 stopwatch totals across a fixed number of Timer2 reloads. Absent in
-       builds predating that experiment, where these slots simply read back 0. */
+    /* Experiment 6 (screen 6): the Timer0 totals across a fixed number of Timer2 reloads. A build from
+       before that experiment does not have these values, and these slots then read back as 0. */
     printf("screen6 timer results @0x290:\n");
     printf("  A (period %u x %u reloads) 0x%08X\n", 1016u, 256u, psemu_bus_read32(&ps->bus, 0x290u));
     printf("  B (period %u x %u reloads) 0x%08X\n", 2032u, 128u, psemu_bus_read32(&ps->bus, 0x294u));
@@ -172,14 +175,15 @@ int main(int argc, char **argv) {
             printf("  -> expiry-to-re-arm latency %.1f ticks\n", ticks - 1017.0);
         }
     }
-    /* Experiment 9 (screen 9): IRDA_DATA write cost (test) vs WRAM write cost (control). Absent in builds
-       predating that experiment, where these slots simply read back 0. */
+    /* Experiment 9 (screen 9): the cost of an IRDA_DATA write (the test) against the cost of a WRAM
+       write (the control). A build from before that experiment does not have these values, and these
+       slots then read back as 0. */
     printf("screen9 irda write results @0x2A8:\n");
     printf("  IRDA_DATA (test) 0x%08X\n", psemu_bus_read32(&ps->bus, 0x2A8u));
     printf("  WRAM (control)   0x%08X\n", psemu_bus_read32(&ps->bus, 0x2ACu));
 
-    /* Experiment 10 (screen 10): Timer0 ticks across 64 re-armed Timer2/FIQ periods. Same arithmetic as
-       screen 8, over FIQ instead of IRQ. */
+    /* Experiment 10 (screen 10): the Timer0 ticks across 64 Timer2 and FIQ periods that the app arms
+       again each time. The arithmetic is the same as screen 8, but it uses FIQ in place of IRQ. */
     {
         uint32_t delta = psemu_bus_read32(&ps->bus, 0x2B0u);
         printf("screen10 FIQ re-arm latency @0x2B0:\n");
@@ -190,8 +194,9 @@ int main(int argc, char **argv) {
             printf("  -> expiry-to-re-arm latency %.1f ticks\n", ticks - 1017.0);
         }
     }
-    /* Experiment 11 (screen 11): same shape as screen 10, but the handler does the full realistic dispatch
-       (acknowledge, nested call, ARM-to-Thumb trampoline) before its re-arm, not a bare one. */
+    /* Experiment 11 (screen 11): the same shape as screen 10. But here the handler does the full
+       realistic dispatch before it arms the timer again. That dispatch is an acknowledge, a nested
+       call, and an ARM-to-Thumb transition. It is not a minimal dispatch. */
     {
         uint32_t delta = psemu_bus_read32(&ps->bus, 0x2B8u);
         printf("screen11 full-dispatch FIQ latency @0x2B8:\n");
@@ -208,10 +213,12 @@ int main(int argc, char **argv) {
 
     printf("screen index (WRAM 0x25C) = %u\n", psemu_bus_read32(&ps->bus, 0x25Cu));
 
-    /* Set BENCH_PROBE_DUMP_BIOS=1 to dump raw BIOS ROM bytes for offline disassembly, plus live INTC/CPSR
-       state. This is what located the real BIOS's separate IRQ (0xFC) vs FIQ (0x100) callback-slot addresses
-       while debugging experiment 10's hang: pc got stuck inside the FIQ vector handler, and this dump made it
-       possible to disassemble exactly what it was doing instead of guessing from a PC trace alone. */
+    /* Set BENCH_PROBE_DUMP_BIOS=1 to write the raw BIOS ROM bytes for a disassembly on a computer, and
+       the live INTC and CPSR state. This function found the separate callback-slot addresses of the
+       real BIOS: 0xFC for IRQ, and 0x100 for FIQ. It found them during the diagnosis of a stop in
+       experiment 10: the PC stopped inside the FIQ vector handler. This dump permitted a disassembly
+       of the exact code at that address. Without it, a person can only make an assumption from a PC
+       trace. */
     if (getenv("BENCH_PROBE_DUMP_BIOS")) {
         FILE *dump = fopen("bios_code_dump.bin", "wb");
         if (dump) {

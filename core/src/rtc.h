@@ -3,59 +3,64 @@
 
 #include <stdint.h>
 
-#include "dac.h" /* PSEMU_ASSUMED_CPU_HZ: the reference rate rtc_tick's `cycles` argument is expressed in */
+#include "dac.h" /* PSEMU_ASSUMED_CPU_HZ: the reference rate of the `cycles` argument of rtc_tick */
 
 struct intc;
 
 #define RTC_REG_SPAN 16u
 
 /* Sony PocketStation RTC.
-   Register behavior confirmed against the documented register table; see docs/hardware-notes.md for the full comparison.
+   The register behavior agrees with the available register table. See docs/hardware-notes.md for the
+   full comparison.
 
-   This emulator deliberately avoids two known pitfalls:
-   - Hardcoding an arbitrary 1999-01-01 for time/date. The real BIOS resets itself to Jan 1999 as a well-known
-     quirk, but that reset is a software action, not the real power-on-reset value.
-   - Ticking the RTC timer at a flat 1Hz while "paused". The real interrupt runs at approximately 4096Hz while
-     paused. This lets a "set the clock" UI step through an adjustment without waiting a full second per step.
+   This emulator prevents two known errors:
+   - It does not use a fixed 1999-01-01 for the time and the date. The real BIOS sets itself to
+     January 1999, which is a well-known quirk. But that action is a software action, and it is not
+     the real power-on-reset value.
+   - It does not operate the RTC timer at 1Hz while the RTC is "paused". The real interrupt operates
+     at approximately 4096Hz while the RTC is paused. This rate lets a "set the clock" screen move
+     through an adjustment. The user does not have to wait one second for each step.
 
    The RTC has four 32-bit registers at 0x0B800000:
    - mode (+0x0)
    - control (+0x4)
-   - time (+0x8, read-only from software's view)
+   - time (+0x8, read-only to software)
    - date (+0xC, read-only)
 
-   time and date each pack BCD bytes, from LSB to MSB:
-   - time: seconds, minutes, hours, day-of-week (1=Sun..7=Sat)
+   time and date each hold BCD bytes, from the LSB to the MSB:
+   - time: seconds, minutes, hours, day of the week (1 is Sunday, 7 is Saturday)
    - date: day, month, year (2-digit BCD)
 
-   date's top byte is not a "year-hi"/century field.
-   The documentation describes it as "Unknown? (this is NOT used as century)".
-   The real century value lives in battery-backed kernel RAM.
-   Only the GetBcdDate SWI reads the century value back; this register does not expose it.
+   The highest byte of date is not a "year-high" field or a century field.
+   The available description gives it as "Unknown? (this is NOT used as century)".
+   The real century value is in battery-backed kernel RAM.
+   Only the GetBcdDate SWI reads the century value back. This register does not supply it.
 
-   mode bit 0 (PRGSEL) selects the RTC's mode:
-   - Run (0): ticks at 1Hz, auto-advances the clock every tick.
-   - Program/pause (1): ticks at approximately 4096Hz, does not auto-advance.
-   Program mode exists only so RTC_ADJUST writes can step one field at a time, without the clock moving underneath them.
+   Bit 0 of mode (PRGSEL) selects the mode of the RTC:
+   - Run (0): the RTC ticks at 1Hz and advances the clock at each tick.
+   - Program or pause (1): the RTC ticks at approximately 4096Hz and does not advance the clock.
+   Program mode has one function: it lets RTC_ADJUST writes change one field at a time, while the
+   clock stays constant.
 
-   mode bits 1-3 (CNTSEL) select which BCD field a control-register write adjusts:
-   0=sec, 1=min, 2=hour, 3=dow, 4=day, 5=month, 6=year, 7=none.
+   Bits 1-3 of mode (CNTSEL) select the BCD field that a control-register write changes:
+   0 is sec, 1 is min, 2 is hour, 3 is dow, 4 is day, 5 is month, 6 is year, and 7 is none.
 
-   Writing 1 to control while it already holds 1 increments the CNTSEL-selected field and resets control to 0.
-   Writing to control while it holds 0 just stores the written value.
-   This is the real "write 1 twice" idiom for a single increment.
-   This part is confirmed against real hardware's behavior and independent community write-ups; this emulator
-   implements it as-is.
+   A write of 1 to control while control holds 1 increases the field that CNTSEL selects. It then sets
+   control to 0. A write to control while control holds 0 only stores the value.
+   This is the real "write 1 two times" method for one increment.
+   The behavior of real hardware and independent community reports confirm this. This emulator does
+   the same operation.
 
-   The automatic per-tick advance cascades seconds -> minutes -> hours -> day-of-week, and at midnight on
-   into day -> month -> year (see rtc_advance_date).
-   It uses the exact same BCD carry arithmetic as the CNTSEL=0 (seconds) case.
+   The automatic advance at each tick cascades from seconds, to minutes, to hours, to the day of the
+   week. At midnight it continues into the day, the month, and the year (see rtc_advance_date).
+   It uses the same BCD carry arithmetic as the CNTSEL = 0 (seconds) condition.
 
-   History: this cascade used to stop at day-of-week and never touch RTC_DATE, so an emulated device sat on
-   one date forever while its day-of-week advanced past it. That was recorded here as an inherited gap, on
-   the grounds that no independent source described the real mechanism. Direct testing on a real unit has
-   since confirmed the date does roll over, so the gap was a bug rather than an unknown. The month lengths
-   and leap rule rtc_advance_date applies are still unconfirmed; see its comment. */
+   History: this cascade stopped at the day of the week before, and never changed RTC_DATE. Thus an
+   emulated device stayed at one date permanently, while its day of the week continued to advance.
+   This file recorded that condition as a gap from earlier work, because no independent source gave
+   the real mechanism. A direct test on a real unit has since confirmed that the date does roll over.
+   Thus the condition was a fault, and not an unknown. The month lengths and the leap-year rule that
+   rtc_advance_date uses are still unconfirmed. See the comment on that function. */
 typedef struct rtc {
     uint32_t mode;
     uint32_t control;
@@ -65,46 +70,53 @@ typedef struct rtc {
     int int_line;
 } rtc_t;
 
-/* Cycle count between interrupt-line TRANSITIONS. Two transitions make one full pulse, and the clock
-   advances one second per full pulse while running (see rtc_tick).
+/* The cycle count between interrupt-line TRANSITIONS. Two transitions make one full pulse. While the
+   RTC runs, the clock advances one second for each full pulse (see rtc_tick).
 
-   **The documented 1Hz and 4096Hz are waveform rates, not transition rates.** That distinction is worth
-   stating plainly because this emulator had it wrong: it treated them as transition rates, so its line ran
-   at half the real frequency in both modes.
+   **The 1Hz and 4096Hz figures are waveform rates. They are not transition rates.** This difference
+   is important, because this emulator used the figures incorrectly before: it used them as
+   transition rates. Thus its line operated at one half of the real frequency, in both modes.
 
-   MEASURED ON REAL HARDWARE, by pk_timing_bench's screen 14: with the RTC paused, the line makes 8192
-   transitions per second - that is 4096 full pulses, exactly the documented figure. The measurement landed
-   on 0.031250s for 256 transitions, to the tick, which simultaneously confirms CLK_MODE 7's frequency
-   (3,997,696Hz) that the timing table had only ever taken from documentation.
+   MEASURED ON REAL HARDWARE, by screen 14 of pk_timing_bench: while the RTC is paused, the line
+   makes 8192 transitions each second. This is 4096 full pulses, which is exactly the expected
+   figure. The measurement gave 0.031250s for 256 transitions, to the tick. This result also confirms
+   the frequency of CLK_MODE 7 (3,997,696Hz). Before this measurement, the timing table had that
+   frequency only from documentation.
 
-   ALSO MEASURED, by the same screen: running, the line makes two transitions a second - a 1Hz waveform,
-   again exactly the documented figure. Four transitions came back at exactly 2.000 seconds. An earlier
-   run of that measurement read 11% fast, but it sampled a single pulse immediately after leaving program
-   mode, while the RTC's own divider was still resynchronising; discarding one pulse first removes it.
+   ALSO MEASURED, by the same screen: while the RTC runs, the line makes two transitions each second.
+   This is a 1Hz waveform, which is again exactly the expected figure. Four transitions gave exactly
+   2.000 seconds. An earlier run of that measurement read 11% fast. That run sampled one pulse
+   immediately after the RTC left program mode, while the divider of the RTC was still
+   resynchronizing. If you discard one pulse first, the error does not occur.
 
-   That the running rate is 1Hz is also forced by arithmetic, independently of any measurement: `cycles`
-   reaches rtc_tick already converted to real elapsed time at the fixed PSEMU_ASSUMED_CPU_HZ reference rate
-   (see psemu_run), and a wall clock has to advance one second per real second whatever the line does.
+   Arithmetic also gives the 1Hz running rate, independently of a measurement. `cycles` arrives at
+   rtc_tick already converted to real elapsed time, at the fixed PSEMU_ASSUMED_CPU_HZ reference rate
+   (see psemu_run). A wall clock must advance one second for each real second, whatever the line
+   does.
 
-   History: this was 4000000, chosen only to be "fast enough that a wait-for-pulse loop resolves within a
-   reasonable instruction budget" and explicitly never checked against a real reference. That is 3.79
-   reference-seconds per transition, so the emulated PocketStation's own clock ran nearly 4x slow - 60
-   seconds of real time advanced it by 15, losing about 45 minutes an hour. The wait-for-pulse concern is
-   satisfied strictly better here, since pulses now come sooner. */
+   History: this value was 4000000. That value was selected only to be "fast enough that a
+   wait-for-pulse loop completes in a reasonable instruction budget". Nobody compared it against a
+   real reference. That value gives 3.79 reference-seconds for each transition. Thus the clock of the
+   emulated PocketStation operated almost 4 times too slowly: 60 seconds of real time advanced it by
+   15 seconds, a loss of approximately 45 minutes each hour. This value satisfies the wait-for-pulse
+   condition better, because pulses now occur sooner. */
 #define RTC_TICK_CYCLES_RUN (PSEMU_ASSUMED_CPU_HZ / 2u)
-/* Rounded, not truncated: the exact value is 128.9, and truncating to 128 would put the paused line 0.7%
-   fast against the 8192 transitions/second measured on hardware, where rounding to 129 lands 0.07% low. */
+/* This value is rounded, not truncated. The exact value is 128.9. A truncation to 128 makes the
+   paused line 0.7% fast against the 8192 transitions each second that the hardware measurement
+   gives. A round to 129 is 0.07% slow, which is better. */
 #define RTC_TICK_CYCLES_PAUSED ((RTC_TICK_CYCLES_RUN + 2048u) / 4096u)
 
 void rtc_init(rtc_t *rtc);
 uint8_t rtc_read8(rtc_t *rtc, uint32_t offset);
 void rtc_write8(rtc_t *rtc, uint32_t offset, uint8_t value);
 
-/* Advances by `cycles`.
-   The real RTC's interrupt line toggles at approximately 1Hz while running, or approximately 4096Hz while
-   paused (mode bit0). This emulator asserts that line as INT_RTC through `intc`.
-   Real BIOS code waits for a full pulse (rising then falling), so a constant "always ready" value is not sufficient.
-   While running, each toggle also auto-advances the clock (see rtc.h's top comment). */
+/* Advances the RTC by `cycles`.
+   The interrupt line of the real RTC changes state at approximately 1Hz while the RTC runs, or at
+   approximately 4096Hz while the RTC is paused (mode bit 0). This emulator asserts that line as
+   INT_RTC through `intc`.
+   Real BIOS code waits for a full pulse: a rise and then a fall. Thus a constant "always ready" value
+   is not sufficient.
+   While the RTC runs, each change of state also advances the clock (see the top comment of rtc.h). */
 void rtc_tick(rtc_t *rtc, struct intc *intc, uint32_t cycles);
 
 #endif

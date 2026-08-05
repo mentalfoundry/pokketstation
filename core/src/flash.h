@@ -8,41 +8,42 @@
 
 #define FLASH_BLOCK_SIZE 8192u
 /* FLASH_CTRL register map:
- * +0x0  command/status.
- * +0x4  unused, mirrors the command register.
- * +0x8  F_BANK_FLG, a bitmask of enabled physical 8KB blocks.
+ * +0x0  command and status.
+ * +0x4  unused. It mirrors the command register.
+ * +0x8  F_BANK_FLG, a bitmask of the enabled physical 8KB blocks.
  * +0xC  F_WAIT1 (waitstates).
- * +0x10 F_WAIT2 (waitstates and flash-write control/status).
+ * +0x10 F_WAIT2 (waitstates, and flash-write control and status).
  *
- * Bug, fixed: a real BIOS flash-write routine polls +0x10 and waits for
- * bit 2 to read back set. This register was not modeled before this fix;
- * the span stopped at +0xC. An unmapped read returned 0, so the poll loop
- * spun forever. This was the second of two busy-wait bugs that blocked
- * every real app launch this session reached. The first bug was in
- * flash_ctrl_read8's +0 command readback; see that function's comment.
- * This emulator does not model real flash write timing, so writes
- * complete instantly. Because of this, +0x10 always reads back
+ * A corrected fault: a real BIOS flash-write routine reads +0x10 and
+ * waits for bit 2 to read back as set. This emulator did not model that
+ * register before the correction; the span stopped at +0xC. An unmapped
+ * read returned 0, thus the poll loop continued for an unlimited time.
+ * This was the second of two busy-wait faults that stopped each real app
+ * launch. The first fault was in the +0 command readback of
+ * flash_ctrl_read8. See the comment on that function.
+ * This emulator does not model real flash write timing, thus writes
+ * complete immediately. Because of this, +0x10 always reads back as
  * "not busy".
  *
- * The span extends to 0x140 to also cover F_BANK_VAL (+0x100 to +0x13C,
- * 16 words). F_BANK_FLG marks which physical 8KB blocks are enabled.
- * F_BANK_VAL maps each physical block to a virtual bank slot (0-15):
- * table[physical] = virtual. This is the reverse direction from a
- * typical page table. An earlier version of this file assumed a simple
- * linear offset instead; that assumption was wrong. The gap between
- * +0x14 and +0xFF is unmapped. Reads in this gap fall through to the
+ * The span continues to 0x140, to also cover F_BANK_VAL (+0x100 to
+ * +0x13C, 16 words). F_BANK_FLG shows which physical 8KB blocks are
+ * enabled. F_BANK_VAL maps each physical block to a virtual bank slot
+ * (0-15): table[physical] = virtual. This is the opposite direction from
+ * a usual page table. An earlier version of this file used a linear
+ * offset in place of the table. That assumption was incorrect. The range
+ * between +0x14 and +0xFF is unmapped. Reads in this range give the
  * last_command mirror default.
  */
-/* F_EXTRA (0x300-0x3FF, 256 bytes) is a separate "header" region beyond
- * the ordinary FLASH_CTRL registers, per official register documentation.
- * It holds F_SN_LO/
- * F_SN_HI (the 32-bit hardware serial number, read/written by SWI 0Ah/
- * 0Fh's FlashReadSerial/FlashWriteSerial) and F_CAL (LCD calibration).
- * Real hardware rewrites F_CAL alongside F_SN whenever FlashWriteSerial
- * runs. The span extends from 0x140 to 0x400 to cover F_EXTRA. See
- * flash_ctrl_read8/write8 for why the gap between the two (0x140-0x2FF,
- * unmapped and unidentified) still reads back 0, instead of falling into
- * the F_BANK_VAL or command-mirror logic.
+/* F_EXTRA (0x300-0x3FF, 256 bytes) is a separate "header" region. It is
+ * outside the usual FLASH_CTRL registers. It holds F_SN_LO and F_SN_HI
+ * (the 32-bit hardware serial number, which SWI 0Ah FlashReadSerial and
+ * SWI 0Fh FlashWriteSerial read and write). It also holds F_CAL (the LCD
+ * calibration). Real hardware writes F_CAL again together with F_SN at
+ * each FlashWriteSerial call. The span continues from 0x140 to 0x400 to
+ * cover F_EXTRA. See flash_ctrl_read8 and flash_ctrl_write8 for the
+ * reason that the range between the two regions (0x140-0x2FF, unmapped
+ * and unidentified) reads back as 0, and does not use the F_BANK_VAL
+ * logic or the command-mirror logic.
  */
 #define FLASH_CTRL_SPAN 0x400u
 #define FLASH_BANK_VAL_OFFSET 0x100u
@@ -53,103 +54,112 @@
 #define FLASH_SN_HI_OFFSET 0x302u
 #define FLASH_CAL_OFFSET 0x308u
 
-/* Default hardware ID (F_SN).
+/* The default hardware ID (F_SN).
  *
- * Chocobo World (Final Fantasy VIII) reads the PocketStation's serial
- * number via SWI 0Ah when a player creates a new save or Chocobo.
- * Confirmed by disassembling a real copy of Chocobo World (see
- * docs/hardware-notes.md, "Hardware ID (F_SN)"). The game masks F_SN
- * down to its low 24 bits, converts that value to a decimal digit
- * string, and uses the last 3 digits as the save's initial "ID" stat.
- * This ID stat alone determines rank. The community-documented best
- * rank is ID 211 (max HP and weapon value, best item-drop odds); 211 is
- * also the day and month of FF8's Japanese release (2/11).
+ * The companion app of one console game reads the serial number of the
+ * PocketStation with SWI 0Ah, when the player makes a new save. A
+ * disassembly of a real copy of that app confirms this (see
+ * docs/hardware-notes.md, "Hardware ID (F_SN)"). The app masks F_SN down
+ * to its low 24 bits. It converts that value to a string of decimal
+ * digits, and uses the last 3 digits as the initial "ID" statistic of
+ * the save. This ID statistic alone sets the rank. Public research gives
+ * ID 211 as the best rank: the maximum HP and weapon value, and the best
+ * item-drop probability. 211 is also the day and the month of the
+ * Japanese release of that game (2/11).
  *
- * F_SN's high byte is masked off before this calculation, so it does not
- * affect rank. On some real units, the high byte holds an ASCII letter.
- * That letter appears as part of a "letter + 8 decimal digits" serial
- * sticker, for example "A02374684". The raw register itself has no such
- * structural requirement (see psemu_parse_hardware_id/
- * psemu_format_hardware_id, core/src/psemu.c).
+ * The mask removes the high byte of F_SN before this calculation, thus
+ * the high byte has no effect on the rank. On some real units, the high
+ * byte holds an ASCII letter. That letter is part of a serial sticker
+ * that has one letter and 8 decimal digits, for example "A02374684". The
+ * raw register has no such structural requirement (see
+ * psemu_parse_hardware_id and psemu_format_hardware_id in
+ * core/src/psemu.c).
  *
- * This emulator defaults F_SN to 0x410000D3 ("410000D3" in this
- * emulator's own hex string form). The low 24 bits end in "211", so
- * every fresh Chocobo World save gets the best rank by default. The
- * high byte is an arbitrary letter, 'A', chosen to look like a real
- * serial.
+ * This emulator sets a default F_SN of 0x410000D3. The hex string form
+ * of this emulator gives this value as "410000D3". The low 24 bits end
+ * in "211", thus each new save from that app gets the best rank by
+ * default. The high byte is an arbitrary letter, 'A'. It makes the value
+ * look like a real serial number.
  */
 #define FLASH_DEFAULT_SERIAL (((uint32_t)'A' << 24) | 211u)
 
 typedef struct flash {
     uint8_t data[PSEMU_FLASH_SIZE];
-    uint32_t bank_mask;    /* last value written to FLASH_CTRL+8 (F_BANK_FLG) */
-    uint32_t last_command; /* last value written to FLASH_CTRL+0 */
-    uint32_t bank_val[FLASH_BANK_VAL_COUNT]; /* F_BANK_VAL, indexed by physical bank */
-    uint16_t f_sn_lo;                        /* F_SN_LO: hardware serial number LSBs */
-    uint16_t f_sn_hi;                        /* F_SN_HI: hardware serial number MSBs */
-    uint16_t f_cal;                          /* F_CAL: LCD calibration, rewritten as-is by FlashWriteSerial */
-    /* Tracks progress through the real F_KEY2/F_KEY1/F_KEY2 flash-unlock
-       sequence. 0 = not started, 3 = fully armed. See flash_write8's
-       comment for details. When armed, a write to physical offset 0/2/8
-       updates F_SN_LO/F_SN_HI/F_CAL instead of ordinary card data. */
+    uint32_t bank_mask;    /* the last value written to FLASH_CTRL+8 (F_BANK_FLG) */
+    uint32_t last_command; /* the last value written to FLASH_CTRL+0 */
+    uint32_t bank_val[FLASH_BANK_VAL_COUNT]; /* F_BANK_VAL, with the physical bank as the index */
+    uint16_t f_sn_lo;                        /* F_SN_LO: the LSBs of the hardware serial number */
+    uint16_t f_sn_hi;                        /* F_SN_HI: the MSBs of the hardware serial number */
+    uint16_t f_cal;                          /* F_CAL: the LCD calibration. FlashWriteSerial writes it again unchanged. */
+    /* The position in the real F_KEY2/F_KEY1/F_KEY2 flash-unlock sequence.
+       0 means not started, and 3 means fully armed. See the comment on
+       flash_write8 for more data. While the sequence is armed, a write to
+       physical offset 0, 2, or 8 changes F_SN_LO, F_SN_HI, or F_CAL. It
+       does not change usual card data. */
     uint8_t unlock_step;
 } flash_t;
 
-/* Combines F_SN_LO/F_SN_HI the same way SWI 0Ah (FlashReadSerial) does. */
+/* Combines F_SN_LO and F_SN_HI the same way that SWI 0Ah
+   (FlashReadSerial) does. */
 uint32_t flash_get_serial(const flash_t *flash);
-/* Splits serial into F_SN_LO/F_SN_HI the same way SWI 0Fh
-   (FlashWriteSerial) does. Leaves F_CAL untouched. Real hardware
-   rewrites F_CAL's old value here; there is nothing else to rewrite it
-   to. */
+/* Divides serial into F_SN_LO and F_SN_HI the same way that SWI 0Fh
+   (FlashWriteSerial) does. It does not change F_CAL. Real hardware
+   writes the old value of F_CAL again here, because there is no other
+   value to write. */
 void flash_set_serial(flash_t *flash, uint32_t serial);
 
 void flash_init(flash_t *flash);
 
-/* Resets only the volatile FLASH_CTRL register state to power-on defaults.
+/* Sets only the volatile FLASH_CTRL register state to the power-on defaults.
    That state is bank_mask, last_command, bank_val[], and unlock_step.
-   It preserves data[], which holds loaded card/app content.
-   It also preserves f_sn_lo, f_sn_hi, and f_cal, which hold the hardware ID and the LCD calibration.
-   Those fields are flash-backed content, not volatile registers.
-   They must survive a reset, the same way real flash content and a factory-programmed serial do.
-   psemu_reset uses this. */
+   It does not change data[], which holds the loaded card content or app content.
+   It also does not change f_sn_lo, f_sn_hi, or f_cal. These fields hold the hardware ID and the
+   LCD calibration.
+   Those fields are flash-backed content. They are not volatile registers.
+   They must continue after a reset, the same way that real flash content and a factory-programmed
+   serial number continue.
+   psemu_reset uses this function. */
 void flash_reset_registers(flash_t *flash);
 
-/* Validates a PSX Title Sector app image. Loads it into a synthesized
-   one-entry memory-card directory at slot 1. This lets the real BIOS's
-   app-selection/dispatch routine reach it (see docs/app-notes.md,
-   "App-selection and dispatch"). `size` is capped at 15 blocks
-   (DIRECTORY_MAX_APP_BLOCKS), not the full 16, because block 0 is
-   reserved for the synthesized directory. */
+/* Validates a PSX Title Sector app image. It then loads the image into a
+   synthesized memory-card directory that has one entry, at slot 1. Thus
+   the app-selection and dispatch routine of the real BIOS can get to the
+   app (see docs/app-notes.md, "App-selection and dispatch"). The maximum
+   value of `size` is 15 blocks (DIRECTORY_MAX_APP_BLOCKS), and not the
+   full 16 blocks, because block 0 holds the synthesized directory. */
 psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size);
 
-/* The size/magic half of flash_load_app's validation, without loading anything. Returns nonzero if
-   `data` is a Title Sector body flash_load_app would accept.
-   flash_load_app itself calls this, so "would this load?" and "does this load?" cannot drift apart.
-   psemu_identify_content needs the question answered without side effects, since it has to name a
-   content type before anything is loaded. */
+/* The size and magic-number part of the validation that flash_load_app does. This function loads
+   nothing. It returns a nonzero value if `data` is a Title Sector body that flash_load_app accepts.
+   flash_load_app calls this function. Thus "does this data load?" and "did this data load?" always
+   give the same answer.
+   psemu_identify_content needs this answer with no side effects, because it must give a content type
+   before it loads anything. */
 int flash_app_body_is_valid(const uint8_t *data, size_t size);
 
-/* Copies `size` bytes of the loaded app's own body back out - the exact inverse of flash_load_app's
-   final copy. The body sits contiguously at physical block 1, right after the synthesized directory,
-   so this is a plain copy back from there and `size` is the caller's own payload size. */
+/* Copies `size` bytes of the body of the loaded app out. This function is the exact inverse of the
+   final copy that flash_load_app does. The body is contiguous at physical block 1, immediately after
+   the synthesized directory. Thus this function is a simple copy from that location, and `size` is
+   the payload size of the caller. */
 psemu_status flash_save_app(const flash_t *flash, uint8_t *buf, size_t size);
 
-/* FLASH2: physical flash, unwindowed. */
+/* FLASH2: the physical flash, with no window. */
 uint8_t flash_read8(flash_t *flash, uint32_t addr);
 void flash_write8(flash_t *flash, uint32_t addr, uint8_t value);
 
-/* FLASH1: virtual window onto FLASH2. Each 8KB virtual bank (0-15) is
-   resolved live against F_BANK_FLG/F_BANK_VAL (see docs/app-notes.md,
-   "App-selection and dispatch"). If F_BANK_VAL has not been explicitly
-   configured for a bank, resolution falls back to a contiguous linear
-   offset from the lowest enabled physical block. */
+/* FLASH1: a virtual window onto FLASH2. This code resolves each 8KB
+   virtual bank (0-15) against F_BANK_FLG and F_BANK_VAL as the emulator
+   runs (see docs/app-notes.md, "App-selection and dispatch"). If
+   F_BANK_VAL has no configuration for a bank, the code uses a contiguous
+   linear offset from the lowest enabled physical block. */
 uint8_t flash1_read8(flash_t *flash, uint32_t addr);
 void flash1_write8(flash_t *flash, uint32_t addr, uint8_t value);
 
-/* FLASH_CTRL: bank-select registers, reverse-engineered from a real BIOS.
-   +8 (F_BANK_FLG) is a bitmask of the app's physical blocks. +0 is a
-   commit/activate trigger. +0x100.. (F_BANK_VAL) assigns a virtual slot
-   to each physical block. */
+/* FLASH_CTRL: the bank-select registers. This project found them by
+   reverse engineering of a real BIOS.
+   +8 (F_BANK_FLG) is a bitmask of the physical blocks of the app. +0 is
+   an activate trigger. +0x100 and above (F_BANK_VAL) gives a virtual
+   slot to each physical block. */
 uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset);
 void flash_ctrl_write8(flash_t *flash, uint32_t offset, uint8_t value);
 

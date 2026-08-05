@@ -6,8 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Where a loaded app's own body sits in flash: physical block 1, right after the directory this
-   emulator synthesizes around it (see psemu_load_app). psemu_save_app_image copies from there. */
+/* The position of the body of a loaded app in flash: physical block 1, immediately after the
+   directory that this emulator synthesizes around the app (see psemu_load_app).
+   psemu_save_app_image copies from that position. */
 #define APP_BODY_OFFSET 8192u
 
 void content_writeback_arm(
@@ -46,8 +47,8 @@ void content_writeback_resync(content_writeback_t *cw, psemu_t *ps) {
     cw->dirty = 0;
 }
 
-/* Rebuilds the file's bytes from flash, in the shape of whatever kind was loaded. Returns the number of
-   bytes to write, or 0 if the kind cannot be written back. */
+/* Builds the bytes of the file again from flash, in the shape of the content kind that was loaded.
+   Returns the number of bytes to write, or 0 if this code cannot write that kind. */
 static size_t build_file_image(content_writeback_t *cw, psemu_t *ps, uint8_t *out, size_t out_cap) {
     switch (cw->kind) {
     case PSEMU_CONTENT_CARD:
@@ -59,8 +60,8 @@ static size_t build_file_image(content_writeback_t *cw, psemu_t *ps, uint8_t *ou
         if (out_cap < CONTENT_WRITEBACK_MCS_FRAME_SIZE + cw->region_size) {
             return 0;
         }
-        /* The frame verbatim, then the body as the app left it. See the header on why the loaded
-           frame is still correct. */
+        /* The unchanged frame, and then the body in the condition that the app left it. See the
+           header for the reason that the loaded frame is still correct. */
         memcpy(out, cw->mcs_frame, CONTENT_WRITEBACK_MCS_FRAME_SIZE);
         if (psemu_save_app_image(ps, out + CONTENT_WRITEBACK_MCS_FRAME_SIZE, cw->region_size) != PSEMU_OK) {
             return 0;
@@ -85,8 +86,9 @@ int content_writeback_commit(content_writeback_t *cw, psemu_t *ps) {
     if (!cw->enabled || !cw->dirty) {
         return 0;
     }
-    /* Reuses `current` as the staging buffer. A .mcs is its frame plus a body that can fill 15 of the
-       card's 16 blocks, so it still fits inside one card's worth of bytes. */
+    /* This code uses `current` as the staging buffer. A .mcs file is its frame and a body. The body
+       can fill 15 of the 16 blocks of the card. Thus the file always fits in the bytes of one
+       card. */
     image = cw->current;
     image_size = build_file_image(cw, ps, image, sizeof(cw->current));
     if (image_size == 0) {
@@ -115,8 +117,9 @@ int content_writeback_commit(content_writeback_t *cw, psemu_t *ps) {
         fprintf(stderr, "psemu: couldn't replace %s with the updated file - it is unchanged.\n", cw->path);
         return 0;
     }
-    /* The staging buffer held the file's bytes, not flash's, so re-read flash for the new baseline
-       rather than assuming the two match - they do not for a .mcs or .pss. */
+    /* The staging buffer held the bytes of the file, and not the bytes of flash. Thus this code
+       reads flash again for the new baseline. It does not assume that the two are the same. They
+       are not the same for a .mcs or .pss file. */
     psemu_save_flash_image(ps, cw->baseline, sizeof(cw->baseline));
     cw->dirty = 0;
     fprintf(stderr, "psemu: wrote %zu bytes back to %s\n", image_size, cw->path);
@@ -128,8 +131,8 @@ void content_writeback_poll(content_writeback_t *cw, psemu_t *ps, unsigned long 
         return;
     }
     psemu_save_flash_image(ps, cw->current, sizeof(cw->current));
-    /* Only the region the file can represent. See the header on why a wider comparison would rewrite a
-       .mcs on a loop over bytes it cannot store. */
+    /* Only the region that the file can hold. See the header for the reason that a larger comparison
+       writes a .mcs file again in a loop, over bytes that the file cannot store. */
     if (memcmp(cw->current + cw->region_offset, cw->baseline + cw->region_offset, cw->region_size) != 0) {
         if (!cw->dirty) {
             cw->dirty = 1;

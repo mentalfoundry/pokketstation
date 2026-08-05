@@ -9,22 +9,22 @@ assignees: mentalfoundry
 
 Please do not upload a copy of the game ROM/PS1save in any way as part of an issue. Help keep this repository from being taken down.
 
-**Describe the bug**
-A clear and concise description of what the bug is.
+**A description of the fault**
+Give a clear, short description of the fault.
 
-**To Reproduce**
-Steps to reproduce the behavior:
-1. Which version of pokketstation you are 
-2. Which PocketStation app are you having issues with.
-3. Click on '....'
-4. Press [key] down to '....'
-5. See error
+**How to cause the fault**
+Give the steps that cause the behavior:
+1. The version of pokketstation that you use.
+2. The PocketStation app that has the fault.
+3. Select '....'
+4. Press [key] to move to '....'
+5. See the error.
 
-**Expected behavior**
-A clear and concise description of what you expected to happen.
+**The expected behavior**
+Give a clear, short description of the behavior that you expected.
 
-**Screenshots**
-If applicable, add screenshots or a link to video gameplay to help explain your problem.
+**Screen images**
+If they are applicable, attach screen images, or a link to a video of the app. Those items help to explain the fault.
 
-**Additional context**
-Add any other context about the problem here.
+**Other data**
+Give any other data about the fault here.

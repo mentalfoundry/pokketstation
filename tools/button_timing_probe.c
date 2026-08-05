@@ -1,43 +1,51 @@
-/* Diagnostic: measure how long a button press may be asserted before it breaks something, against the real
-   BIOS and a real app. This exists because the desktop frontend's button-press minimum (see
-   BUTTON_MIN_PRESS_FRAMES in frontends/desktop/main.c) is squeezed from both sides, and neither bound is
-   guessable - both have to be measured.
+/* A diagnostic tool. It measures the maximum time that a button press can stay asserted before it
+   causes a fault, against the real BIOS and a real app. This tool is necessary because the
+   button-press minimum of the desktop frontend (see BUTTON_MIN_PRESS_FRAMES in
+   frontends/desktop/main.c) has a limit on each side. Neither limit is possible to estimate, thus a
+   measurement must give both.
 
-   State mode: load a desktop-frontend save state parked on an app's exit screen, tap a button, and report
-   what the machine does next - every syscall the app issues, whether the BIOS's app-dispatch window runs
-   again (which is what "the app just relaunched" looks like from underneath), and what the LCD shows at each
-   stage. Then, with the BIOS browse screen up, tap Action again to check the browse screen still registers
-   an ordinary press of the same length.
+   State mode: this mode loads a save state from the desktop frontend, on the exit screen of an app.
+   It then presses a button, and reports the subsequent operations of the machine. Those operations
+   are each syscall that the app issues, whether the app-dispatch window of the BIOS executes again
+   (which is the internal form of "the app started again"), and the LCD content at each stage. Then,
+   with the BIOS browse screen active, this mode presses Action again. Thus it confirms that the
+   browse screen still accepts a usual press of the same length.
 
-   Boot mode (pass "boot" instead of a state file): drive the documented cold-boot navigation with presses of
-   the given length, and report whether the app is reached at all.
+   Boot mode (supply "boot" in place of a state file): this mode does the recorded cold-boot
+   navigation with presses of the given length, and it reports whether the navigation gets to the app.
 
-   Threshold mode (pass "thresh" as the button): measure the two durations that between them decide whether
-   an app's exit works, in emulated real time rather than frames, and then sweep whole-frame press lengths
-   across both timing axes a press can land on.
+   Threshold mode (supply "thresh" as the button): this mode measures the two durations that together
+   decide whether the exit of an app operates. The measurement is in emulated real time, and not in
+   frames. The mode then tests each whole-frame press length across both timing axes of a press.
 
-   Measured against the J110 BIOS plus one real commercial app that has an in-app exit screen and does not
-   wait for release before departing (a card image in testdata/, gitignored):
+   The measurements below use the J110 BIOS and one real commercial app. That app has an exit screen,
+   and it does not wait for the button release before it exits. The card image is in testdata/, which
+   .gitignore excludes.
 
-     the browse screen ignores an Action press shorter than ~35ms - close to the ~40ms real hardware tap
-     docs/app-notes.md describes, so the core's own timing here is not the problem
-     that app's exit screen departs ~62-94ms after the press, varying with where the press lands in its tick
+     The browse screen ignores an Action press of less than approximately 35ms. That limit is near to
+     the real hardware press of approximately 40ms in docs/app-notes.md. Thus the timing of the core
+     is not the cause of the fault.
+     The exit screen of that app exits approximately 62ms to 94ms after the press. The exact time
+     depends on the position of the press in the tick of the app.
 
-   which leaves a usable window of roughly 35-62ms. A frame is 31.25ms, so a frontend sampling buttons once
-   per frame can only offer 31ms, 62ms, 94ms and up, and exactly one of those fits:
+   Thus the usable window is approximately 35ms to 62ms. A frame is 31.25ms. A frontend that samples
+   the buttons one time for each frame can give only 31ms, 62ms, 94ms, and longer. Exactly one of
+   those durations is in the window:
 
-     1 frame  (31ms)  exit clean 64/64 offsets, but boot navigation never reaches an app and the browse
-                      screen ignores the press
-     2 frames (62ms)  exit clean 64/64 offsets, boot navigation reaches the app, browse screen registers
-     3 frames (94ms)  exit clean 27/64 offsets - lands in the window only by luck
-     4 frames (125ms) exit clean 1/64 offsets
-     5 frames (156ms) exit clean 1/64 offsets
+     1 frame  (31ms)  the exit is correct at 64 of 64 offsets. But the boot navigation never gets to
+                      an app, and the browse screen ignores the press.
+     2 frames (62ms)  the exit is correct at 64 of 64 offsets, the boot navigation gets to the app,
+                      and the browse screen accepts the press.
+     3 frames (94ms)  the exit is correct at 27 of 64 offsets. It is in the window only by chance.
+     4 frames (125ms) the exit is correct at 1 of 64 offsets.
+     5 frames (156ms) the exit is correct at 1 of 64 offsets.
 
    usage: button_timing_probe <bios.bin> <card.mcr> <state.sav|boot> [button|thresh] [hold_frames]
                               [trigger_pc_hex]
           button:         fire (default) | up | down | left | right | none | thresh
-          hold_frames:    frames the button is asserted to the core (default 2)
-          trigger_pc_hex: dump the CPU's PC ring when the app issues the syscall at this address */
+          hold_frames:    the number of frames that the button stays asserted to the core (default 2)
+          trigger_pc_hex: write the PC ring of the CPU when the app issues the syscall at this
+                          address */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,15 +55,16 @@
 /* Matches frontends/desktop/main.c's quicksave_header_t. */
 #define QUICKSAVE_HEADER_SIZE 16u
 
-/* One emulated frame at the desktop frontend's 33000-cycle-per-frame budget, expressed in single steps is
-   not a fixed number, so the probe counts real cycles instead. */
+/* One emulated frame uses the 33000-cycle budget of the desktop frontend. That budget is not a fixed
+   number of single steps. Thus this tool counts real cycles. */
 #define FRAME_CYCLES 33000u
 
-/* The window tools/inspect.c watches for the real BIOS's app-dispatch routine, the code that builds
-   F_BANK_FLG from a directory chain and branches to an app's entry point (its tail is at 0x04001AF8). The
-   window is wider than that routine: 0x04001BC8, the SWI 0x16 handler an app calls to read the selected app
-   slot, also falls inside it. So a hit here means "worth looking at", not "the app was relaunched" - use the
-   trace dump for that. */
+/* The address window that tools/inspect.c monitors for the app-dispatch routine of the real BIOS. That
+   routine builds F_BANK_FLG from a directory chain, and it branches to the entry point of an app. Its
+   end is at 0x04001AF8. This window is larger than that routine: it also contains 0x04001BC8, which is
+   the SWI 0x16 handler that an app calls to read the selected app slot. Thus a hit in this window
+   means "examine this event". It does not mean "the app started again". Use the trace output to decide
+   that. */
 #define DISPATCH_LO 0x04001900u
 #define DISPATCH_HI 0x04001C00u
 
@@ -94,8 +103,8 @@ static void dump_lcd(const psemu_t *ps, const char *label) {
     }
 }
 
-/* Runs one whole frame at the desktop frontend's per-frame budget, re-asserting `buttons` first exactly as
-   that frontend's main loop does. */
+/* Executes one full frame at the per-frame budget of the desktop frontend. It asserts `buttons` again
+   first, exactly as the main loop of that frontend does. */
 static void run_frame(psemu_t *ps, uint32_t buttons) {
     uint32_t c = 0;
     psemu_set_buttons(ps, buttons);
@@ -104,11 +113,12 @@ static void run_frame(psemu_t *ps, uint32_t buttons) {
     }
 }
 
-/* Asserts `buttons` for `press_cycles` reference cycles, then releases, then runs `settle_frames`.
-   press_cycles is a real-time duration at PSEMU_ASSUMED_CPU_HZ, so it can be shorter than one frame - which
-   is the point: it measures what the core itself needs, with the frontend's once-per-frame sampling taken
-   out of the picture. Buttons are re-asserted on every frame boundary inside the press, matching what the
-   frontend does for any press long enough to span one. */
+/* Asserts `buttons` for `press_cycles` reference cycles. It then releases the buttons, and executes
+   `settle_frames` frames.
+   press_cycles is a real-time duration at PSEMU_ASSUMED_CPU_HZ. Thus it can be shorter than one frame,
+   which is the purpose of this function: it measures the requirement of the core, without the
+   once-per-frame sampling of the frontend. This function asserts the buttons again at each frame
+   boundary in the press. The frontend does the same for each press that is longer than one frame. */
 static void press_for_cycles(psemu_t *ps, uint32_t buttons, uint32_t press_cycles, long settle_frames) {
     uint32_t done = 0;
     long f;
@@ -153,8 +163,8 @@ int main(int argc, char **argv) {
     uint8_t *bios, *card, *sav;
     psemu_t *ps;
     uint32_t button = PSEMU_BUTTON_FIRE;
-    /* Matches the desktop frontend's BUTTON_MIN_PRESS_FRAMES: a real key tap is asserted for at least this
-       many emulated frames, however briefly the key itself was down. */
+    /* This value agrees with BUTTON_MIN_PRESS_FRAMES in the desktop frontend: a real key press stays
+       asserted for this number of emulated frames or more, for each real key-down duration. */
     long hold_frames = 2;
     long frame;
     uint32_t last_bank_mask;
@@ -192,12 +202,14 @@ int main(int argc, char **argv) {
     psemu_reset(ps);
 
     if (sav && argc >= 5 && !strcmp(argv[4], "thresh")) {
-        /* Measure, in emulated milliseconds rather than whole frames, the two durations that between them
-           decide whether an app's exit works:
-             T_bios - how long Action must be asserted before the BIOS browse screen counts it as a press
-             T_exit - how long after the press the app takes to hand control back
-           A press is safe only when T_bios <= press <= T_exit. Real hardware registers a ~40ms tap, so if
-           T_bios lands far above that, the core's own timing is what closed the window - not the frontend. */
+        /* Measure the two durations that together decide whether the exit of an app operates. The
+           measurement is in emulated milliseconds, and not in whole frames.
+             T_bios is the time that Action must stay asserted before the BIOS browse screen counts
+             it as a press.
+             T_exit is the time after the press that the app needs to return control.
+           A press is safe only when T_bios <= press <= T_exit. Real hardware accepts a press of
+           approximately 40ms. Thus, if T_bios is much more than 40ms, the timing of the core closed
+           the window, and not the frontend. */
         uint8_t *snapshot;
         uint32_t ms;
         long i;
@@ -207,9 +219,10 @@ int main(int argc, char **argv) {
             return 1;
         }
 
-        /* T_exit: from a one-frame confirming press - the shortest the app itself accepts - how long until it
-           issues its departure syscall. One frame, not three, so the button is certainly long gone by then
-           and the exit is clean. */
+        /* T_exit: the time from a confirming press of one frame until the app issues its exit
+           syscall. One frame is the shortest press that the app accepts. This code uses one frame,
+           and not three, thus the button is certainly released before the exit, and the exit is
+           correct. */
         {
             int departed = 0;
             for (i = 0; i < 40 && !departed; i++) {
@@ -231,9 +244,9 @@ int main(int argc, char **argv) {
                 (long long)(i - 1), (double)(i - 1) * 1000.0 * FRAME_CYCLES / PSEMU_ASSUMED_CPU_HZ);
         }
 
-        /* Settle on the browse screen, then snapshot it so every trial below starts from the same place.
-           psemu_app_running has a one-second grace before it reports the app gone, so this waits longer than
-           the screen itself needs. */
+        /* Wait for the browse screen, and then record a state. Thus each trial below starts from the
+           same condition. psemu_app_running has a grace period of one second before it reports that
+           the app stopped. Thus this code waits longer than the screen needs. */
         for (i = 0; i < 80; i++) {
             run_frame(ps, 0u);
         }
@@ -252,15 +265,16 @@ int main(int argc, char **argv) {
             printf("  %3u ms (%5u cycles, %4.1f frames): %s\n", ms, cycles,
                 (double)cycles / FRAME_CYCLES, psemu_app_running(ps) ? "REGISTERED" : "ignored");
         }
-        /* The window above is narrow enough that whole-frame presses may only land in it by luck, depending on
-           where in the app's own tick the press happens to fall. Re-run the exit with each press length and a
-           sweep of sub-frame offsets, and count how often the exit actually stays clean. */
+        /* The window above is narrow. Thus a whole-frame press can be in the window only by chance,
+           and the result depends on the position of the press in the tick of the app. This code does
+           the exit again with each press length, and with a range of sub-frame offsets. It counts the
+           number of correct exits. */
         printf("\nclean-exit rate by press length, swept across timing offsets -\n");
         for (i = 1; i <= 5; i++) {
             long preroll, jitter, clean = 0, trials = 0;
-            /* Sweep both axes the press can land on: which frame it starts in relative to the app's own
-               animation cycle, and where inside that frame. A press length is only usable if it survives
-               every one of them, because a user has no control over either. */
+            /* Test both axes of a press: the frame where it starts, against the animation cycle of
+               the app, and its position in that frame. A press length is usable only if it operates
+               correctly at each combination, because a user controls neither axis. */
             for (preroll = 0; preroll < 8; preroll++) {
                 for (jitter = 0; jitter < FRAME_CYCLES; jitter += FRAME_CYCLES / 8) {
                     long f;
@@ -277,10 +291,11 @@ int main(int argc, char **argv) {
                         run_frame(ps, f < i ? PSEMU_BUTTON_FIRE : 0u);
                     }
                     trials++;
-                    /* Where the PC actually is, not psemu_app_running: that has a one-second grace before it
-                       reports an app gone, which is longer than this settle window and would score a clean
-                       exit as a relaunch. A clean exit leaves the BIOS browse screen executing; a relaunch
-                       puts the PC back in the app's FLASH1 window. */
+                    /* This code uses the true PC value, and not psemu_app_running. That function has
+                       a grace period of one second before it reports that an app stopped. That period
+                       is longer than this wait, thus the function reports a correct exit as a new
+                       start. After a correct exit, the BIOS browse screen executes. After a new start,
+                       the PC is in the FLASH1 window of the app. */
                     if ((ps->cpu.r[15] >> 24) == 0x04u) {
                         clean++;
                     }
@@ -296,21 +311,24 @@ int main(int argc, char **argv) {
     }
 
     if (!sav) {
-        /* "boot" mode: no save state. Drive the documented cold-boot navigation (Down, Action, Right, Action -
-           see docs/app-notes.md) using presses exactly `hold_frames` long, and report whether the app is
-           reached. This is the regression the desktop frontend's button latch exists to prevent, so any
-           change to that latch's length has to keep passing here. */
-        /* The same repeating Down / Action / Right / Action cycle tools/pk_exit_test.c and tools/inspect.c's
-           button_sim=3 use, confirmed end-to-end against real hardware. It repeats so a press that lands too
-           early for whatever stage the BIOS animation is on still lands correctly on a later cycle. Only the
-           press length varies here; the phase offsets are pk_exit_test.c's. */
+        /* "boot" mode: this mode uses no save state. It does the recorded cold-boot navigation
+           (Down, Action, Right, Action - see docs/app-notes.md), with presses of exactly
+           `hold_frames` frames. It then reports whether the navigation gets to the app. The button
+           latch of the desktop frontend prevents this fault. Thus each change to the length of that
+           latch must continue to pass this test. */
+        /* The same repeating cycle of Down, Action, Right, and Action that tools/pk_exit_test.c and
+           button_sim=3 in tools/inspect.c use. A test against real hardware confirms this sequence.
+           The sequence repeats: thus a press that occurs too early for the current stage of the BIOS
+           animation still occurs at the correct time in a later cycle. Only the press length changes
+           here. The phase offsets are the offsets from pk_exit_test.c. */
         static const long phase_start[] = {20, 50, 90, 130};
         static const uint32_t sequence[] = {
             PSEMU_BUTTON_DOWN, PSEMU_BUTTON_FIRE, PSEMU_BUTTON_RIGHT, PSEMU_BUTTON_FIRE};
         printf("boot navigation with %ld-frame presses:\n", hold_frames);
-        /* Generous budget: the cycle repeats every 240 frames, and docs/app-notes.md notes the real BIOS's
-           input handling sometimes needs more than one clean attempt to register a press. A press length that
-           only needs a couple of extra cycles is usable; one that never gets through is not. */
+        /* A large budget: the cycle repeats each 240 frames, and docs/app-notes.md gives that the
+           input code of the real BIOS sometimes needs more than one correct attempt to accept a
+           press. A press length that needs a few more cycles is usable. A press length that never
+           succeeds is not usable. */
         for (frame = 0; frame < 2400 && !psemu_app_running(ps); frame++) {
             long phase = frame % 240;
             uint32_t buttons = 0;
@@ -360,17 +378,19 @@ int main(int argc, char **argv) {
         if (frame == hold_frames) {
             printf("--- releasing ---\n");
         }
-        /* Once per frame, unconditionally, exactly as the desktop frontend's main loop does. This is not the
-           same as calling it only on the press and release edges: a repeat call with the button still held
-           clears its HOLD bit while leaving STATUS asserted (see psemu_set_buttons), so the BIOS sees one
-           interrupt request per press rather than a permanently latched one. */
+        /* This call occurs one time for each frame, in each condition, exactly as the main loop of the
+           desktop frontend does. This is different from a call at only the press edge and the release
+           edge. A second call while the user still holds the button clears the HOLD bit, and it leaves
+           STATUS asserted (see psemu_set_buttons). Thus the BIOS receives one interrupt request for
+           each press, and not one permanently latched request. */
         psemu_set_buttons(ps, (frame >= 0 && frame < hold_frames) ? button : 0u);
 
         while (frame_cycles < FRAME_CYCLES) {
             uint32_t pc = ps->cpu.r[15];
 
-            /* An SWI vector entry (pc==8) reached from FLASH1 is the app issuing a real syscall. Decode the
-               number the same way tools/inspect.c and the real BIOS handler do. */
+            /* An SWI vector entry (pc == 8) from FLASH1 shows that the app issues a real syscall.
+               Decode the syscall number the same way that tools/inspect.c and the real BIOS handler
+               do. */
             if (pc == 8u && ps->cpu.r[14] >= 0x02000000u && ps->cpu.r[14] < 0x03000000u) {
                 uint32_t caller_cpsr = ps->cpu.spsr_bank[arm_current_bank(&ps->cpu)];
                 uint32_t swi_addr = (caller_cpsr & CPSR_T) ? ps->cpu.r[14] - 2u : ps->cpu.r[14] - 4u;
@@ -378,11 +398,12 @@ int main(int argc, char **argv) {
                                                            : psemu_bus_read32(&ps->bus, swi_addr);
                 printf("  f%3ld: app SWI #0x%02X from 0x%08X (r0=0x%08X)\n", frame, swi_word & 0xFFu, swi_addr,
                     ps->cpu.r[0]);
-                /* trigger: dump the CPU's own PC ring the moment the app issues the syscall at this address,
-                   which gives the whole path that led there. An SWI site is used rather than an arbitrary PC
-                   because this loop only samples the PC between psemu_run calls, and psemu_run can retire
-                   several instructions per call depending on the current CLK_MODE. Every SWI is caught,
-                   because SWI entry parks the PC on the vector for a full step. */
+                /* The trigger: write the PC ring of the CPU at the moment that the app issues the
+                   syscall at this address. The ring gives the full path to that point. This code uses
+                   an SWI address, and not an arbitrary PC value, because this loop samples the PC only
+                   between psemu_run calls. psemu_run can complete several instructions in one call,
+                   and the number depends on the current CLK_MODE. This code finds each SWI, because
+                   SWI entry keeps the PC on the vector for a full step. */
                 if (trigger_pc != 0 && swi_addr == trigger_pc && !dumped_trigger) {
                     dumped_trigger = 1;
                     printf("\n=== trace leading to the SWI at 0x%08X (frame %ld) ===\n", swi_addr, frame);
@@ -415,10 +436,11 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Second phase: with the BIOS browse screen now up (a clean exit), tap Action again for the same number
-       of frames and see whether the browse screen registers it and launches the app. This measures the other
-       half of the frontend's button-latch trade-off: too short a press never registers with the BIOS at all,
-       too long a press outlives an app's departure and relaunches it. */
+    /* The second phase: the BIOS browse screen is now active, which shows a correct exit. This code
+       presses Action again for the same number of frames, and finds whether the browse screen accepts
+       the press and starts the app. This measures the other half of the button-latch compromise of the
+       frontend: a press that is too short never registers with the BIOS, and a press that is too long
+       continues after the exit of an app and starts that app again. */
     printf("\n--- phase 2: tapping Action on the browse screen for %ld frames ---\n", hold_frames);
     for (frame = 0; frame < hold_frames; frame++) {
         uint32_t frame_cycles = 0;

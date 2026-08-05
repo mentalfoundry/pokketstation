@@ -1,13 +1,14 @@
-/* Diagnostic: mimic the desktop frontend's real frame loop
-   (psemu_run(ps, 33000) once per nominal 31ms frame) and report DAC
-   sample production and DAC_CTRL (audio enable) transitions per frame -
-   used to verify that audio's real-time pacing/content-rate stays
-   independent of CLK_MODE (see docs/hardware-notes.md and
-   core/src/psemu.c's psemu_run comment for the full investigation).
-   Pass a 5th argument to force ps->clk.mode to a fixed value every
-   frame (overriding whatever the BIOS wrote), to directly compare
-   audio behavior across CLK_MODE values from an otherwise-identical
-   execution. */
+/* A diagnostic tool. It uses the same frame loop as the desktop frontend,
+   which is one psemu_run(ps, 33000) call for each nominal 31ms frame. It
+   reports the DAC sample count and the DAC_CTRL (audio enable) transitions
+   for each frame.
+   Use this tool to confirm that the real-time pacing and the content rate of
+   the audio stay independent of CLK_MODE. See docs/hardware-notes.md, and the
+   comment on psemu_run in core/src/psemu.c, for the full investigation.
+   Supply a fifth argument to set ps->clk.mode to a fixed value at each frame.
+   That argument replaces the value that the BIOS writes. Thus you can compare
+   the audio behavior at different CLK_MODE values, from an execution that is
+   the same in each other respect. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

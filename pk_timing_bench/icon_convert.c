@@ -1,19 +1,19 @@
-/* icon_convert.c - converts a 16x16, 24-bit, uncompressed BMP into the
- * standard PS1 memory-card icon format: a 32-byte palette (16 colors,
- * BGR555, little-endian) followed by a 128-byte bitmap (16x16 pixels,
- * 4 bits/pixel, low nibble = left pixel of each byte's pair).
+/* icon_convert.c converts a 16x16, 24-bit, uncompressed BMP file into the
+ * standard PS1 memory-card icon format. That format is a palette of 32 bytes
+ * (16 colors, BGR555, little-endian), and then a bitmap of 128 bytes (16x16
+ * pixels, 4 bits for each pixel, where the low nibble is the left pixel of
+ * each byte).
  *
- * This is a completely separate icon from the PocketStation-specific
- * browse-screen icon at Title Sector body offset 0x100 (see icon.s) - this
- * one lives at body offset 0x60 (palette) / 0x80 (bitmap) and is what a
- * real PS1 console's own memory card manager, or PC-side memory-card
- * management tools, render when browsing a card. Found by diffing a real
- * save-icon-embedding tool's output against this project's own build -
- * see README.md.
+ * This icon is separate from the PocketStation browse-screen icon at Title
+ * Sector body offset 0x100 (see icon.s). This icon is at body offset 0x60
+ * (the palette) and 0x80 (the bitmap). A real PS1 console memory card
+ * manager, or a memory-card tool on a computer, shows this icon during a
+ * browse operation. This project found the format by a comparison of the
+ * output of a real save-icon tool against its own build. See README.md.
  *
- * Host-side build tool only (runs on the machine building the project, not
- * on the PocketStation) - a C compiler is already required for pack.c, so
- * this adds no new dependency.
+ * This is a host-side build tool only. It executes on the machine that builds
+ * the project, and not on the PocketStation. pack.c already needs a C
+ * compiler, thus this tool adds no new dependency.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -85,10 +85,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* BMP rows are stored bottom-up, BGR byte order, each row padded to a
-     * 4-byte boundary. 16 pixels * 3 bytes = 48 bytes/row, already a
-     * multiple of 4, so no padding to skip here - but compute it properly
-     * anyway in case this is ever reused for a different width. */
+    /* A BMP file stores its rows from the bottom to the top, in BGR byte
+     * order. Each row has padding to a 4-byte boundary. Here, 16 pixels
+     * multiplied by 3 bytes gives 48 bytes for each row, which is already a
+     * multiple of 4. Thus there is no padding here. But this code calculates
+     * the padding correctly, for a later use with a different width. */
     int row_bytes = ((width * 3 + 3) / 4) * 4;
     uint8_t *raw = (uint8_t *)malloc((size_t)row_bytes * (size_t)height);
     if (!raw || fread(raw, 1, (size_t)row_bytes * (size_t)height, f) != (size_t)row_bytes * (size_t)height) {
@@ -98,9 +99,10 @@ int main(int argc, char **argv) {
     }
     fclose(f);
 
-    /* top[row][col], row 0 = top of the image (BMP storage is bottom-up,
-     * so this flips it - the PS1 icon bitmap format is top-down, confirmed
-     * by decoding a real embedded reference icon - see README.md). */
+    /* top[row][col], where row 0 is the top of the image. A BMP file stores
+     * the rows from the bottom, thus this code reverses the order. The PS1
+     * icon bitmap format stores the rows from the top. A decode of a real
+     * reference icon confirms this. See README.md. */
     rgb_t top[ICON_H][ICON_W];
     for (int row = 0; row < ICON_H; row++) {
         const uint8_t *src_row = raw + (size_t)row_bytes * (size_t)(ICON_H - 1 - row);
@@ -113,11 +115,11 @@ int main(int argc, char **argv) {
     }
     free(raw);
 
-    /* Build a <=16-color palette. Index 0 is forced to the top-left
-     * pixel's color (the conventional "background" sample point for most
-     * icon converters), matching a real reference icon where index 0 was
-     * black and used as the background - other colors are added in
-     * first-encountered order after that. */
+    /* Build a palette of 16 colors or less. Index 0 always gets the color of
+     * the top-left pixel. Most icon converters use that pixel as the
+     * "background" sample point. This agrees with a real reference icon,
+     * where index 0 was black and was the background color. This code then
+     * adds each other color in the order that it finds them. */
     rgb_t palette[MAX_COLORS];
     int num_colors = 0;
     uint8_t index_of[ICON_H][ICON_W];
@@ -158,8 +160,8 @@ int main(int argc, char **argv) {
         out[i * 2] = (uint8_t)(v & 0xFF);
         out[i * 2 + 1] = (uint8_t)((v >> 8) & 0xFF);
     }
-    /* unused palette entries (num_colors..15) stay zero, matching a real
-     * reference icon's own unused entries. */
+    /* The unused palette entries, from num_colors to 15, stay at zero. This
+     * agrees with the unused entries of a real reference icon. */
 
     for (int row = 0; row < ICON_H; row++) {
         for (int col = 0; col < ICON_W; col += 2) {

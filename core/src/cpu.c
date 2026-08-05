@@ -32,9 +32,9 @@ void arm7tdmi_reset(arm7tdmi_t *cpu, uint32_t reset_vector) {
     memset(cpu->r14_bank, 0, sizeof(cpu->r14_bank));
     memset(cpu->spsr_bank, 0, sizeof(cpu->spsr_bank));
     memset(cpu->r8_12_bank, 0, sizeof(cpu->r8_12_bank));
-    /* Real ARM7TDMI reset always enters Supervisor mode, ARM state.
-       IRQ and FIQ are disabled. This holds for any SoC built around
-       the core. */
+    /* A real ARM7TDMI reset always enters Supervisor mode, in the ARM
+       state. IRQ and FIQ are disabled. This is true for each SoC that
+       contains this core. */
     cpu->cpsr = ARM_MODE_SVC | CPSR_I | CPSR_F;
     cpu->r[15] = reset_vector;
     cpu->halted = 0;
@@ -87,10 +87,10 @@ int arm_condition_passed(arm7tdmi_t *cpu, uint32_t cond) {
 
 uint32_t arm_read_reg(arm7tdmi_t *cpu, int n, uint32_t pc, int thumb) {
     if (n == 15) {
-        /* Pipeline effect: reading PC as an operand does not return the
-           raw fetch-loop PC value.
-           It returns the current instruction's address plus 8 in ARM
-           state, or plus 4 in Thumb state. */
+        /* A pipeline effect: a read of the PC as an operand does not
+           give the raw PC value of the fetch loop.
+           It gives the address of the current instruction plus 8 in the
+           ARM state, or plus 4 in the Thumb state. */
         return pc + (thumb ? 4u : 8u);
     }
     return cpu->r[n];
@@ -112,8 +112,9 @@ void arm_set_mode(arm7tdmi_t *cpu, uint32_t new_mode) {
     cpu->r[13] = cpu->r13_bank[new_bank];
     cpu->r[14] = cpu->r14_bank[new_bank];
 
-    /* r8-r12 swap only when crossing the FIQ boundary: every non-FIQ mode shares one copy of them, so a
-       SVC-to-IRQ switch must leave them alone. See r8_12_bank in cpu.h. */
+    /* r8-r12 exchange only at the FIQ boundary. Each mode that is not FIQ uses one shared copy of
+       these registers. Thus a change from SVC to IRQ must not change them. See r8_12_bank in
+       cpu.h. */
     if (old_fiq != new_fiq) {
         int i;
         for (i = 0; i < 5; i++) {
@@ -235,27 +236,29 @@ void arm_enter_exception(arm7tdmi_t *cpu, uint32_t mode, uint32_t vector, uint32
 uint32_t psemu_debug_current_pc = 0;
 
 #ifdef PSEMU_TRACE_HOOKS
-/* See psemu_exec_trace_cb in cpu.h. Same compile-out rule as memory.c's bus
-   hooks: only the psemu_trace target defines PSEMU_TRACE_HOOKS. */
+/* See psemu_exec_trace_cb in cpu.h. The compile-out rule is the same as the
+   rule for the bus hooks in memory.c: only the psemu_trace target defines
+   PSEMU_TRACE_HOOKS. */
 void (*psemu_exec_trace_cb)(uint32_t pc, uint32_t cpsr) = NULL;
 #endif
 
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     psemu_debug_current_pc = cpu->r[15];
-    /* A confirmed bug, found via a desktop-app crash report.
-       This check used to gate only on `halted`, which nothing ever sets.
-       Once `unimplemented` tripped, a caller that does not check it every
-       step kept fetching and executing from whatever address the CPU
-       landed on. psemu_run's cycle-budget loop has this gap;
-       tools/inspect.c's own per-instruction loop does not.
-       This let the CPU run thousands of instructions past the real fault
-       site before the caller noticed. Register state and the executed-PC
-       trace below then reflected wherever the CPU wandered off to, not
-       the original fault. This actively misled the diagnostics
-       psemu_write_crash_report exists to provide.
-       Fixed by gating on both flags. Once either flag is set, nothing
-       well-defined is left to do, so this function stops advancing
-       everything, including the trace, from here on. */
+    /* A confirmed fault, found through a crash report from the desktop
+       app.
+       This test used only `halted` before, and no code sets that flag.
+       Thus, after `unimplemented` became set, a caller that does not test
+       the flag at each step continued to fetch and execute from the
+       address of the CPU. The cycle-budget loop in psemu_run has this
+       gap. The per-instruction loop in tools/inspect.c does not.
+       Thus the CPU executed thousands of instructions after the real
+       fault, before the caller found the condition. The register state
+       and the executed-PC trace below then showed the later addresses,
+       and not the original fault. This gave incorrect data to the
+       diagnostics that psemu_write_crash_report supplies.
+       The correction tests both flags. After either flag is set, no
+       defined operation remains. Thus this function stops all advances
+       from this point, and this includes the trace. */
     if (cpu->halted || cpu->unimplemented) {
         return 1;
     }
@@ -269,43 +272,46 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     cpu->trace_pos++;
     cpu->total_steps++;
     cpu->bus->pending_cycles = 0;
-    /* A confirmed bug, fixed this session. See docs/hardware-notes.md,
+    /* A confirmed fault, now corrected. See docs/hardware-notes.md,
        "Interrupt controller".
-       This emulator never delivered FIQ, for any app. intc_fiq_asserted
-       (intc.c) already existed and was confirmed correct against real
-       hardware's bit-mapping (INT_FIQ_MASK, Timer2/COM). Nothing here
-       ever called it.
-       Real ARM7TDMI checks FIQ before IRQ: FIQ has strictly higher
-       priority in the exception scheme. FIQ is also level-triggered,
-       like IRQ: the interrupt controller's hold & enable & INT_FIQ_MASK,
-       not a one-shot request. This code polls it live every step,
-       mirroring the IRQ check below. */
+       This emulator never delivered a FIQ, for any app.
+       intc_fiq_asserted (intc.c) already existed, and a comparison
+       against the bit mapping of real hardware confirmed it
+       (INT_FIQ_MASK, Timer2, and COM). No code here called that
+       function.
+       A real ARM7TDMI tests FIQ before IRQ: FIQ has a higher priority in
+       the exception scheme. FIQ is also level-triggered, the same as
+       IRQ. It is hold & enable & INT_FIQ_MASK from the interrupt
+       controller, and not a single request. This code reads the level at
+       each step, the same as the IRQ test below. */
     if (!(cpu->cpsr & CPSR_F) && intc_fiq_asserted(cpu->bus->intc)) {
-        /* Return address follows the same "SUBS PC, LR, #4" handler-exit
-           convention IRQ uses.
-           LR_fiq = address of the next instruction + 4. */
+        /* The return address uses the same "SUBS PC, LR, #4" handler-exit
+           convention as IRQ.
+           LR_fiq is the address of the next instruction, plus 4. */
         arm_enter_exception(cpu, ARM_MODE_FIQ, ARM_FIQ_VECTOR, cpu->r[15] + 4u);
-        /* Real ARM7TDMI sets both F and I on FIQ entry.
-           IRQ, SWI, and abort entry set only I.
-           Setting F blocks a second FIQ from interrupting the handler
-           before it saves state.
-           arm_enter_exception is shared by every exception type and sets
-           only I, so this code sets F here instead. */
+        /* A real ARM7TDMI sets F and I at FIQ entry.
+           IRQ entry, SWI entry, and abort entry set only I.
+           F prevents a second FIQ from an interruption of the handler
+           before the handler saves its state.
+           Each exception type uses arm_enter_exception, and that function
+           sets only I. Thus this code sets F here. */
         cpu->cpsr |= CPSR_F;
         /* Exception entry is a pipeline refill: two ARM-state fetches at
-           the vector. Same "2S+1N" shape as SWI/branches. See
-           docs/hardware-notes.md, "Memory access timing". */
+           the vector. This is the same "2S+1N" shape as an SWI or a
+           branch. See docs/hardware-notes.md, "Memory access timing". */
         arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(ARM_FIQ_VECTOR, 0));
         return cpu->bus->pending_cycles;
     }
-    /* IRQ is level-triggered on real hardware: the interrupt controller's
-       hold & enable & INT_IRQ_MASK, not a one-shot request.
-       This code polls it live every step, rather than latching a
-       "pending" flag. This lets the CPU keep re-entering the handler for
-       as long as the line stays asserted. */
+    /* On real hardware, IRQ is level-triggered. It is hold & enable &
+       INT_IRQ_MASK from the interrupt controller, and not a single
+       request.
+       This code reads the level at each step. It does not latch a
+       "pending" flag. Thus the CPU can enter the handler again for the
+       full time that the line stays asserted. */
     if (!(cpu->cpsr & CPSR_I) && intc_irq_asserted(cpu->bus->intc)) {
-        /* Return address follows the "SUBS PC, LR, #4" handler-exit
-           convention: LR_irq = address of the next instruction + 4. */
+        /* The return address uses the "SUBS PC, LR, #4" handler-exit
+           convention: LR_irq is the address of the next instruction,
+           plus 4. */
         arm_enter_exception(cpu, ARM_MODE_IRQ, ARM_IRQ_VECTOR, cpu->r[15] + 4u);
         arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(ARM_IRQ_VECTOR, 0));
         return cpu->bus->pending_cycles;

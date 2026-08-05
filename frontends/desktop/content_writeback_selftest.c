@@ -1,13 +1,15 @@
-/* Verification for content_writeback.c, which is the one part of this frontend that overwrites a file
-   the user brought with them. Everything else it touches (settings.cfg, .sav slots) it created itself.
+/* Verification for content_writeback.c. That file is the one part of this frontend that writes over a
+   file of the user. This frontend made each other file that it changes (settings.cfg and the .sav
+   slots).
 
-   Unlike ir_link_selftest.c this IS wired into CTest: it exercises ordinary file operations with no IPC
-   timing to go flaky on, and the properties worth holding - write each kind of file back in its own
-   shape, never lose the pristine original, never leave a truncated file, never rewrite on a loop over
-   bytes the file cannot store - are exactly the ones that are expensive to discover by hand.
+   ir_link_selftest.c is not part of CTest, but this test IS part of CTest. It uses usual file
+   operations, and it has no IPC timing that can make the result unreliable. The properties that this
+   test protects are expensive to test manually: write each kind of file back in its own shape, always
+   keep the unchanged original, never leave a truncated file, and never write the file again in a loop
+   over bytes that the file cannot store.
 
-   It needs no BIOS and no real app: a card is a raw 128KB flash image, and the .mcs/.pss cases only need
-   a Title Sector header valid enough for flash_load_app to accept, which is a size and a magic. */
+   This test needs no BIOS and no real app. A card is a raw 128KB flash image. The .mcs and .pss cases
+   need only a Title Sector header that flash_load_app accepts, which is a size and a magic number. */
 
 /* Its checks are its whole purpose, so they have to survive NDEBUG. See tests/cpu_test.c. */
 #undef NDEBUG
@@ -80,9 +82,9 @@ static void make_mcs(uint8_t *mcs, uint8_t fill) {
     make_app_body(mcs + CONTENT_WRITEBACK_MCS_FRAME_SIZE, TEST_APP_SIZE, fill);
 }
 
-/* The only way an app changes flash is by executing, which this test deliberately does not do - it is
-   testing the file plumbing, not the emulator. Replacing flash wholesale is the same change from the
-   write-back's point of view, and needs no BIOS. */
+/* An app changes flash only during execution. This test does not execute an app, because it tests the
+   file operations and not the emulator. A replacement of all of flash is the same change for the
+   write-back code, and it needs no BIOS. */
 static void poke_flash(psemu_t *ps, uint32_t offset, uint8_t value) {
     static uint8_t buf[PSEMU_FLASH_SIZE];
     psemu_save_flash_image(ps, buf, sizeof(buf));
@@ -132,8 +134,8 @@ static void test_card(const char *dir) {
     content_writeback_arm(&cw, ps, path, card, PSEMU_FLASH_SIZE);
     CHECK(cw.enabled && cw.kind == PSEMU_CONTENT_CARD, "a whole-card load should arm as a card");
 
-    /* An unchanged card is never rewritten, so simply running an app that touches nothing leaves the
-       user's file alone. */
+    /* This code never writes an unchanged card again. Thus an app that changes nothing does not
+       change the file of the user. */
     for (frame = 0; frame < CONTENT_WRITEBACK_SETTLE_FRAMES * 2; frame++) {
         content_writeback_poll(&cw, ps, frame);
     }
@@ -156,9 +158,10 @@ static void test_card(const char *dir) {
     CHECK(n == PSEMU_FLASH_SIZE, "the committed card should still be exactly one card");
     CHECK(n == PSEMU_FLASH_SIZE && got[0x2000u + 0x259u] == 0x01, "the edit should have reached the file");
 
-    /* An app saving its OWN state goes through the same path. Worth pinning down because the feature
-       was built for the PS1-save case: an app's own blocks are reached through the FLASH1 banked
-       window, but flash1_write8 resolves the bank into the same storage (core/src/flash.c). */
+    /* An app that saves its OWN state uses the same path. This test is important because this
+       function was made for the PS1-save condition. An app reaches its own blocks through the FLASH1
+       banked window, but flash1_write8 resolves the bank into the same storage
+       (core/src/flash.c). */
     poke_flash(ps, 0x4000u + 0x100u, 0x42);
     settle(&cw, ps);
     n = read_file(path, got, sizeof(got));
@@ -240,8 +243,9 @@ static void test_mcs(const char *dir) {
     CHECK(n == TEST_MCS_SIZE && got[CONTENT_WRITEBACK_MCS_FRAME_SIZE + 0x400u] == 0x33,
         "the .mcs backup should hold the original body");
 
-    /* The synthesized card around the app is not in the file and cannot be. A write to it must not mark
-       the file dirty, or every frame would rewrite the same bytes forever. */
+    /* The synthesized card around the app is not in the file, and it cannot be in the file. A write to
+       that card must not mark the file as changed. If it does, each frame writes the same bytes
+       again, permanently. */
     psemu_load_content(ps, mcs, sizeof(mcs));
     content_writeback_arm(&cw, ps, path, mcs, sizeof(mcs));
     poke_flash(ps, 0x40u, 0x5A);          /* the synthesized directory, block 0 */
@@ -319,15 +323,16 @@ static void test_unrecognised(const char *dir) {
     printf("  unrecognised: done\n");
 }
 
-/* Optional, and not run by CTest: round-trip a REAL file the caller names. The cases above build their
-   own content so they can run anywhere, including CI, where testdata/ does not exist (it is gitignored).
-   That leaves one thing they cannot show - that a real app's own file comes back byte-for-byte when
-   nothing has changed it. Run this by hand against testdata/ after touching the rebuild path:
+/* An optional mode. CTest does not use it. It round-trips a REAL file that the caller names. The tests
+   above build their own content, thus they can execute in each environment. This includes CI, where
+   the testdata/ directory does not exist, because .gitignore excludes it. Thus those tests cannot show
+   one property: that the file of a real app comes back byte for byte when nothing changes it. Start
+   this mode manually against a file in testdata/ after a change to the rebuild path:
 
-     content_writeback_selftest testdata/choco.mcs
+     content_writeback_selftest testdata/<your app file>.mcs
 
-   An unchanged load must rebuild the input exactly. Any difference is a bug in the rebuild, since no
-   emulation has run. */
+   A load with no change must build the input again exactly. Each difference is a fault in the rebuild
+   code, because no emulation executed. */
 static void test_real_file(const char *path) {
     static uint8_t original[PSEMU_FLASH_SIZE];
     static uint8_t got[PSEMU_FLASH_SIZE];

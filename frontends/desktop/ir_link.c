@@ -6,9 +6,10 @@
 static uint64_t host_wall_us_now(void) {
     FILETIME ft;
     ULARGE_INTEGER uli;
-    /* This clock is precise to below a millisecond.
-       More importantly, any two processes on this same machine can compare it with no coordination.
-       QueryPerformanceCounter cannot do that. On some hardware it is meaningful only within one process. */
+    /* This clock has a resolution of less than one millisecond.
+       More important, two processes on this same machine can compare its values with no coordination.
+       QueryPerformanceCounter cannot do this. On some hardware, its value has a meaning only in one
+       process. */
     GetSystemTimePreciseAsFileTime(&ft);
     uli.LowPart = ft.dwLowDateTime;
     uli.HighPart = ft.dwHighDateTime;
@@ -36,12 +37,12 @@ void ir_link_init(ir_link_t *link) {
     ZeroMemory(link, sizeof(*link));
     link->pipe = INVALID_HANDLE_VALUE;
     link->state = IR_LINK_IDLE;
-    /* Manual-reset events, one for each outstanding operation.
-       This only polls GetOverlappedResult with bWait=FALSE.
-       Even so, a NULL hEvent makes the OVERLAPPED use the pipe handle itself as its signal object.
-       That is unsafe once a read and a write are outstanding on that same handle at the same time.
-       See the ReadFile and WriteFile remarks in the platform documentation.
-       Each operation therefore gets its own event. */
+    /* Manual-reset events, one for each operation in progress.
+       This code only calls GetOverlappedResult with bWait = FALSE.
+       But a NULL hEvent makes the OVERLAPPED structure use the pipe handle as its signal object.
+       That is not safe when a read and a write are both in progress on that same handle.
+       See the remarks on ReadFile and WriteFile in the platform documentation.
+       Thus each operation gets its own event. */
     link->ev_connect = CreateEventA(NULL, TRUE, FALSE, NULL);
     link->ev_read = CreateEventA(NULL, TRUE, FALSE, NULL);
     link->ev_write = CreateEventA(NULL, TRUE, FALSE, NULL);
@@ -146,9 +147,9 @@ int ir_link_host(ir_link_t *link, const char *pipe_name) {
     link->is_server = 1;
     link->pipe = CreateNamedPipeA(pipe_name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
         PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1 /* one peer, this is a point-to-point link */,
-        /* Buffers sized for a whole message burst. At 8 messages the pipe itself became the bottleneck: a
-           sender could only hand over 8 edges before blocking, against the ~65 per frame a real transfer
-           produces. */
+        /* The buffers hold a full group of messages. At 8 messages, the pipe was the limit: a sender
+           could send only 8 edges before it blocked. A real transfer makes approximately 65 edges
+           for each frame. */
         (DWORD)(sizeof(ir_wire_message_t) * IR_LINK_WRITE_QUEUE_CAPACITY),
         (DWORD)(sizeof(ir_wire_message_t) * IR_LINK_WRITE_QUEUE_CAPACITY), 0, NULL);
     if (link->pipe == INVALID_HANDLE_VALUE) {
@@ -182,9 +183,10 @@ int ir_link_host(ir_link_t *link, const char *pipe_name) {
     return 1;
 }
 
-/* Named pipes have no separate client-side "connect" handshake step the way sockets do: CreateFileA either
-   succeeds immediately (the client is connected, full stop) or fails because no server is listening yet.
-   Retrying that call every pump is what stands in for a real async connect. */
+/* A named pipe has no separate "connect" handshake step on the client side. A socket has such a step.
+   CreateFileA is immediately successful, and the client is then connected. Or it fails, because no
+   server listens at this time. Thus this code calls CreateFileA again at each pump call. That
+   repetition does the function of an asynchronous connect. */
 static void try_client_connect(ir_link_t *link) {
     DWORD mode;
     HANDLE h = CreateFileA(
@@ -214,13 +216,15 @@ int ir_link_connect(ir_link_t *link, const char *pipe_name) {
     return 1;
 }
 
-/* Returns this link's wall-to-core offset, sampling it once on first use after a connect and reusing it from
-   then on. See ir_link.h's wall_minus_core_us for why this must not be resampled per call. */
+/* Returns the wall-to-core offset of this link. This function samples the offset one time, at the
+   first use after a connection. It then uses that same value. See wall_minus_core_us in ir_link.h for
+   the reason that this code must not sample the offset at each call. */
 static int64_t link_clock_offset(ir_link_t *link, psemu_t *ps) {
     uint64_t now = host_wall_us_now();
-    /* Re-latch on a fresh connection, and again whenever the link has been quiet long enough that no message
-       can be in flight. Holding it across a message keeps that message's edge spacing exact; refreshing it
-       between messages stops the two processes' clock drift from accumulating past the playout buffer.
+    /* Latch the offset again at a new connection. Latch it again also when the link is quiet for
+       sufficient time, thus no message can be in transit. To hold the offset through a message keeps
+       the edge spacing of that message exact. To latch it again between messages prevents an
+       accumulation of clock drift between the two processes that is more than the playout buffer.
        See IR_LINK_OFFSET_RELATCH_IDLE_US. */
     if (!link->clock_offset_latched || now - link->last_edge_wall_us >= IR_LINK_OFFSET_RELATCH_IDLE_US) {
         link->wall_minus_core_us = (int64_t)now - (int64_t)psemu_ir_get_clock_us(ps);
@@ -318,23 +322,24 @@ static void drain_tx_edges(ir_link_t *link, psemu_t *ps) {
     }
 }
 
-/* One pump must move a whole frame's worth of edges, not one message.
-   A real IR burst is hundreds of transitions produced across a handful of emulated frames - measured at 658
-   edges for one Chocobo World message, roughly 65 per frame. This used to complete exactly one read and one
-   write per pump, so the transport carried about one edge per frame in each direction and a burst could
-   never get through in time; the write queue then overflowed and dropped the rest. Both directions now drain
-   until the pipe has nothing left to give or nothing left to take, which is the same backpressure as before,
-   just no longer throttled to one message per frame.
-   The bound is a safety net against an unexpectedly hot pipe starving the rest of the frame, not an
-   expected limit. */
+/* One pump call must move the edges of a full frame. It must not move only one message.
+   A real IR group is hundreds of transitions across a few emulated frames. A measurement of one
+   message gave 658 edges, which is approximately 65 edges for each frame. This code completed exactly
+   one read and one write for each pump call before. Thus the transport carried approximately one edge
+   for each frame in each direction, and a group could never get through in time. The write queue then
+   overflowed and discarded the remainder. Both directions now drain until the pipe has no more data to
+   give or no more space to take data. The backpressure is the same as before, but the rate is no
+   longer one message for each frame.
+   The limit is a safety measure against a pipe with unexpected activity that takes time from the
+   remainder of the frame. It is not an expected limit. */
 #define IR_LINK_MAX_MESSAGES_PER_PUMP 4096
 
-/* Keeps the connected status line carrying live link counters, so the window title shows what the transport
-   is actually doing. A link that is connected but not carrying a transfer looks identical to a working one
-   otherwise, and the three failure modes seen so far are only distinguishable by these numbers: the peer
-   sending nothing (tx stays 0 on its side), edges dropped because a queue filled (drop climbs), and edges
-   arriving too late to be placed in time (late climbs, which destroys decoding while everything else looks
-   healthy). */
+/* Keeps the live link counters in the connected status line. Thus the window title shows the true
+   operation of the transport. Without these counters, a link that is connected but carries no transfer
+   looks the same as a link that operates correctly. These numbers are the only method to identify the
+   three known failure modes: the peer sends nothing (tx stays at 0 on the side of the peer), a full
+   queue causes discarded edges (drop increases), and edges arrive too late for correct placement (late
+   increases, which stops the decode operation while each other value looks correct). */
 static void update_connected_status(ir_link_t *link) {
     if (!link->show_diagnostics) {
         return; /* plain "Connected", set once by on_connected */

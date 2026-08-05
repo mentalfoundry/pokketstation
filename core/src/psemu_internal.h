@@ -26,16 +26,15 @@ struct psemu {
     dac_t dac;
     clk_t clk;
     iop_t iop;
-    /* Fractional carry between psemu_run() calls.
-       Converts real elapsed time back into the fixed PSEMU_ASSUMED_CPU_HZ reference
-       rate that Timer, RTC, and DAC expect. See psemu_run's comment for details. */
+    /* The fractional carry between psemu_run() calls.
+       It converts real elapsed time back into the fixed PSEMU_ASSUMED_CPU_HZ reference
+       rate that Timer, RTC, and DAC use. See the comment on psemu_run for more data. */
     double real_time_cycle_carry;
-    uint32_t buttons; /* last-set PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
+    uint32_t buttons; /* the last PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;
-    /* Whether a dispatched app currently owns WRAM. See psemu_app_running.
-       app_exec_idle_cycles counts executed cycles since the last instruction
-       fetched from the FLASH1 window, and only advances while app_running is
-       set. */
+    /* app_running shows whether a dispatched app owns WRAM. See psemu_app_running.
+       app_exec_idle_cycles counts the cycles that executed after the last instruction
+       fetch from the FLASH1 window. It increases only while app_running is set. */
     int app_running;
     uint32_t app_exec_idle_cycles;
 };

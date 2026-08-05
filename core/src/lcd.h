@@ -4,29 +4,29 @@
 #include <stdint.h>
 
 #define LCD_VRAM_SIZE 128u
-/* LCD_MODE (+0x0, R/W) and LCD_CAL (+0x4).
-   LCD_MODE bit 6 is DISON (display on/off).
-   LCD_MODE bit 7 is ROT (rotate display 180 degrees). Real hardware sets ROT for docked mode, to match
-   INT_INPUT.11's docking flag. Both bits are real hardware bits.
+/* LCD_MODE (+0x0, read and write) and LCD_CAL (+0x4).
+   Bit 6 of LCD_MODE is DISON, which sets the display on or off.
+   Bit 7 of LCD_MODE is ROT, which rotates the display 180 degrees. Real hardware sets ROT for docked
+   mode, to agree with the docking flag in INT_INPUT bit 11. Both bits are real hardware bits.
 
-   History: this address range previously had no bus handler at all.
-   Writes to it silently vanished, and psemu_get_framebuffer always returned raw VRAM unconditionally. */
+   History: this address range had no bus handler before. Writes to the range were discarded and gave
+   no error, and psemu_get_framebuffer always returned the raw VRAM. */
 #define LCD_MODE_REG_SPAN 0x8u
 
 #define LCD_MODE_DISON 0x40u
 #define LCD_MODE_ROT 0x80u
 
-/* VRAM is already the packed 1bpp framebuffer: 32 rows of 4 bytes each.
-   Bit 0 is the leftmost pixel. 0 = white, 1 = black.
+/* VRAM is the packed 1bpp framebuffer: 32 rows of 4 bytes each.
+   Bit 0 is the leftmost pixel. 0 is white, and 1 is black.
 
-   `presented` holds the same format, after applying LCD_MODE's DISON/ROT bits.
-   psemu_get_framebuffer returns `presented`, not raw VRAM.
-   This emulator recomputes `presented` on every VRAM or LCD_MODE write.
+   `presented` uses the same format, after this emulator applies the DISON and ROT bits of LCD_MODE.
+   psemu_get_framebuffer returns `presented`. It does not return the raw VRAM.
+   This emulator calculates `presented` again at each VRAM write and each LCD_MODE write.
 
-   The default `mode` has DISON set, and ROT clear.
-   The real POR value is undocumented; this default is not that value.
-   This default matches every real-BIOS trace validated so far, which always showed VRAM rendered unconditionally.
-   It preserves that behavior for any app that never touches LCD_MODE. */
+   The default value of `mode` has DISON set and ROT clear.
+   The real power-on-reset value has no documentation. This default is not that value.
+   This default agrees with each validated trace of a real BIOS. Those traces always showed the VRAM
+   on the screen. This default keeps that behavior for each app that does not write to LCD_MODE. */
 typedef struct lcd {
     uint8_t vram[LCD_VRAM_SIZE];
     uint8_t presented[LCD_VRAM_SIZE];

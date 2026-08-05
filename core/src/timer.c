@@ -12,8 +12,9 @@ void timer_init(psemu_timer_t *timer) {
     }
 }
 
-/* control bits 0-1: 0 or 3 = /2, 1 = /32, 2 = /512.
-   Confirmed matching real hardware's timer-start behavior and documented divider values. */
+/* Bits 0-1 of control: 0 or 3 gives /2, 1 gives /32, and 2 gives /512.
+   These values agree with the timer-start behavior of real hardware and with the recorded divider
+   values. */
 static uint32_t timer_divisor(uint32_t control) {
     switch (control & TIMER_CTRL_DIVIDER_MASK) {
     case 1:
@@ -73,17 +74,20 @@ void timer_write8(psemu_timer_t *timer, uint32_t offset, uint8_t value) {
         uint32_t was_enabled = timer->timers[index].control & TIMER_CTRL_ENABLE;
         reg = &timer->timers[index].control;
         *reg = (*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        /* Real hardware restarts the prescaler whenever control is rewritten.
-           This matches this emulator's own timer-start logic, which re-invokes on every control write.
-           Drop any partial divisor progress so a mode/enable change starts from a clean edge. */
+        /* Real hardware starts the prescaler again at each write to control.
+           This agrees with the timer-start logic of this emulator, which executes again at each
+           control write.
+           Discard any incomplete divisor progress. Thus a mode change or an enable change starts
+           at a clean edge. */
         timer->timers[index].cycle_accumulator = 0;
-        /* Arming a timer loads its counter from PERIOD. A real IR-using app's own timer-set helper only
-           ever writes PERIOD and then CONTROL, never COUNT (it disables the timer, writes the period, and
-           re-enables it - see the routine its IR receive handler calls to re-arm Timer2 between pulses).
-           Without a load on the enable edge, that newly armed timer would keep counting down from whatever
-           stale value it happened to hold, and every interval the app measured against it would be wrong.
-           Confirmed by disassembling that helper and by the receive handler's own arithmetic, which reads
-           elapsed time as (armed period - current count). */
+        /* When this code arms a timer, the timer loads its counter from PERIOD. The timer-set helper
+           of a real IR app writes only PERIOD and then CONTROL. It never writes COUNT. That helper
+           disables the timer, writes the period, and enables the timer again. See the routine that
+           the IR receive handler of that app calls to arm Timer2 again between pulses.
+           Without a load at the enable edge, a newly armed timer continues to count down from its old
+           value. Then each interval that the app measures is incorrect.
+           A disassembly of that helper confirms this. The arithmetic of the receive handler also
+           confirms it: the handler reads the elapsed time as (armed period - current count). */
         if (!was_enabled && (timer->timers[index].control & TIMER_CTRL_ENABLE)) {
             timer->timers[index].count = timer->timers[index].period & TIMER_REG_MASK;
         }
@@ -92,8 +96,8 @@ void timer_write8(psemu_timer_t *timer, uint32_t offset, uint8_t value) {
     default:
         return;
     }
-    /* period and count are 16-bit on real hardware (see TIMER_REG_MASK in timer.h), so the
-       upper half of a wider store is discarded rather than retained. */
+    /* On real hardware, period and count are 16-bit registers (see TIMER_REG_MASK in timer.h).
+       Thus this code discards the upper half of a wider store. It does not keep the value. */
     *reg = ((*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift)) & TIMER_REG_MASK;
 }
 
@@ -110,28 +114,31 @@ void timer_tick(psemu_timer_t *timer, struct intc *intc, uint32_t cycles) {
             continue;
         }
 
-        /* The timer's own count decrements once per `divisor` raw cycles.
-           control bits 0-1 select /2, /32, or /512.
-           This is confirmed against real hardware's timer-start behavior and its documented divider table.
-           History: an earlier version of this function decremented count by raw cycles directly, ignoring
-           the divisor entirely. This made any timer using a slower divisor fire far more often than real hardware. */
+        /* The count of the timer decreases one time for each `divisor` raw cycles.
+           Bits 0-1 of control select /2, /32, or /512.
+           This agrees with the timer-start behavior of real hardware and with the recorded divider
+           table.
+           History: an earlier version of this function decreased count by the raw cycles directly,
+           and did not use the divisor. Thus each timer with a slower divisor expired much more
+           frequently than a timer on real hardware. */
         divisor = timer_divisor(t->control);
         t->cycle_accumulator += cycles;
         ticks = t->cycle_accumulator / divisor;
         t->cycle_accumulator %= divisor;
 
-        /* A timer armed with period P expires every P+1 ticks, not P.
-           The counter runs P, P-1, down to 1, then 0. It reloads on the tick AFTER it reaches zero.
-           Zero is therefore a state the counter occupies.
+        /* A timer with period P expires each P+1 ticks. It does not expire each P ticks.
+           The counter goes from P, to P-1, down to 1, and then to 0. It reloads at the tick AFTER
+           it gets to zero. Thus zero is a state of the counter.
 
-           Direct real-hardware measurement confirms this. See pk_timing_bench screen 6, logged in
-           pk_timing_bench/VERIFICATION.md.
-           Timer2 armed at period 1016 over 256 reloads, and at period 2032 over 128 reloads, both came back
-           exactly 1 tick per reload slower than a plain P-tick period predicts.
-           The excess is the same absolute value at both periods. That rules out a rate or divisor error, and
-           pins it to a fixed per-period off-by-one.
+           A direct measurement on real hardware confirms this. See screen 6 of pk_timing_bench, with
+           the results in pk_timing_bench/VERIFICATION.md.
+           Timer2 at period 1016 over 256 reloads, and at period 2032 over 128 reloads, both gave
+           exactly 1 tick for each reload more than a period of P ticks predicts.
+           The extra time is the same absolute value at both periods. This removes a rate error and a
+           divisor error as causes, and gives a fixed error of one tick for each period.
 
-           This code used to consume exactly `count` ticks per reload. Every timer fired one tick early. */
+           This code used exactly `count` ticks for each reload before. Thus each timer expired one
+           tick early. */
         while (ticks > 0) {
             if (ticks > t->count) {
                 ticks -= t->count + 1u;

@@ -1,18 +1,20 @@
-/* Measures what a frontend actually pays per emulated instruction.
+/* Measures the true cost of each emulated instruction to a frontend.
 
-   This exists because "is this diagnostic free?" kept getting answered by
-   reasoning instead of measurement, and the reasoning was wrong: the bus
-   read-trace hook (see psemu_bus_read_trace_cb in core/src/memory.c) cost
-   about 20% with its callback left NULL, purely because it sits once per
-   byte of every bus read.
+   This tool is necessary because the question "does this diagnostic have a
+   cost?" received an answer from reasoning, and not from a measurement. That
+   reasoning was incorrect: the bus read-trace hook (see
+   psemu_bus_read_trace_cb in core/src/memory.c) cost approximately 20% with
+   its callback set to NULL. The cause is its position: it executes one time
+   for each byte of each bus read.
 
-   It deliberately links plain `psemu`, not `psemu_trace`, so it reports
-   the cost frontends really carry rather than the tooling build's.
+   This tool links the usual `psemu` library, and not `psemu_trace`. Thus it
+   reports the cost that a frontend has, and not the cost of the tooling
+   build.
 
-   The workload is the real BIOS boot driven through psemu_run, the same
-   entry point the desktop frontend uses, for a fixed cycle budget. The
-   emulator is deterministic, so the executed instruction count is
-   identical run to run and only wall time varies.
+   The workload is the boot sequence of the real BIOS, through psemu_run. That
+   is the same function that the desktop frontend uses. The budget is a fixed
+   number of cycles. The emulator is deterministic, thus the executed
+   instruction count is the same at each run, and only the wall time changes.
 
    usage: core_bench <bios.bin> [frames] [repeats] */
 
@@ -22,8 +24,9 @@
 
 #include "psemu_internal.h"
 
-/* Matches the desktop frontend's own per-frame budget: 33000 cycles at a
-   nominal 32Hz refresh (see PSEMU_ASSUMED_CPU_HZ in core/src/dac.h). */
+/* This value agrees with the per-frame budget of the desktop frontend: 33000
+   cycles at a nominal 32Hz refresh rate (see PSEMU_ASSUMED_CPU_HZ in
+   core/src/dac.h). */
 #define CYCLES_PER_FRAME 33000u
 
 static uint8_t *read_file(const char *path, size_t *out_size) {
@@ -93,8 +96,9 @@ int main(int argc, char **argv) {
     }
     free(bios);
 
-    /* Best-of-N, not the mean: this is a throughput measurement on a
-       noisy desktop, where the fastest run is the one least disturbed. */
+    /* This code uses the best result of N runs, and not the average. This is
+       a throughput measurement on a desktop computer with other active
+       processes. Thus the fastest run has the least interference. */
     printf(
         "%ld frames, %llu instructions, best of %d: %.4f s  (%.2f M instr/s)\n", frames,
         (unsigned long long)steps, repeats, best, steps / best / 1e6);

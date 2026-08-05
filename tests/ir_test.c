@@ -1,5 +1,5 @@
-/* See the note at the top of cpu_test.c: a Release build's NDEBUG compiles every assert() away, so this
-   suite has to keep them itself. Must precede <assert.h>. */
+/* See the comment at the top of cpu_test.c. NDEBUG in a Release build removes each assert() call, thus
+   this test suite must keep them. This code must come before <assert.h>. */
 #undef NDEBUG
 
 #include <assert.h>
@@ -16,8 +16,9 @@ static psemu_t *make_ps(void) {
     return ps;
 }
 
-/* IFMODE=1 selects transmit. STDBY=0 keeps it active. BGEN=0 enables the carrier, because BGEN uses inverted
-   logic. BFLT=1 disables the filter, which does not matter while transmitting. */
+/* IFMODE = 1 selects transmit mode. STDBY = 0 keeps the transmitter active. BGEN = 0 enables the
+   carrier, because BGEN uses inverted logic. BFLT = 1 disables the filter, which has no effect during a
+   transmission. */
 #define TX_ACTIVE_MODE (IR_MODE_IFMODE | IR_MODE_BFLT)
 /* IFMODE=0 (receive), STDBY=0, BFLT bit set per test as needed. */
 #define RX_ACTIVE_MODE 0u
@@ -63,13 +64,13 @@ static void test_tx_write_while_not_driving_produces_no_edge(void) {
     printf("test_tx_write_while_not_driving_produces_no_edge OK\n");
 }
 
-/* BGEN does not gate emission, and this test used to assert the opposite.
-   BGEN selects whether the hardware chops the LED's ON envelope into a 40kHz burst. It does not decide
-   whether the LED lights. This emulator relays only that envelope and does not model the sub-carrier inside
-   it (see ir.h), so there is nothing for BGEN to gate.
-   Two real apps settle it. Chocobo World transmits with BGEN=0 and Yu-Gi-Oh Forbidden Memories transmits
-   with BGEN=1, and both complete a transfer on real hardware. While BGEN suppressed emission here, the
-   second app produced not one edge from a save state parked on its own transfer screen. */
+/* BGEN does not gate the emission. This test asserted the opposite condition before.
+   BGEN selects whether the hardware divides the ON envelope of the LED into a 40kHz burst. It does not
+   control whether the LED comes on. This emulator relays only that envelope, and it does not model the
+   sub-carrier in the envelope (see ir.h). Thus BGEN has nothing to gate.
+   Two real apps give the answer. One app transmits with BGEN = 0, and a second app transmits with
+   BGEN = 1. Both apps complete a transfer on real hardware. While BGEN stopped the emission here, the
+   second app produced no edges from a save state on its own transfer screen. */
 static void test_tx_emits_with_carrier_generator_disabled(void) {
     psemu_t *ps = make_ps();
     ir_edge_t edge;
@@ -117,10 +118,10 @@ static void test_loopback_edge_asserts_irda(void) {
     ir_tick(&ps->ir, &ps->intc, 0);
 
     assert(intc_irq_asserted(&ps->intc));
-    /* Carrier present now reads 0. This assertion used to expect the opposite, back when the receive
-       polarity was this emulator's own unconfirmed inference (ir.h flagged it as exactly that). A real IR
-       app's own receive handler settles it: it arms waiting for level 0 and treats a carrier burst as the
-       low period it measures. See ir.h's top comment. */
+    /* A carrier that is present now reads 0. This assertion expected the opposite value before, when
+       the receive polarity was an unconfirmed inference of this emulator. ir.h recorded it as an
+       inference. The receive handler of a real IR app gives the answer: it arms itself for level 0, and
+       it measures a carrier burst as the low period. See the top comment of ir.h. */
     assert((psemu_bus_read32(&ps->bus, IRDA_DATA) & IR_DATA_LED) == 0);
 
     psemu_destroy(ps);
@@ -165,8 +166,8 @@ static void test_bflt_enabled_rejects_short_glitch(void) {
     psemu_bus_write32(&ps->bus, IRDA_MODE, RX_ACTIVE_MODE); /* BFLT bit clear: filter enabled */
     t0 = ir_get_clock_cycles(&ps->ir);
 
-    /* A brief on-pulse immediately followed by a contradicting edge, both well inside the debounce window,
-       must never reach rx_level/INT_IRDA. */
+    /* A short ON pulse, and then an opposite edge immediately after it, must never get to rx_level or
+       INT_IRDA. Both edges are inside the debounce window. */
     ir_push_rx_edge(&ps->ir, t0, 1);
     ir_push_rx_edge(&ps->ir, t0 + 1, 0);
     ir_tick(&ps->ir, &ps->intc, 5u);
@@ -195,8 +196,9 @@ static void test_bflt_enabled_confirms_sustained_edge(void) {
 }
 
 static void test_full_loopback_tx_to_rx_across_two_instances(void) {
-    /* Simulates the actual two-instance flow end to end, without any real transport: instance A transmits,
-       instance B (its own separate psemu_t, own separate clock) receives the relayed edge. */
+    /* Simulates the full two-instance sequence, with no real transport. Instance A transmits, and
+       instance B receives the relayed edge. Instance B has its own psemu_t structure and its own
+       clock. */
     psemu_t *tx = make_ps();
     psemu_t *rx = make_ps();
     ir_edge_t edge;
@@ -208,8 +210,9 @@ static void test_full_loopback_tx_to_rx_across_two_instances(void) {
     assert(ir_pop_tx_edge(&tx->ir, &edge) == 1);
     assert(edge.level == 1);
 
-    /* rx has its own independent clock; deliver "now" on its own timeline, exactly as a frontend relaying
-       via a shared wall-clock reference would. */
+    /* The rx instance has its own independent clock. Deliver the edge at the current time on that
+       timeline. A frontend that relays edges through a shared wall-clock reference does the same
+       operation. */
     ir_push_rx_edge(&rx->ir, ir_get_clock_cycles(&rx->ir), edge.level);
     ir_tick(&rx->ir, &rx->intc, 0);
 
@@ -222,9 +225,10 @@ static void test_full_loopback_tx_to_rx_across_two_instances(void) {
 }
 
 static void test_irda_misc_is_a_reserved_stub(void) {
-    /* IRDA_MISC (+0xC) is unknown or reserved in an external reference, with no documented reset value or
-       behavior. This emulator has no basis to invent register state for it. Reads return 0. Writes have no
-       effect on it, or on anything else: mode and data stay exactly as they were. See ir.h's top comment. */
+    /* IRDA_MISC (+0xC) is unknown or reserved, and it has no known reset value and no known behavior.
+       Thus this emulator has no basis to make register state for it. Reads return 0. Writes have no
+       effect on this register, and no effect on other registers: mode and data do not change. See the
+       top comment of ir.h. */
     psemu_t *ps = make_ps();
 
     psemu_bus_write32(&ps->bus, IRDA_MODE, TX_ACTIVE_MODE);
@@ -232,8 +236,8 @@ static void test_irda_misc_is_a_reserved_stub(void) {
     assert(psemu_bus_read32(&ps->bus, PSEMU_IR_BASE + 0xCu) == 0u);
     assert(ps->ir.mode == TX_ACTIVE_MODE); /* the write above did not disturb mode */
 
-    /* The gap at +0x8, between IRDA_DATA and IRDA_MISC, gets the same stub treatment. Nothing distinguishes
-       it from IRDA_MISC itself, externally or in this emulator. */
+    /* The range at +0x8, between IRDA_DATA and IRDA_MISC, gets the same treatment. No available data
+       separates it from IRDA_MISC. */
     psemu_bus_write32(&ps->bus, PSEMU_IR_BASE + 0x8u, 0xFFFFFFFFu);
     assert(psemu_bus_read32(&ps->bus, PSEMU_IR_BASE + 0x8u) == 0u);
 
@@ -242,10 +246,11 @@ static void test_irda_misc_is_a_reserved_stub(void) {
 }
 
 static void test_tx_falling_edge_lands_later_than_rising(void) {
-    /* IR_TX_FALL_STRETCH_CYCLES (ir.c): a documented concession, not a modeled physical effect. Only the
-       falling edge is delayed. This checks the direction and asymmetry of that behavior without hardcoding
-       the exact constant, the same way test_bflt_enabled_rejects_short_glitch checks IR_BFLT_DEBOUNCE_CYCLES
-       by behavior instead of by value. */
+    /* IR_TX_FALL_STRETCH_CYCLES (ir.c) is a recorded concession. It is not a model of a physical
+       effect. Only the falling edge is delayed. This test confirms the direction of that behavior, and
+       that the behavior applies to only one edge. It does not use the exact constant.
+       test_bflt_enabled_rejects_short_glitch tests IR_BFLT_DEBOUNCE_CYCLES the same way, by behavior
+       and not by value. */
     psemu_t *ps = make_ps();
     ir_edge_t edge;
     uint64_t write_time;
@@ -258,11 +263,11 @@ static void test_tx_falling_edge_lands_later_than_rising(void) {
     assert(edge.level == 1);
     assert(edge.timestamp_cycles == write_time); /* rising edges are never stretched */
 
-    /* The pulse needs a real ON duration for there to be anything to stretch, because the stretch is capped
-       at that duration (see enqueue_tx_edge). This test drives the bus directly, so no CPU steps and the IR
-       clock would otherwise never move between the two writes, making the pulse zero-width. Nothing on the
-       real path does that: psemu_run calls ir_tick once per instruction, and the narrowest real pulse this
-       project has measured (Yu-Gi-Oh Forbidden Memories) is still 7 cycles wide. */
+    /* The pulse needs a real ON duration, because the stretch has a limit of that duration (see
+       enqueue_tx_edge). This test writes to the bus directly, thus no CPU steps occur. Without this
+       code, the IR clock never advances between the two writes, and the pulse has zero width. The real
+       path does not have this condition: psemu_run calls ir_tick one time for each instruction, and
+       the narrowest real pulse that this project measured is still 7 cycles wide. */
     ir_tick(&ps->ir, &ps->intc, 32u);
 
     psemu_bus_write32(&ps->bus, IRDA_DATA, 0); /* LED off: a falling edge */
@@ -276,11 +281,11 @@ static void test_tx_falling_edge_lands_later_than_rising(void) {
 }
 
 static void test_tx_short_pulse_keeps_edges_in_order(void) {
-    /* The monotonicity guard in enqueue_tx_edge (ir.c): a real pulse shorter than the stretch would
-       otherwise let a delayed falling edge land after the rising edge that follows it, reordering the
-       queue. This drives the worst case directly: three edges written back to back, with no ir_tick
-       between any of them, so the clock never advances and the falling edge's stretch has zero real gap
-       to work with. */
+    /* The order guard in enqueue_tx_edge (ir.c). Without that guard, a real pulse that is shorter than
+       the stretch lets a delayed falling edge arrive after the rising edge that follows it. That
+       result changes the order of the queue. This test causes the worst condition directly: three
+       edges in sequence, with no ir_tick call between them. Thus the clock never advances, and the
+       stretch of the falling edge has no real gap. */
     psemu_t *ps = make_ps();
     ir_edge_t first, second, third;
 
@@ -301,15 +306,17 @@ static void test_tx_short_pulse_keeps_edges_in_order(void) {
 }
 
 static void test_tx_narrow_pulse_stretch_never_eats_the_following_gap(void) {
-    /* The stretch is capped at the pulse's own ON duration (enqueue_tx_edge in ir.c). Without that cap a
-       flat IR_TX_FALL_STRETCH_CYCLES is applied to pulses far narrower than itself, which does not lengthen
-       a pulse so much as move it on top of the next one.
-       Yu-Gi-Oh Forbidden Memories is the real case: ~7-cycle pulses spaced 205 or 406 cycles apart, with the
-       bit carried in the gap rather than the pulse. Measured over a real transfer, the flat stretch turned
-       7-on/205-off into 207-on/5-off and collapsed 272 gaps to exactly 0 cycles - merging pulse pairs, and
-       with them the bits the gaps encoded.
-       This drives that shape directly: a pulse much shorter than the stretch, followed by a gap much longer
-       than it. The gap must still be a gap, and must still dominate the pulse. */
+    /* The stretch has a limit of the ON duration of the pulse (enqueue_tx_edge in ir.c). Without that
+       limit, a flat IR_TX_FALL_STRETCH_CYCLES applies to pulses that are much narrower than the
+       constant. That result does not make a pulse longer. It moves the pulse onto the next pulse.
+       One trading-card app is the real condition: pulses of approximately 7 cycles, with a space of
+       205 or 406 cycles between them. The gap holds the bit, and not the pulse. A measurement over a
+       real transfer showed that the flat stretch changed a 7-cycle ON and 205-cycle OFF pattern into a
+       207-cycle ON and 5-cycle OFF pattern. It also made 272 gaps exactly 0 cycles. That result
+       combined pairs of pulses, and the bits that those gaps encoded.
+       This test causes that shape directly: a pulse that is much shorter than the stretch, and then a
+       gap that is much longer than the stretch. The gap must stay a gap, and it must stay longer than
+       the pulse. */
     psemu_t *ps = make_ps();
     ir_edge_t rise, fall, next_rise;
     const uint32_t on_cycles = 7u;   /* the real app's measured pulse width */
@@ -341,14 +348,15 @@ static void test_tx_narrow_pulse_stretch_never_eats_the_following_gap(void) {
 }
 
 static void test_rx_queue_holds_a_full_message_without_dropping(void) {
-    /* A real 41-byte Chocobo World transmit burst produces 658 edges (see tools/ir_probe.c's transmit-side
-       analysis). IR_EDGE_QUEUE_CAPACITY was once 64: a real receiver relayed edges faster than it drained
-       them, the queue filled almost immediately, and queue_push's own full-queue guard silently dropped 594
-       of the 658 edges before decode ever saw them - confirmed directly by counting every edge's path
-       through the receive side, not inferred. This pushes more than one full message's worth of edges with
-       no ir_tick in between (the exact condition that starved the real queue), then drains them all in one
-       call. The final edge is the only one that differs in level from everything before it, so if any
-       edges were silently dropped along the way, rx_level ends up wrong. */
+    /* A real transmit burst of 41 bytes makes 658 edges (see the transmit-side analysis in
+       tools/ir_probe.c). IR_EDGE_QUEUE_CAPACITY was 64 before. At that capacity, a real receiver got
+       edges faster than it drained them. The queue filled almost immediately, and the full-queue guard
+       in queue_push discarded 594 of the 658 edges before the decode operation. A count of the path of
+       each edge through the receive side confirms this. It is not an inference. This test puts more
+       than one full message of edges into the queue, with no ir_tick call between them. That is the
+       exact condition that filled the real queue. It then drains each edge in one call. The last edge
+       is the only edge with a different level. Thus, if this code discards any edge, rx_level has an
+       incorrect value at the end. */
     psemu_t *ps = make_ps();
     uint64_t t0;
     const int message_edges = 700;

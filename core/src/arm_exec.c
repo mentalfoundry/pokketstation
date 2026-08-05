@@ -38,9 +38,10 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     int set_flags = (int)((instr >> 20) & 1u);
     int rn = (int)((instr >> 16) & 0xFu);
     int rd = (int)((instr >> 12) & 0xFu);
-    /* A register-specified shift amount costs an extra internal cycle:
-       "1S+1I" instead of plain "1S". An immediate shift amount does not.
-       The shifter must wait on a register read before it can run. */
+    /* A shift amount from a register costs one more internal cycle:
+       "1S+1I" in place of "1S". An immediate shift amount has no such
+       cost. The shifter must wait for a register read before it can
+       operate. */
     int reg_shift = !(instr & (1u << 25)) && (instr & (1u << 4));
 
     int shifter_carry;
@@ -111,10 +112,11 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     if (set_flags) {
         uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
         if (rd == 15 && mode != ARM_MODE_USR && mode != ARM_MODE_SYS) {
-            /* "MOVS/SUBS PC, ..." in a privileged mode is the standard
-               exception-return idiom.
-               It restores the whole CPSR (mode, I/F/T, NZCV) from this
-               mode's SPSR, instead of just updating flags. */
+            /* "MOVS PC, ..." or "SUBS PC, ..." in a privileged mode is
+               the standard exception-return method.
+               It restores the full CPSR (the mode, I, F, T, and NZCV)
+               from the SPSR of this mode. It does not write only the
+               flags. */
             uint32_t spsr = cpu->spsr_bank[arm_current_bank(cpu)];
             arm_set_mode(cpu, spsr & CPSR_MODE_MASK);
             cpu->cpsr = spsr;
@@ -129,10 +131,10 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
 
     uint32_t extra = reg_shift ? 1u : 0u;
     if (write_result && rd == 15) {
-        /* Writing PC flushes the pipeline: 2 more fetches at the new PC.
-           Use the ARM/Thumb state that applies after this instruction
-           runs. An SPSR-restoring "MOVS PC,..." may have just changed
-           that state. */
+        /* A write to the PC clears the pipeline: 2 more fetches at the
+           new PC. Use the ARM or Thumb state that applies after this
+           instruction executes. A "MOVS PC,..." that restores the SPSR
+           can change that state. */
         extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
     }
     if (extra) {
@@ -140,11 +142,11 @@ static void exec_data_processing(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 }
 
-/* Real ARM7TDMI multiply timing terminates early depending on Rs's value.
-   The more of its high bytes are all-0 or all-1, the fewer internal
-   cycles it costs (m = 1..4).
-   Shared by ARM's 32x32->32/32x32->64 multiply forms (below) and Thumb's
-   MUL (thumb_exec.c). */
+/* A real ARM7TDMI multiply stops early. The stop time depends on the
+   value of Rs. When more of the high bytes of Rs are all 0 or all 1, the
+   multiply costs less internal cycles (m = 1 to 4).
+   The ARM 32x32->32 and 32x32->64 multiply forms below use this function.
+   The Thumb MUL instruction (thumb_exec.c) also uses it. */
 uint32_t arm7tdmi_mul_m_cycles(uint32_t rs) {
     if ((rs >> 8) == 0u || (rs >> 8) == 0x00FFFFFFu) {
         return 1u;
@@ -175,8 +177,8 @@ static void exec_multiply(arm7tdmi_t *cpu, uint32_t instr) {
     if (set_flags) {
         arm_set_nz(cpu, result);
     }
-    /* MUL: 1S+mI. MLA (accumulate): 1S+(m+1)I. The 1S is the opcode fetch,
-       already counted. */
+    /* MUL costs 1S+mI. MLA (accumulate) costs 1S+(m+1)I. The 1S is the
+       opcode fetch, which this code already counted. */
     arm7tdmi_add_cycles(cpu, accumulate ? m + 1u : m);
 }
 
@@ -225,10 +227,10 @@ static void exec_swap(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         psemu_bus_write32(cpu->bus, addr & ~3u, cpu->r[rm]);
         cpu->r[rd] = old;
     }
-    /* SWP: 1S+2N+1I.
-       The opcode fetch (1S) and both data accesses (2N) are already
-       counted, via the opcode fetch and the read/write calls above.
-       Only the extra internal cycle remains. */
+    /* SWP costs 1S+2N+1I.
+       This code already counted the opcode fetch (1S) and both data
+       accesses (2N), through the opcode fetch and the read and write
+       calls above. Only the extra internal cycle remains. */
     arm7tdmi_add_cycles(cpu, 1u);
 }
 
@@ -243,10 +245,11 @@ static void exec_bx(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         target &= ~3u;
     }
     cpu->r[15] = target;
-    /* BX: 2S+1N. The first 1S is the opcode fetch, already counted.
-       The remaining "1S+1N" is the pipeline refill, modeled as 2 more
-       fetches at the target. This hardware makes no S/N cost
-       distinction; see docs/hardware-notes.md. */
+    /* BX costs 2S+1N. The first 1S is the opcode fetch, which this code
+       already counted. The remaining "1S+1N" is the pipeline refill.
+       This emulator models the refill as 2 more fetches at the target.
+       This hardware has no difference between an S cost and an N cost.
+       See docs/hardware-notes.md. */
     arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0));
 }
 
@@ -283,19 +286,22 @@ static void exec_msr(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 
     if ((cpu->cpsr & CPSR_MODE_MASK) == ARM_MODE_USR) {
-        /* On real ARM7TDMI/ARMv4T silicon, MSR to CPSR from User mode can
-           only change the condition flags (top byte).
-           The control byte (mode, T, F, I) is protected. Real hardware
-           silently ignores a User-mode write to it, regardless of which
-           control bits the instruction asks for.
-           This is fixed CPU behavior, not specific to the PocketStation.
-           This emulator did not enforce it before this fix.
-           A real homebrew app (pk_timing_bench) unintentionally relied
-           on this behavior. It wrote CPSR_I/F from User mode, expecting
-           a real-hardware no-op (see start.s: "kept anyway since it's
-           harmless"). Before this fix, this emulator applied the write
-           instead, masking interrupts globally for the app's entire
-           runtime. Real hardware never does this. */
+        /* On real ARM7TDMI and ARMv4T silicon, an MSR to the CPSR from
+           User mode can change only the condition flags (the highest
+           byte).
+           The control byte (the mode, T, F, and I) is protected. Real
+           hardware ignores a User-mode write to that byte and gives no
+           error. This is true for each control bit that the instruction
+           selects.
+           This is fixed CPU behavior. It is not specific to the
+           PocketStation. This emulator did not apply the rule before the
+           correction.
+           A real homebrew app (pk_timing_bench) depended on this behavior
+           without intent. It wrote CPSR_I and CPSR_F from User mode, and
+           expected no effect on real hardware (see start.s: "kept anyway
+           since it's harmless"). Before the correction, this emulator
+           applied the write. Thus it masked the interrupts globally for
+           the full runtime of the app. Real hardware never does this. */
         byte_mask &= 0xFF000000u;
     }
 
@@ -353,17 +359,17 @@ static void exec_single_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 
     if (load) {
-        /* LDR: 1S+1N+1I. The fetch and data read are already counted;
-           +1I remains. Add a +1S+1N pipeline refill if PC was the
-           target. */
+        /* LDR costs 1S+1N+1I. This code already counted the fetch and the
+           data read. Only +1I remains. Add a +1S+1N pipeline refill if
+           the target was the PC. */
         uint32_t extra = 1u;
         if (rd == 15) {
             extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
         }
         arm7tdmi_add_cycles(cpu, extra);
     }
-    /* STR: 2N. The fetch (standing in for the first N) and the data
-       write are already counted. No extra cost applies. */
+    /* STR costs 2N. This code already counted the fetch, which is the
+       first N, and the data write. There is no extra cost. */
 }
 
 static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
@@ -386,22 +392,22 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
         uint32_t value;
         switch (sh) {
         case 1: { /* LDRH */
-            /* A confirmed real ARM7TDMI hardware quirk. Documented for
-               the same core in GBA homebrew circles, and confirmed
-               directly here against a real app. See
-               docs/hardware-notes.md, "CPU".
-               A misaligned halfword read (address bit0 set) is not
-               silently rounded down to the halfword below. Real silicon
-               rotates the loaded halfword right by 8 bits, swapping its
-               two bytes, before it reaches the register.
-               This emulator used to read the aligned halfword with no
-               rotation instead. For a caller that masks off the high
-               byte, this looks the same as the correctly rotated
-               odd-address read. A real PocketStation homebrew's
-               font-glyph routine relies on exactly this pattern: LDRH
-               with post-increment #1, masked to the low byte, to walk a
-               byte-packed table one byte at a time. So every other byte
-               came out wrong. */
+            /* A confirmed hardware quirk of the real ARM7TDMI. Other work
+               on the same core records this quirk, and a test against a
+               real app confirms it here. See docs/hardware-notes.md,
+               "CPU".
+               A misaligned halfword read (with address bit 0 set) does
+               not round down to the halfword below. Real silicon rotates
+               the loaded halfword right by 8 bits. Thus it exchanges the
+               two bytes before the value gets to the register.
+               This emulator read the aligned halfword with no rotation
+               before. For a caller that removes the high byte, that
+               result looks the same as the correct rotated odd-address
+               read. The font-glyph routine of a real PocketStation
+               homebrew app uses this exact pattern: an LDRH with a
+               post-increment of 1, masked to the low byte, to read a
+               byte-packed table one byte at a time. Thus every second
+               byte was incorrect. */
             uint16_t h = psemu_bus_read16(cpu->bus, address & ~1u);
             if (address & 1u) {
                 h = (uint16_t)((h >> 8) | (h << 8));
@@ -416,11 +422,12 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
         }
         case 3: { /* LDRSH */
             if (address & 1u) {
-                /* Real ARM7TDMI silicon does not rotate-and-sign-extend a
-                   misaligned LDRSH the way LDRH rotates.
-                   It instead behaves as a sign-extended byte read (LDRSB)
-                   from the odd address. Same documented quirk family as
-                   LDRH above. */
+                /* Real ARM7TDMI silicon does not rotate a misaligned LDRSH
+                   and then extend its sign, in the way that it rotates an
+                   LDRH.
+                   Instead, the instruction operates as a sign-extended
+                   byte read (LDRSB) from the odd address. This is the
+                   same family of quirk as the LDRH quirk above. */
                 int8_t b = (int8_t)psemu_bus_read8(cpu->bus, address);
                 value = (uint32_t)(int32_t)b;
             } else {
@@ -445,8 +452,9 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
     }
 
     if (load) {
-        /* LDRH/LDRSB/LDRSH: same "1S+1N+1I(+pipeline refill)" shape as
-           LDR. See exec_single_transfer. */
+        /* LDRH, LDRSB, and LDRSH have the same
+           "1S+1N+1I, plus a pipeline refill" shape as LDR. See
+           exec_single_transfer. */
         uint32_t extra = 1u;
         if (rd == 15) {
             extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
@@ -455,10 +463,10 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
     }
 }
 
-/* Reads register `reg` from the USER bank, whatever mode the CPU is actually in - the "^" form of LDM/STM
-   (S set, PC absent from the list). r0-r7 and r15 are never banked, so only r8-r14 need redirecting, and
-   r8-r12 only when the current mode is FIQ. In User or System mode the current registers ARE the user bank,
-   so this is a plain read. */
+/* Reads register `reg` from the USER bank, for each CPU mode. This is the "^" form of LDM and STM,
+   where S is set and the PC is not in the list. r0-r7 and r15 are never banked, thus only r8-r14 need
+   a redirection. r8-r12 need a redirection only when the current mode is FIQ. In User mode or System
+   mode, the current registers ARE the user bank, thus this function does a simple read. */
 static uint32_t read_user_bank_reg(arm7tdmi_t *cpu, int reg, uint32_t pc) {
     uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
     if (reg == 15) {
@@ -517,15 +525,16 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         return; /* empty register list is architecturally unpredictable */
     }
 
-    /* S set with PC absent from the list is the "^" user-bank form: the transfer moves the User mode's
-       registers rather than the current mode's banked ones. That is how a privileged handler saves and
-       restores the interrupted code's r13/r14 (and, from FIQ, r8-r12) without switching modes to reach
-       them. The real BIOS uses it - "STMIA r0!,{r13,r14}^" at 0x04001944 and the matching LDM at
-       0x04001B90 - though nothing this project can drive has been observed executing those.
+    /* S set with the PC absent from the list is the "^" user-bank form. The transfer moves the
+       registers of User mode, and not the banked registers of the current mode. This is the method
+       that a privileged handler uses to save and restore r13 and r14 of the interrupted code, and
+       r8-r12 from FIQ. The handler does not have to change the mode to reach those registers. The real
+       BIOS uses this form: "STMIA r0!,{r13,r14}^" at 0x04001944, and the matching LDM at 0x04001B90.
+       No app that this project can operate has executed those instructions.
 
-       Architecturally, base writeback alongside "^" is UNPREDICTABLE. The BIOS does it anyway, and the
-       base it writes back is never itself a banked register, so the normal writeback below is unambiguous
-       in practice and is left as-is. */
+       In the architecture, a base writeback together with "^" is UNPREDICTABLE. The BIOS does this
+       operation. The base register that it writes back is never a banked register. Thus in practice
+       the usual writeback below has one clear result, and this code does not change it. */
     int user_bank = s_bit && !(reg_list & 0x8000u);
 
     uint32_t addr = base;
@@ -563,13 +572,15 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         cpu->r[rn] = up ? base + (uint32_t)count * 4u : base - (uint32_t)count * 4u;
     }
 
-    /* "LDM ...,{...,PC}^" is the other standard exception-return idiom,
-       alongside "MOVS/SUBS PC,LR".
-       S-bit set with PC in the register list also restores the whole
-       CPSR from this mode's SPSR. S-bit set WITHOUT PC in the list is
-       the unrelated user-bank form, handled by `user_bank` above.
-       This restore runs before the cycle accounting below, so a
-       PC-refill fetch cost reflects the post-restore ARM/Thumb state. */
+    /* "LDM ...,{...,PC}^" is the second standard exception-return method.
+       The first method is "MOVS PC,LR" or "SUBS PC,LR".
+       An S bit that is set, with the PC in the register list, also
+       restores the full CPSR from the SPSR of this mode. An S bit that is
+       set WITHOUT the PC in the list is the different user-bank form.
+       `user_bank` above covers that form.
+       This restore operation occurs before the cycle count below. Thus a
+       PC-refill fetch cost uses the ARM or Thumb state after the
+       restore. */
     if (load && s_bit && (reg_list & 0x8000u)) {
         uint32_t mode = cpu->cpsr & CPSR_MODE_MASK;
         if (mode != ARM_MODE_USR && mode != ARM_MODE_SYS) {
@@ -580,9 +591,10 @@ static void exec_block_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
     }
 
     if (load) {
-        /* LDM: nS+1N+1I. The n register loads are already counted, one
-           read32 call each, above. +1I remains. Add a pipeline-refill
-           +1S+1N (2 more fetches) if PC was among the loaded registers. */
+        /* LDM costs nS+1N+1I. This code already counted the n register
+           loads above, with one read32 call for each. Only +1I remains.
+           Add a pipeline refill of +1S+1N (2 more fetches) if the PC was
+           one of the loaded registers. */
         uint32_t extra = 1u;
         if (reg_list & 0x8000u) {
             extra += 2u * psemu_region_fetch_cycles(cpu->r[15], (cpu->cpsr & CPSR_T) != 0);
@@ -600,9 +612,9 @@ static void exec_branch(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
         cpu->r[14] = pc + 4u;
     }
     cpu->r[15] = target;
-    /* B/BL: 2S+1N. The first 1S is the opcode fetch, already counted.
-       The target is always ARM state; a plain branch does not
-       interwork. */
+    /* B and BL cost 2S+1N. The first 1S is the opcode fetch, which this
+       code already counted. The target is always in the ARM state,
+       because a simple branch does not change the instruction set. */
     arm7tdmi_add_cycles(cpu, 2u * psemu_region_fetch_cycles(target, 0));
 }
 

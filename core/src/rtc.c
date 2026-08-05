@@ -5,10 +5,11 @@
 void rtc_init(rtc_t *rtc) {
     rtc->mode = 0;
     rtc->control = 0;
-    /* Real hardware power-on-reset values (RTCClock/RTCCalendar reset columns): day-of-week BCD 4, date 1998-01-01.
-       An arbitrary 1999-01-01 would match the BIOS's well-known "resets itself to Jan 1999" software quirk.
-       That quirk is a software action, not the real hardware POR value.
-       This emulator uses the real POR values instead. */
+    /* The power-on-reset values of real hardware, from the reset columns of RTCClock and RTCCalendar:
+       the day of the week is BCD 4, and the date is 1998-01-01.
+       A value of 1999-01-01 agrees with the well-known "the BIOS resets itself to January 1999"
+       software quirk. That quirk is a software action. It is not the real hardware reset value.
+       Thus this emulator uses the real power-on-reset values. */
     rtc->time = 0x04000000u;
     rtc->date = 0x00980101u;
     rtc->tick_accumulator = 0;
@@ -33,9 +34,9 @@ uint8_t rtc_read8(rtc_t *rtc, uint32_t offset) {
     return (uint8_t)(*reg >> ((offset % 4u) * 8u));
 }
 
-/* Increments the BCD field selected by mode>>1.
-   The wraparound arithmetic is confirmed against real hardware's register-write behavior.
-   Case 7 (year-hi) is a documented no-op. */
+/* Increases the BCD field that mode>>1 selects.
+   The wraparound arithmetic agrees with the register-write behavior of real hardware.
+   Case 7 (year-high) has no effect. */
 static void rtc_increment_field(rtc_t *rtc) {
     switch (rtc->mode >> 1) {
     case 0: /* seconds */
@@ -118,10 +119,10 @@ void rtc_write8(rtc_t *rtc, uint32_t offset, uint8_t value) {
         return;
     }
 
-    /* control: only byte 0 carries meaning in observed real usage.
-       Writing 1 while control already holds 1 triggers the increment and resets control to 0.
-       Writing while control holds 0 just stores the value.
-       Real code deliberately writes 1 twice for a single increment; see docs/hardware-notes.md. */
+    /* control: in the observed real use, only byte 0 has a function.
+       A write of 1 while control holds 1 causes the increment, and then sets control to 0.
+       A write while control holds 0 only stores the value.
+       Real code writes 1 two times for one increment. See docs/hardware-notes.md. */
     if (shift == 0u) {
         if (rtc->control == 1u && value == 1u) {
             rtc_increment_field(rtc);
@@ -132,11 +133,13 @@ void rtc_write8(rtc_t *rtc, uint32_t offset, uint8_t value) {
     }
 }
 
-/* Unconditional seconds -> minutes -> hours -> day-of-week cascade.
-   This is this emulator's own RTC auto-advance logic (the auto-advance side, not the control-register-triggered side).
-   It deliberately does not cascade into date on a day rollover.
-   This is a gap in this codebase's own history; no independent source explains it.
-   No independent source documents the real date-rollover mechanism either, so this gap is inherited, not invented. */
+/* An unconditional cascade from seconds, to minutes, to hours, to the day of the week.
+   This is the RTC automatic-advance logic of this emulator. It is not the logic that a write to the
+   control register causes.
+   This function does not cascade into the date at a day rollover.
+   This is a gap from the earlier history of this codebase. No independent source explains it.
+   No independent source gives the real date-rollover mechanism either. Thus this gap comes from
+   earlier work. This project did not create it. */
 static uint32_t bcd_to_bin(uint32_t bcd) {
     return (bcd >> 4) * 10u + (bcd & 0x0Fu);
 }
@@ -145,12 +148,12 @@ static uint32_t bin_to_bcd(uint32_t bin) {
     return ((bin / 10u) << 4) | (bin % 10u);
 }
 
-/* Length of `month` (1-12) in the RTC's own two-digit `year`.
+/* The length of `month` (1-12) in the two-digit `year` of the RTC.
 
-   The leap rule can only be year % 4. RTC_DATE has no century field at all - the century lives in
-   battery-backed kernel RAM and only GetBcdDate exposes it (see rtc.h) - so the hardware cannot apply the
-   100/400-year exceptions even in principle. Year 00 therefore counts as a leap year, which is right for
-   2000 and wrong for 1900. */
+   The leap-year rule can only be year % 4. RTC_DATE has no century field. The century is in
+   battery-backed kernel RAM, and only GetBcdDate supplies it (see rtc.h). Thus the hardware cannot
+   apply the 100-year and 400-year exceptions. Year 00 is therefore a leap year. This result is
+   correct for 2000 and incorrect for 1900. */
 static uint32_t rtc_days_in_month(uint32_t month, uint32_t year) {
     static const uint8_t lengths[12] = {31u, 28u, 31u, 30u, 31u, 30u, 31u, 31u, 30u, 31u, 30u, 31u};
     if (month < 1u || month > 12u) {
@@ -162,22 +165,24 @@ static uint32_t rtc_days_in_month(uint32_t month, uint32_t year) {
     return lengths[month - 1u];
 }
 
-/* Advances RTC_DATE by one day, cascading into month and year.
+/* Advances RTC_DATE by one day. The advance cascades into the month and the year.
 
-   CONFIRMED on real hardware: the date does roll over at midnight. This emulator did not do it at all - the
-   per-second cascade stopped at day-of-week - so an emulated device sat on the same date forever while its
-   day-of-week advanced past it.
+   CONFIRMED on real hardware: the date does roll over at midnight. This emulator did not do this
+   before. The cascade for each second stopped at the day of the week. Thus an emulated device stayed
+   at the same date permanently, while its day of the week continued to advance.
 
-   ALSO CONFIRMED on real hardware: the device handles leap years. That settles the month lengths with it -
-   a design that simply rolled every month at 31 could not have a leap year to handle, since knowing
-   February is 28 or 29 days long is the same knowledge as knowing the other months' lengths. This was
-   originally written as a guess, on the grounds that a "31 February" would be visibly wrong in a way
-   proper lengths are not; the guess turned out to be right.
+   ALSO CONFIRMED on real hardware: the device applies leap years. This result also gives the month
+   lengths. A design that rolls each month at 31 days cannot have a leap year, because the knowledge
+   that February has 28 or 29 days is the same knowledge as the lengths of the other months. This
+   code first used an assumption, because a date of "31 February" is clearly incorrect, and correct
+   lengths are not. The assumption was correct.
 
-   The leap rule itself is still only inferable rather than measured, but it cannot be anything except
-   year % 4 (see rtc_days_in_month): the hardware has no century to apply the 100/400-year exceptions to.
+   The leap-year rule is still an inference, not a measurement. But it can be only year % 4 (see
+   rtc_days_in_month): the hardware has no century, thus it cannot apply the 100-year and 400-year
+   exceptions.
 
-   Byte 3 is left alone: it is documented as unused and unidentified, not a century field. */
+   This code does not change byte 3. That byte is unused and unidentified. It is not a century
+   field. */
 static void rtc_advance_date(rtc_t *rtc) {
     uint32_t day = bcd_to_bin(rtc->date & 0xFFu);
     uint32_t month = bcd_to_bin((rtc->date >> 8) & 0xFFu);
@@ -244,9 +249,10 @@ void rtc_tick(rtc_t *rtc, struct intc *intc, uint32_t cycles) {
         rtc->tick_accumulator -= threshold;
         rtc->int_line = !rtc->int_line;
         intc_set_line(intc, INT_RTC, rtc->int_line);
-        /* One second per full pulse, not per transition: the documented rates are waveform rates, and
-           hardware makes two transitions per pulse (see rtc.h). Advancing on the falling edge picks exactly
-           one of the two, so the clock still moves once a second while the line runs at 2Hz. */
+        /* One second for each full pulse, and not for each transition. The recorded rates are waveform
+           rates, and the hardware makes two transitions for each pulse (see rtc.h). An advance at the
+           falling edge uses exactly one of the two transitions. Thus the clock moves one time each
+           second, while the line operates at 2Hz. */
         if (!paused && !rtc->int_line) {
             rtc_advance_second(rtc);
         }

@@ -8,11 +8,11 @@
 #include <shellapi.h>
 
 #ifdef _MSC_VER
-/* SysLink is Help > About's clickable repo link.
-   SysLink exists only in ComCtl32 v6 or later.
-   Without this manifest, the OS loader binds the old v5.82 system DLL instead.
-   The old DLL has no manifest, so it supports no side-by-side version selection.
-   Without v6, CreateDialog silently fails to create the SysLink control. */
+/* SysLink is the clickable repository link in Help > About.
+   SysLink exists only in ComCtl32 v6 and later versions.
+   Without this manifest, the operating system loader uses the older v5.82 system DLL.
+   That older DLL has no manifest, thus it permits no side-by-side version selection.
+   Without v6, CreateDialog fails to make the SysLink control, and gives no error. */
 #pragma comment(linker, \
     "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' " \
     "processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -31,18 +31,20 @@
 
 #define SCALE 8
 
-/* Shown in Help > About.
-   Bump this value by hand to match each release, for example the latest git tag.
-   This is deliberately not wired up to git or CMake automatically.
-   This string is the one spot to edit for a new release.
-   A source zip build has no git available, so an automatic value could silently drift. */
+/* Help > About shows this value.
+   Change this value manually for each release, to agree with the latest git tag.
+   This project does not connect this value to git or to CMake automatically.
+   This string is the only location to change for a new release.
+   A build from a source archive has no git. Thus an automatic value can become incorrect, and give
+   no error. */
 #define POKKETSTATION_VERSION "v1.11.0"
 
-/* Returns the directory the running executable lives in.
-   This derives the directory from argv[0], not an OS-specific "current module path" API.
-   Explorer already passes the full path in argv[0] when a double-click launches the exe.
-   This is the one case that needs this function.
-   A CLI invocation passes explicit paths and never reaches this code. */
+/* Returns the directory of the running executable.
+   This function gets the directory from argv[0]. It does not use an operating-system interface for
+   the "current module path".
+   When a user starts the executable with a double click, the file manager supplies the full path in
+   argv[0]. That is the one condition that needs this function.
+   A command-line start supplies explicit paths, and it never uses this code. */
 static void get_exe_dir(const char *argv0, char *out, size_t out_size) {
     const char *last_sep = NULL;
     const char *p;
@@ -67,28 +69,30 @@ static void join_path(char *out, size_t out_size, const char *dir, const char *n
     }
 }
 
-/* How many save slots File > Save State/Load State offer.
-   Slot 0 is the quick slot, the only one with key bindings (see
-   button_scancodes). Slots 1 and 2 are reachable from the menu alone, so a
-   state parked in one cannot be lost to a mistyped hotkey - which is the whole
-   point of having them. Raising this number needs matching menu items and a
-   wider ID_FILE_SAVE_SLOT_BASE/ID_FILE_LOAD_SLOT_BASE range in resource.h/rc;
-   nothing else here is fixed at 3. */
+/* The number of save slots in File > Save State and File > Load State.
+   Slot 0 is the quick slot. It is the only slot with a key binding (see
+   button_scancodes). Only the menu can reach slots 1 and 2. Thus an incorrect
+   hotkey cannot destroy a state in one of those slots, which is their purpose.
+   To increase this number, you must add the applicable menu items, and make the
+   ID_FILE_SAVE_SLOT_BASE and ID_FILE_LOAD_SLOT_BASE ranges in resource.h and the
+   .rc file larger. No other code here has a fixed limit of 3. */
 #define SAVE_SLOT_COUNT 3
 
-/* Save State/Load State use one file per loaded app/card per slot.
-   The file name is the app/card's own file name plus extension, so a user
-   browsing the exe's folder can tell at a glance which save goes with
-   which app/card. It is derived from app_path rather than cached, because
-   the loaded app can change mid-session.
-   Slot 0 keeps the bare "<name>.sav" the single slot always used, so saves
-   written before the slots existed still load. Slots 1 and 2 append "_1"/"_2"
-   after the extension ("chocobo.mcr_1.sav"), which sorts them next to slot 0's
-   file rather than scattering them by extension.
-   Two different apps/cards that happen to share a file name (e.g. loaded
-   from different folders) will share a save file; the app_size/app_hash
-   check in the header (below) still refuses to load a mismatched one, so this
-   can only cost you a save, never load the wrong state. */
+/* Save State and Load State use one file for each loaded app or card, in each
+   slot.
+   The file name is the file name and extension of the app or card. Thus a user
+   who examines the directory of the executable can quickly see which save
+   belongs to which app or card. This code gets the name from app_path, and does
+   not keep a copy, because the loaded app can change during a session.
+   Slot 0 keeps the name "<name>.sav" that the single slot always used. Thus
+   saves from before the slots existed still load. Slots 1 and 2 add "_1" or "_2"
+   after the extension, for example "mycard.mcr_1.sav". Thus they sort next to
+   the file of slot 0, and the extension does not separate them.
+   Two different apps or cards with the same file name, for example from
+   different directories, use the same save file. The app_size and app_hash test
+   in the header below still refuses a file that does not agree. Thus this
+   condition can only cause a lost save. It can never load the incorrect
+   state. */
 static void get_save_slot_path(char *out, size_t out_size, const char *exe_dir, const char *app_path, int slot) {
     const char *base = app_path;
     const char *slash;
@@ -106,44 +110,48 @@ static void get_save_slot_path(char *out, size_t out_size, const char *exe_dir, 
     join_path(out, out_size, exe_dir, name);
 }
 
-/* Names a slot for the message boxes below, so a failure says which of the
-   three it was about rather than just "the save state". Reads as part of a
-   sentence ("...found in the quick slot..."), hence the lower case. */
+/* Gives a name to a slot, for the message boxes below. Thus a failure message
+   identifies one of the three slots, and does not say only "the save state".
+   The name is part of a sentence, for example "...found in the quick slot...".
+   This is the reason for the lower-case letters. */
 static const char *save_slot_label(int slot) {
     static const char *const labels[SAVE_SLOT_COUNT] = {"the quick slot", "slot 1", "slot 2"};
     return (slot >= 0 && slot < SAVE_SLOT_COUNT) ? labels[slot] : "an unknown slot";
 }
 
 #define QUICKSAVE_MAGIC "PKQS"
-/* 2: psemu_t gained the RAM write lock behind psemu_set_volume_override, so
-   the raw state blob changed size. Version-1 files are rejected outright
-   rather than read as a truncated version-2 state.
-   3: psemu_t gained the app-execution tracking behind psemu_app_running, so
-   the blob changed size again. The state blob is a raw struct dump
-   (psemu_state_size is sizeof(psemu_t)), so every field added to psemu_t
-   needs a bump here - the size check in psemu_load_state only catches a
-   state that got smaller, never one that grew.
-   4: arm7tdmi_t gained r8_12_bank, the FIQ bank for r8-r12 that a real
-   ARM7TDMI has and this emulator was missing. A version-3 state loaded as
-   version 4 would misread every field after the CPU, so it is rejected.
-   5: app_hash changed meaning - see below. The blob itself is unchanged, but
-   a version-4 file's hash would never match a version-5 one's, and being
-   told a state does not belong to the card it plainly came from is worse
-   than being told it is from an older build. */
+/* 2: psemu_t received the RAM write lock for psemu_set_volume_override. Thus
+   the size of the raw state data changed. This code refuses a version-1 file.
+   It does not read such a file as a truncated version-2 state.
+   3: psemu_t received the app-execution tracking for psemu_app_running. Thus
+   the size changed again. The state data is a raw dump of the structure, and
+   psemu_state_size is sizeof(psemu_t). Thus each new field in psemu_t needs a
+   new version number here. The size test in psemu_load_state finds only a
+   state that became smaller. It never finds a state that became larger.
+   4: arm7tdmi_t received r8_12_bank, the FIQ bank for r8-r12. A real ARM7TDMI
+   has that bank, and this emulator did not model it. If this code reads a
+   version-3 state as version 4, each field after the CPU is incorrect. Thus
+   this code refuses such a state.
+   5: the meaning of app_hash changed. See below. The state data did not
+   change. But the hash of a version-4 file never agrees with the hash of a
+   version-5 file. A message that says "this state does not belong to this
+   card" is worse than a message that says "this state is from an older
+   build". */
 #define QUICKSAVE_VERSION 5u
 
-/* app_size/app_hash guard against loading a state saved under a different
-   app/card. The per-app filename already makes that unlikely to even be
-   attempted; this is a safety net against a hash collision or a
-   hand-edited/renamed file.
+/* app_size and app_hash prevent a load of a state that a different app or card
+   made. The file name for each app already makes such a load improbable. This
+   test is a safety measure against a hash collision, or against a file that a
+   user edited or gave a new name.
 
-   app_hash is a hash of the content's IDENTITY, not of the file (see
-   psemu_content_identity_hash). It hashed the whole file until write-back
-   existed, and that stopped working the moment it arrived: an app saving its
-   progress rewrites the file, so every state made before that save stopped
-   matching the very card it was made from. Hashing the parts that say which
-   card this is - directory file names, title-sector metadata - survives an
-   app saving, and still refuses a genuinely different app or card. */
+   app_hash is a hash of the IDENTITY of the content. It is not a hash of the
+   file (see psemu_content_identity_hash). This code hashed the full file until
+   the write-back function existed. That method stopped operating correctly
+   immediately: an app that saves its progress writes the file again, thus each
+   state from before that save stopped agreeing with its own card. A hash of
+   only the parts that identify the card, which are the directory file names
+   and the title-sector metadata, continues to agree after an app saves. It
+   still refuses a different app or a different card. */
 typedef struct {
     char magic[4];
     uint32_t version;
@@ -151,15 +159,15 @@ typedef struct {
     uint32_t app_hash;
 } quicksave_header_t;
 
-/* Writes a timestamped diagnostic report to disk, and points the user at it on stderr.
-   The report has frontend context: the reason string and the frame number.
-   The report also has psemu_write_crash_report's full CPU and trace dump.
-   Two callers trigger this: an automatic call on a detected CPU fault, and an
-   on-demand call via a hotkey (F12 by default, remappable via Tools > Remap Controls...).
-   Not every issue worth reporting trips psemu_cpu_faulted(). "The game looks wrong" and
-   "no sound" are real issues too.
-   This session's Chocobo World crash investigation (see docs/hardware-notes.md) needed
-   exactly this kind of state dump, built by hand through one-off tracing. */
+/* Writes a diagnostic report with a timestamp to disk, and gives its name to the user on stderr.
+   The report contains data from the frontend: the reason string and the frame number.
+   The report also contains the full CPU dump and trace dump from psemu_write_crash_report.
+   Two conditions cause this function: an automatic call at a detected CPU fault, and a call from a
+   hotkey. That hotkey is F12 by default, and Tools > Remap Controls... can change it.
+   Not each condition that needs a report causes psemu_cpu_faulted() to return a nonzero value. "The
+   app looks incorrect" and "there is no sound" are also real conditions.
+   An earlier crash investigation (see docs/hardware-notes.md) needed this exact kind of state dump,
+   and that dump had to be built manually with temporary trace code. */
 static void write_diagnostic_report(
     const psemu_t *ps, const char *reason, unsigned long frame, const char *bios_path, const char *app_path) {
     char path[64];
@@ -182,113 +190,118 @@ static void write_diagnostic_report(
     fprintf(stderr, "psemu: wrote diagnostic report to %s\n", path);
 }
 
-/* This app's own small preferences file.
+/* The small preferences file of this app.
    No external tool reads or writes this format.
-   This differs from the hardware ID's own encoding (see psemu_parse_hardware_id's
-   comment in psemu.h).
+   This format is different from the encoding of the hardware ID (see the comment
+   on psemu_parse_hardware_id in psemu.h).
 
-   settings.cfg remembers:
-     - The last successfully-loaded BIOS path.
-       This lets a double-click launch (no CLI args) work without bios.bin sitting
-       next to the .exe, once a real BIOS has been picked at least once via
-       File > Open or a CLI argument.
-     - The PocketStation hardware serial number (F_SN).
-       The core's own default (PSEMU_DEFAULT_HARDWARE_ID) already gives every fresh
-       Chocobo World save the best rank.
-       A homebrew ID-editing tool can change this value in-session.
-       No other persistent store exists for this value: it lives in a flash "header"
-       region outside the ordinary 128KB card image, so it is not part of any
-       .mcr/.mcs file.
-       This app stores the value as exactly 8 plain hex digits, the same form a real
-       "ID rewriter" homebrew itself displays and edits.
-       Real hardware confirms there is no "first digit must be a letter" restriction:
-       a real unit accepts and persists "EEEEEEEE".
-       An empty value means "use the default".
-     - Whether to show a console window (show_console). This app has no in-app
-       toggle for it. Only a hand edit of settings.cfg sets it.
-     - Whether the window title carries live IR Link counters (ir_link_diagnostics),
-       off by default and likewise only settable by a hand edit. They report edges
-       sent, received, dropped, and arriving too late to be placed in time. That
-       last one is the reason this exists at all: a link can report Connected, with
-       matching sent and received counts and nothing dropped, and still decode
-       nothing, and no other symptom tells those two apart. Useful when diagnosing a
-       link that will not transfer, meaningless otherwise, and it changes every
-       frame, so it stays off unless asked for.
-       --console and --no-console override it for a single run, the same as any
-       other CLI flag. They do not write back to settings.cfg.
-       A one-off flag on the command line is not the same thing as a persisted
-       preference, and must not overwrite one.
+   settings.cfg holds these values:
+     - The path of the last BIOS that loaded correctly.
+       Thus a start with a double click, and no command-line arguments, operates
+       without a bios.bin file next to the executable. The user must first select a
+       real BIOS one time, with File > Open or with a command-line argument.
+     - The hardware serial number of the PocketStation (F_SN).
+       The default value of the core (PSEMU_DEFAULT_HARDWARE_ID) already gives the
+       best rank to each new save of one companion app.
+       A homebrew ID-editor app can change this value during a session.
+       No other permanent storage for this value exists: the value is in a flash
+       "header" region outside the usual 128KB card image. Thus it is not part of a
+       .mcr or .mcs file.
+       This app stores the value as exactly 8 hex digits. A real homebrew "ID
+       rewriter" app shows and changes the same form.
+       Real hardware confirms that the first digit does not have to be a letter: a
+       real unit accepts and keeps the value "EEEEEEEE".
+       An empty value means "use the default value".
+     - Whether the app shows a console window (show_console). This app has no
+       control for this value. Only a manual edit of settings.cfg changes it.
+     - Whether the window title shows live IR link counters
+       (ir_link_diagnostics). This value is off by default, and only a manual edit
+       changes it. The counters report the edges that the link sent, received,
+       discarded, and received too late for correct placement. That last counter is
+       the reason for this function: a link can report "Connected", with equal sent
+       and received counts and no discarded edges, and still decode nothing. No
+       other symptom separates those two conditions. These counters are useful
+       during the diagnosis of a link that does not transfer data, and they have no
+       meaning at other times. They also change at each frame. Thus they stay off
+       until a user asks for them.
+       --console and --no-console change the value for one run, the same as each
+       other command-line flag. They do not write to settings.cfg.
+       A flag on the command line for one run is not the same as a permanent
+       preference, and it must not replace one.
 
-   This app saves settings.cfg immediately at the point each value actually
-   changes: BIOS loaded via a CLI arg or File > Open, hardware ID edited via
-   Tools > Edit Hardware ID. This app does not batch changes for a single
-   write at exit. A force-kill or crash mid-session would otherwise silently
-   lose whatever changed since launch. */
+   This app writes settings.cfg immediately when a value changes: when a BIOS loads
+   from a command-line argument or from File > Open, and when a user changes the
+   hardware ID with Tools > Edit Hardware ID. This app does not collect the changes
+   for one write at exit. With one write at exit, a forced stop or a crash during a
+   session loses each change from that session, and gives no error. */
 #define SETTINGS_CONFIG_NAME "settings.cfg"
 
 typedef struct {
     char bios_path[1024];
     char hardware_id[PSEMU_HARDWARE_ID_STRING_SIZE];
-    /* "RRGGBB" hex, or empty for the Classic preset's default.
-       The Classic preset is a fresh settings.cfg's starting point.
+    /* "RRGGBB" in hex, or empty for the default value of the Classic preset.
+       A new settings.cfg file starts with the Classic preset.
        See load_settings and the DISPLAY_*_CLASSIC constants below. */
     char pixel_color[7];
     char bg_color[7];
-    /* "RRGGBB" hex, or empty for DISPLAY_SHADOW_COLOR's default. */
+    /* "RRGGBB" in hex, or empty for the default value of DISPLAY_SHADOW_COLOR. */
     char shadow_color[7];
     int show_console;
     int show_shadows;
-    /* Appends live IR Link edge counters to the window title while connected. Off by default: the numbers
-       mean nothing to someone just using the link, and they change every frame. See ir_link_diagnostics in
-       load_settings's comment above. */
+    /* Adds live IR link edge counters to the window title while the link is connected. This value is
+       off by default: the numbers have no meaning to a person who only uses the link, and they change
+       at each frame. See ir_link_diagnostics in the comment on load_settings above. */
     int ir_link_diagnostics;
-    /* SDL_GetScancodeName()-formatted key names (e.g. "Up", "Z", "Left Ctrl").
-       Empty means "use that button's hardcoded default". See resolve_key_binding. */
+    /* Key names in the format of SDL_GetScancodeName(), for example "Up", "Z", or "Left Ctrl".
+       An empty value means "use the default key for that button". See resolve_key_binding. */
     char key_up[32];
     char key_down[32];
     char key_left[32];
     char key_right[32];
     char key_fire[32];
-    /* Not a PocketStation button. Triggers write_diagnostic_report on demand
+    /* This key is not a PocketStation button. It causes write_diagnostic_report
        (see button_scancodes in main). */
     char key_debug_log[32];
-    /* Not PocketStation buttons. Trigger reset_emulation, and the quick slot's
-       save_state_to_slot/load_state_from_slot, on demand (see button_scancodes
-       in main). */
+    /* These keys are not PocketStation buttons. They cause reset_emulation, and
+       save_state_to_slot and load_state_from_slot for the quick slot (see
+       button_scancodes in main). */
     char key_reset[32];
     char key_quick_save[32];
     char key_quick_load[32];
     /* Tools > Date/Time Override.
-       This holds a BIOS setting that lives in emulated RAM rather than in any
+       This value holds a BIOS setting that is in emulated RAM, and not in a
        hardware register (see docs/hardware-notes.md). DATETIME_OVERRIDE_OFF
-       means "don't interfere", so the PocketStation's own system menus behave
-       normally. Otherwise it is re-applied every frame, which is what makes it
-       stick against the BIOS menu writing its own value. */
+       means "make no change", thus the system menus of the PocketStation operate
+       normally. For each other value, this app writes the setting again at each
+       frame. That repetition keeps the value against the BIOS menu, which writes
+       its own value. */
     int datetime_override;
-    /* Tools > Sound > Volume. 0-100, in whole percent. This is the emulator's own output
-       level and nothing the emulated machine can see: it scales the PCM on its
-       way to the audio device, after the core has already applied the
-       PocketStation's own volume setting. The two therefore multiply.
-       There was once a volume_override here too, pinning that PocketStation
-       setting the same way datetime_override pins the clock. It is gone: it
-       bought three coarse steps, only on a traced BIOS, to do a job this does
-       better on any of them. A volume_override= line in an older settings.cfg
-       is ignored and drops out at the next save. */
+    /* Tools > Sound > Volume. The range is 0 to 100, in percent. This is the
+       output level of the emulator, and the emulated machine cannot read it. It
+       scales the PCM data on the path to the audio device, after the core applies
+       the volume setting of the PocketStation. Thus the two values multiply.
+       This structure also had a volume_override value, which held that
+       PocketStation setting in the same way that datetime_override holds the
+       clock. That value is now removed: it gave three coarse steps, and only on a
+       traced BIOS, for a function that master_volume does better on each BIOS.
+       This app ignores a volume_override= line in an older settings.cfg file, and
+       removes the line at the next save. */
     int master_volume;
     /* Tools > Sound > Speaker. One of the SPEAKER_SIM_* values below. Like
-       master_volume this is purely an output-side effect the emulated machine
-       cannot see, and it is applied before master_volume so the percentage
-       stays a plain loudness control on top of it. */
+       master_volume, this is only an output effect, and the emulated machine
+       cannot read it. This app applies it before master_volume. Thus the
+       percentage stays a simple loudness control above it. */
     int speaker_sim;
 } app_settings_t;
 
 #define DATETIME_OVERRIDE_OFF 0
 #define DATETIME_OVERRIDE_OS 1
 
-/* Tools > Sound > Volume. The menu offers 10% steps, but the setting is stored as plain
-   percent so a finer control later (a slider, a hotkey nudge) needs no new
-   format on disk - only a value the menu cannot currently produce, which
-   sound_menu_id below rounds to the nearest step it can show. */
+/* Tools > Sound > Volume. The menu gives steps of 10%, but this app stores the setting as a
+   percentage. Thus a control with a finer resolution later, for example a slider or a
+   hotkey, needs no new format on disk. Such a control gives only a value that the menu
+   cannot produce, and sound_menu_id below rounds that value to the nearest step that the
+   menu can show. */
 #define MASTER_VOLUME_MAX 100
 #define MASTER_VOLUME_DEFAULT 100
 
@@ -302,24 +315,26 @@ static int clamp_master_volume(int percent) {
     return percent;
 }
 
-/* The percentage is a loudness, not an amplitude, so it is not what the samples
-   are multiplied by.
-   Hearing is logarithmic: perceived loudness roughly halves for every 10 dB of
-   attenuation. Multiplying the samples by 0.5 is only -6 dB, which still sounds
-   around two thirds as loud - a "50%" that plainly is not half. Half as loud
-   needs -10 dB, an amplitude of 0.316.
-   Solving "each halving of the percentage costs 10 dB" gives
-       amplitude = p ^ (log2(10) / 2) = p ^ 1.660964,  p = percent / 100
-   which is the exponent below. It lands 100% at 0 dB, 50% at -10 dB (half as
-   loud), 25% at -20 dB (a quarter), and 10% at -33 dB.
-   There is room for this: the DAC's 10-bit field is rescaled to the full int16
-   range before it ever reaches here (see dac.c), so even the -33 dB step still
-   leaves a ~700-count waveform rather than dithering itself apart. */
+/* The percentage is a loudness, and not an amplitude. Thus this code does not
+   multiply the samples by the percentage.
+   Human hearing is logarithmic: the perceived loudness becomes approximately one
+   half for each 10 dB of attenuation. To multiply the samples by 0.5 gives only
+   -6 dB, which sounds approximately two thirds as loud. Thus a "50%" value is
+   clearly not one half. One half of the loudness needs -10 dB, which is an
+   amplitude of 0.316.
+   The rule "each division of the percentage by 2 costs 10 dB" gives
+       amplitude = p ^ (log2(10) / 2) = p ^ 1.660964,  where p = percent / 100
+   This is the exponent below. It gives 0 dB at 100%, -10 dB at 50% (one half of
+   the loudness), -20 dB at 25% (one quarter), and -33 dB at 10%.
+   There is sufficient range for this: dac.c scales the 10-bit DAC field to the
+   full int16 range before the data gets here. Thus the -33 dB step still leaves a
+   waveform of approximately 700 counts, and the waveform does not become
+   noise. */
 #define MASTER_VOLUME_LOUDNESS_EXPONENT 1.6609640474436813
 
-/* Attenuates one frame's worth of samples in place.
-   The 100% case returns without touching the buffer, so the default path costs
-   nothing. */
+/* Attenuates the samples of one frame in the same buffer.
+   At 100%, this function returns and does not change the buffer. Thus the default
+   path has no cost. */
 static void apply_master_volume(int16_t *samples, uint32_t count, int percent) {
     if (percent >= MASTER_VOLUME_MAX) {
         return;
@@ -328,9 +343,10 @@ static void apply_master_volume(int16_t *samples, uint32_t count, int percent) {
         memset(samples, 0, (size_t)count * sizeof(samples[0]));
         return;
     }
-    /* pow() once per frame, then integer math per sample. Q16.16: the gain is
-       below 1.0 on every path that reaches here, so gain_q16 <= 65535 and the
-       product of it with a full-scale sample stays inside int32. */
+    /* One pow() call for each frame, and then integer arithmetic for each sample.
+       The format is Q16.16. The gain is less than 1.0 on each path that gets
+       here, thus gain_q16 is 65535 or less. Thus the product of gain_q16 and a
+       full-scale sample stays in the range of an int32. */
     double gain = pow((double)percent / (double)MASTER_VOLUME_MAX, MASTER_VOLUME_LOUDNESS_EXPONENT);
     int32_t gain_q16 = (int32_t)(gain * 65536.0 + 0.5);
     for (uint32_t i = 0; i < count; i++) {
@@ -340,60 +356,63 @@ static void apply_master_volume(int16_t *samples, uint32_t count, int percent) {
 
 /* Tools > Sound > Speaker.
 
-   The core hands the frontend exactly what the DAC held, sample for sample
-   (see dac.c). That is the signal at the *terminals* of the PocketStation's
-   speaker, not the sound anyone ever heard come out of one. A real unit's
-   speaker is a ~1cm transducer in a plastic shell with no enclosure worth the
-   name: it reproduces almost nothing below its own resonance, somewhere in the
-   1-2kHz region, and falls away fast below that.
+   The core gives the frontend exactly the data that the DAC held, sample for
+   sample (see dac.c). That data is the signal at the *terminals* of the
+   PocketStation speaker. It is not the sound that a person hears from the
+   device. The speaker of a real unit is a transducer of approximately 1cm, in a
+   plastic shell with no true enclosure. It reproduces almost nothing below its
+   own resonance, which is in the 1kHz to 2kHz region, and its output decreases
+   quickly below that frequency.
 
-   Feeding the raw signal to a laptop or desktop speaker instead - which does
-   have real low-end - reproduces everything the real device physically could
-   not, and the result sounds thick and muddy next to the hardware. The content
-   makes it worse: the DAC is bit-banged one held level at a time, so nearly
-   every tone an app plays is a square-ish wave whose lowest harmonics carry
-   most of the energy, plus whatever DC offset the last written DACV level left
-   sitting there.
+   A laptop speaker or a desktop speaker has a true low-frequency response. Thus
+   the raw signal on such a speaker reproduces each frequency that the real
+   device could not produce, and the result sounds thick and unclear against the
+   hardware. The content makes this worse: software controls the DAC one held
+   level at a time. Thus almost each tone from an app is near to a square wave,
+   and its lowest harmonics hold most of the energy. The signal also has the DC
+   offset of the last DACV level.
 
-   So this filters what the real speaker would have filtered mechanically: a
-   second-order high-pass (RBJ cookbook biquad), which is the right shape
-   because a driver below its resonance rolls off at about 12dB per octave. Q
-   sets how pronounced the resonant peak at the corner is - a cheap small
-   speaker has an obvious one, which is a good part of why it sounds the way it
-   does.
+   Thus this code filters the frequencies that the real speaker removed
+   mechanically. It uses a second-order high-pass filter (an RBJ cookbook
+   biquad). That shape is correct, because a driver below its resonance decreases
+   its output by approximately 12dB for each octave. Q sets the size of the
+   resonant peak at the corner frequency. A small, inexpensive speaker has a
+   clear peak, which is a large part of the reason for its sound.
 
-   Every preset ends up roughly 4dB quieter than the raw signal. That is not a
-   tuning choice to correct: the low end being removed is real energy, and a
-   speaker that cannot produce it is quieter, which is also true of the device.
-   Tools > Sound > Volume is right there if the result wants turning up.
+   Each preset is approximately 4dB quieter than the raw signal. This is not a
+   tuning error to correct: the low frequencies that the filter removes are real
+   energy, and a speaker that cannot produce them is quieter. This is also true
+   of the device. Tools > Sound > Volume can increase the level of the result.
 
-   These values are voiced by ear against how the hardware sounds, not measured
-   off a real unit's speaker. They are presets rather than a free cutoff
-   control because "which of these sounds most like the device on your
-   speakers" is the actual question; the numbers are here for anyone who wants
-   to retune them. */
+   A person tuned these values by ear against the sound of the hardware. Nobody
+   measured them at the speaker of a real unit. These are presets, and not a free
+   cutoff control, because the real question is "which of these sounds most like
+   the device on your speakers". The numbers are here for a person who wants to
+   tune them again. */
 #define SPEAKER_SIM_OFF 0
 #define SPEAKER_SIM_LIGHT 1
 #define SPEAKER_SIM_POCKETSTATION 2
 #define SPEAKER_SIM_TINNY 3
 #define SPEAKER_SIM_COUNT 4
-/* Unlike master_volume, this does not default to "behave exactly as before".
-   The raw signal is the one that does not match the hardware, so a fresh
-   install gets the speaker it is emulating and Full Range is there for anyone
-   who would rather hear the DAC untouched. */
+/* master_volume has a default that makes no change to the signal, but this
+   setting does not. The raw signal is the signal that does not agree with the
+   hardware. Thus a new installation gets the speaker that this app emulates.
+   The Full Range preset is available for a person who prefers the unchanged
+   DAC output. */
 #define SPEAKER_SIM_DEFAULT SPEAKER_SIM_POCKETSTATION
 
-/* Indexed by SPEAKER_SIM_*. `name` is the settings.cfg token, and the order
-   here is also the Tools > Sound > Speaker menu order (see the
-   ID_TOOLS_SPEAKER_BASE range in resource.h). The OFF row carries no
-   coefficients: nothing reads them, it is only here to keep the table indexable
-   by the same value everything else uses.
+/* The index of this table is a SPEAKER_SIM_* value. `name` is the token in
+   settings.cfg. The order here is also the order of the Tools > Sound > Speaker
+   menu (see the ID_TOOLS_SPEAKER_BASE range in resource.h). The OFF row has no
+   coefficients: no code reads them. That row keeps the same index values for
+   this table as for each other table.
 
-   `trim` is a small level adjustment applied with the coefficients, not a
-   makeup gain trying to win back what the high-pass removed - pushing gain into
-   the limiter below only compresses. Its job is to leave the three presets
-   about equally loud as each other, which measures out at around -4dB from raw
-   for all three. */
+   `trim` is a small level adjustment that this code applies with the
+   coefficients. It is not a makeup gain that tries to replace the energy that
+   the high-pass filter removes. More gain into the limiter below only
+   compresses the signal. The function of `trim` is to make the three presets
+   approximately equal in loudness. That level measures at approximately -4dB
+   from the raw signal, for all three presets. */
 static const struct {
     const char *name;
     double cutoff_hz;
@@ -401,14 +420,16 @@ static const struct {
     double trim;
 } SPEAKER_SIM_PRESETS[SPEAKER_SIM_COUNT] = {
     {"off", 0.0, 0.0, 1.0},
-    /* Takes the boom off without changing the character much. For someone on
-       speakers that are already small, or who finds the other two thin. */
+    /* Removes the low-frequency energy, with only a small change to the
+       character of the sound. This preset is for a person with small speakers,
+       or a person who finds the other two presets too thin. */
     {"light", 500.0, 0.70, 1.10},
-    /* The device. Corner just under the resonance a transducer that size sits
-       at, with enough Q to leave the peak audible. */
+    /* The device. The corner frequency is immediately below the resonance of a
+       transducer of that size. Q is sufficient to keep the peak audible. */
     {"pocketstation", 1100.0, 1.10, 1.20},
-    /* Further than the hardware goes, for big speakers or a subwoofer where
-       even the default still has more low end than the device ever had. */
+    /* This preset removes more low-frequency energy than the hardware does. It
+       is for large speakers or a subwoofer, where the default preset still gives
+       more low-frequency output than the device could produce. */
     {"tinny", 1800.0, 1.60, 1.10},
 };
 
@@ -419,10 +440,10 @@ static int clamp_speaker_sim(int preset) {
     return preset;
 }
 
-/* Parses a settings.cfg speaker= token. An unrecognised one (hand-edited, or
-   written by a later version that grew a preset) falls back to the default
-   rather than to Off: an unreadable value should not silently turn the feature
-   off. */
+/* Reads a speaker= token from settings.cfg. For a token that this code does not
+   recognize, it uses the default preset. It does not use Off. Such a token comes
+   from a manual edit, or from a later version with more presets. A value that
+   this code cannot read must not turn the function off without a message. */
 static int speaker_sim_from_name(const char *name) {
     for (int i = 0; i < SPEAKER_SIM_COUNT; i++) {
         if (strcmp(name, SPEAKER_SIM_PRESETS[i].name) == 0) {
@@ -432,12 +453,12 @@ static int speaker_sim_from_name(const char *name) {
     return SPEAKER_SIM_DEFAULT;
 }
 
-/* Direct Form I biquad state, plus the preset its coefficients were built for.
-   The history has to live across frames: the main loop filters one frame's
-   worth of samples at a time, and a filter restarted at zero every 31ms would
-   click at every boundary. */
+/* The state of a Direct Form I biquad filter, and the preset of its
+   coefficients. The history must continue across frames: the main loop filters
+   the samples of one frame at a time. A filter that starts at zero each 31ms
+   makes a click at each frame boundary. */
 typedef struct {
-    int preset; /* SPEAKER_SIM_*, or -1 before the first configure */
+    int preset; /* a SPEAKER_SIM_* value, or -1 before the first configuration */
     double b0, b1, b2, a1, a2;
     double x1, x2, y1, y2;
 } speaker_filter_t;
@@ -447,14 +468,14 @@ static void speaker_filter_init(speaker_filter_t *f) {
     f->preset = -1;
 }
 
-/* math.h's M_PI is not in standard C and MSVC only defines it behind
-   _USE_MATH_DEFINES, so the constant is spelled out here. */
+/* M_PI in math.h is not part of standard C, and MSVC defines it only with
+   _USE_MATH_DEFINES. Thus this code gives the constant directly. */
 #define SPEAKER_TWO_PI 6.283185307179586
 
-/* Rebuilds the coefficients, and only when the preset actually changed - the
-   main loop calls this every frame with whatever the menu currently says.
-   The history is cleared on a change so a switch settles from silence instead
-   of from samples that belonged to the previous filter. */
+/* Calculates the coefficients again, but only when the preset changes. The main
+   loop calls this function at each frame, with the current menu value.
+   At a change, this function clears the history. Thus the new filter starts from
+   silence, and not from the samples of the previous filter. */
 static void speaker_filter_configure(speaker_filter_t *f, int preset) {
     if (f->preset == preset) {
         return;
@@ -464,8 +485,9 @@ static void speaker_filter_configure(speaker_filter_t *f, int preset) {
     if (preset == SPEAKER_SIM_OFF) {
         return;
     }
-    /* RBJ audio-EQ-cookbook high-pass, normalised by a0, with the trim folded
-       into the feed-forward half so it costs nothing per sample. */
+    /* An RBJ audio-EQ-cookbook high-pass filter, normalized by a0. The trim value
+       is part of the feed-forward coefficients, thus it has no cost for each
+       sample. */
     double w0 = SPEAKER_TWO_PI * SPEAKER_SIM_PRESETS[preset].cutoff_hz / (double)PSEMU_AUDIO_SAMPLE_RATE_HZ;
     double cos_w0 = cos(w0);
     double alpha = sin(w0) / (2.0 * SPEAKER_SIM_PRESETS[preset].q);
@@ -478,28 +500,32 @@ static void speaker_filter_configure(speaker_filter_t *f, int preset) {
     f->a2 = (1.0 - alpha) / a0;
 }
 
-/* Where the soft limiter below stops being transparent, as a fraction of full
-   scale. Everything under this passes through untouched. */
+/* The level where the soft limiter below starts to change the signal, as a
+   fraction of full scale. Each value below this level passes through with no
+   change. */
 #define SPEAKER_LIMIT_KNEE 0.75
 
-/* A high-pass differentiates a step, so a full-scale square wave - which is
-   very nearly all this DAC ever produces (see dac.h) - comes out of the filter
-   overshooting to about twice full scale at every edge, before any gain is
-   applied at all. That is inherent to the filter shape, not something the
-   coefficients can be tuned out of, and it has to go somewhere.
+/* A high-pass filter differentiates a step. Thus a full-scale square wave, which
+   is almost the only signal that this DAC produces (see dac.h), leaves the
+   filter with an overshoot to approximately two times full scale at each edge.
+   This occurs before any gain. That behavior is part of the filter shape. A
+   change to the coefficients cannot remove it, and the extra amplitude must go
+   somewhere.
 
-   Hard-clamping it would square those spikes off into exactly the kind of harsh
-   digital clipping this feature exists to avoid. Attenuating the whole signal
-   enough to fit them (about -6dB) would spend real loudness on transients one
-   or two samples wide.
+   A hard limit makes those peaks into square shapes. That result is the exact
+   harsh digital clipping that this function must prevent. An attenuation of the
+   full signal by a sufficient quantity, which is approximately -6dB, uses real
+   loudness for transients that are only one or two samples wide.
 
-   So the peaks are folded over instead: linear below the knee, tanh above it,
-   which is asymptotic to full scale and therefore can never overflow. It is
-   also the more faithful of the three, because it is what the real speaker
-   does - a driver that small runs out of excursion and compresses peaks rather
-   than reproducing them. Measured over square waves from 220Hz to 2.2kHz this
-   costs under half a dB of level against no limiting at all, so nearly all of
-   the ~4dB the presets sit below raw is the high-pass, not this. */
+   Thus this code folds the peaks instead. The response is linear below the knee,
+   and it uses tanh above the knee. The tanh function is asymptotic to full
+   scale, thus it can never overflow. It is also the most accurate of the three
+   methods, because it is the behavior of the real speaker: a driver of that size
+   reaches its excursion limit and compresses the peaks. It does not reproduce
+   them. A measurement over square waves from 220Hz to 2.2kHz shows that this
+   method costs less than 0.5dB of level against no limit. Thus the high-pass
+   filter, and not this limiter, causes almost all of the approximately 4dB
+   between the presets and the raw signal. */
 static double speaker_soft_limit(double y) {
     double u = y / 32768.0;
     double magnitude = fabs(u);
@@ -511,10 +537,11 @@ static double speaker_soft_limit(double y) {
     return (u < 0.0 ? -folded : folded) * 32768.0;
 }
 
-/* Filters one frame's worth of samples in place. Off returns without touching
-   the buffer, so that path costs nothing beyond the preset comparison.
-   ~250 samples per frame at 8kHz makes the per-sample double math irrelevant
-   next to everything else a frame does. */
+/* Filters the samples of one frame in the same buffer. The Off preset returns and
+   does not change the buffer, thus that path costs only the preset comparison.
+   At 8kHz there are approximately 250 samples for each frame. Thus the
+   double-precision arithmetic for each sample is not significant against each
+   other operation in a frame. */
 static void apply_speaker_filter(speaker_filter_t *f, int16_t *samples, uint32_t count, int preset) {
     speaker_filter_configure(f, clamp_speaker_sim(preset));
     if (f->preset == SPEAKER_SIM_OFF) {
@@ -523,9 +550,10 @@ static void apply_speaker_filter(speaker_filter_t *f, int16_t *samples, uint32_t
     for (uint32_t i = 0; i < count; i++) {
         double x = (double)samples[i];
         double y = f->b0 * x + f->b1 * f->x1 + f->b2 * f->x2 - f->a1 * f->y1 - f->a2 * f->y2;
-        /* The pre-limiter y is what goes into the history, on purpose. Feeding
-           the limited value back would put the non-linearity inside the
-           recursion, where it is no longer a filter with a known response. */
+        /* The history receives the value of y from before the limiter. This is
+           deliberate. If the history receives the limited value, the
+           non-linearity is inside the recursion. The result is then no longer a
+           filter with a known response. */
         f->x2 = f->x1;
         f->x1 = x;
         f->y2 = f->y1;
@@ -534,9 +562,10 @@ static void apply_speaker_filter(speaker_filter_t *f, int16_t *samples, uint32_t
     }
 }
 
-/* Packs 8-bit R/G/B into the same 0xRRGGBBAA layout render_framebuffer writes
-   into the pixel buffer. See render_framebuffer's own comment on
-   SDL_PIXELFORMAT_RGBA8888's byte order. Alpha is always opaque. */
+/* Combines 8-bit R, G, and B values into the same 0xRRGGBBAA layout that
+   render_framebuffer writes into the pixel buffer. See the comment on
+   render_framebuffer for the byte order of SDL_PIXELFORMAT_RGBA8888. The alpha
+   value is always opaque. */
 #define RGBA_PACK(r, g, b) \
     ((((uint32_t)(r)) << 24) | (((uint32_t)(g)) << 16) | (((uint32_t)(b)) << 8) | 0xFFu)
 
@@ -544,39 +573,44 @@ static void apply_speaker_filter(speaker_filter_t *f, int16_t *samples, uint32_t
 #define DISPLAY_BG_LIGHT RGBA_PACK(0xFF, 0xFF, 0xFF)
 #define DISPLAY_PIXEL_DARK RGBA_PACK(0xFF, 0xFF, 0xFF)
 #define DISPLAY_BG_DARK RGBA_PACK(0x00, 0x00, 0x00)
-/* Approximates an unlit reflective/transflective LCD, like a watch or a Tamagotchi's.
-   Pixel color: a dark, slightly warm ink color, not pure black.
-   Background color: a muted sage-gray, not white.
-   This is the default color scheme for a freshly-initialized settings.cfg.
+/* An approximation of a reflective or transflective LCD with no backlight, for
+   example the display of a watch.
+   The pixel color is a dark ink color with a small quantity of warmth. It is not
+   pure black.
+   The background color is a light sage-gray. It is not white.
+   This is the default color scheme for a new settings.cfg file.
    See load_settings. */
 #define DISPLAY_PIXEL_CLASSIC RGBA_PACK(0x11, 0x1A, 0x15)
 #define DISPLAY_BG_CLASSIC RGBA_PACK(0xBC, 0xC7, 0xB9)
 
-/* Real late-90s STN/passive-matrix LCDs (watches, Tamagotchis, and the
-   PocketStation itself) show faint "ghosting" trailing a lit pixel.
-   This comes from slow crystal response, not a real drop shadow.
-   This is the ghosting color a fresh settings.cfg starts with, matching the
-   Classic scheme it also starts with.
-   It is not a fixed color: switching color scheme re-matches the ghosting to
-   the new scheme (see theme_shadow_for), because a ghost is a half-lit pixel
-   of that scheme rather than a color of its own.
-   This value is exactly what theme_shadow_for returns for the Classic scheme,
-   so a fresh settings.cfg and picking View > Colors > Classic by hand agree
-   to the byte. It was 8E9B8E when it was hand-picked and independent of the
-   rule, which is within a rounding step of this - close enough to be the same
-   color on screen, far enough to leave two disagreeing values on disk. */
+/* A real STN passive-matrix LCD from the late 1990s, which includes watches and
+   the PocketStation, shows a small quantity of "ghosting" after a lit pixel.
+   The cause is the slow response of the liquid crystal. It is not a drop shadow.
+   This is the ghosting color of a new settings.cfg file. It agrees with the
+   Classic scheme, which is also the initial scheme.
+   The color is not fixed: when a user changes the color scheme, this app
+   calculates the ghosting color for the new scheme (see theme_shadow_for). A
+   ghost is a pixel of that scheme at one half of its intensity, and not a
+   separate color.
+   This value is exactly the value that theme_shadow_for returns for the Classic
+   scheme. Thus a new settings.cfg file and a manual selection of
+   View > Colors > Classic agree byte for byte. The earlier value was 8E9B8E,
+   which a person selected manually and independently of the rule. That value is
+   within one rounding step of this value. The two are the same color on the
+   screen, but they leave two different values on disk. */
 #define DISPLAY_SHADOW_COLOR RGBA_PACK(0x90, 0x9A, 0x8E)
 
-/* Inverse of RGBA_PACK's top 3 bytes. Formats the value the way settings.cfg
-   stores colors ("RRGGBB"). See save_settings. */
+/* The inverse of the top 3 bytes of RGBA_PACK. It formats the value in the form
+   that settings.cfg uses for a color ("RRGGBB"). See save_settings. */
 static void format_rgba_hex(uint32_t rgba, char *out, size_t out_size) {
     snprintf(out, out_size, "%02X%02X%02X", (unsigned)(rgba >> 24) & 0xFFu, (unsigned)(rgba >> 16) & 0xFFu,
         (unsigned)(rgba >> 8) & 0xFFu);
 }
 
-/* Returns nonzero if `path` already existed and was read from. Returns 0 if it
-   did not exist. Callers use this to tell "first run, nothing to read yet"
-   apart from "an existing file just happened to not set every field". */
+/* Returns a nonzero value if `path` already existed, and this function read it.
+   Returns 0 if the file did not exist. A caller uses this result to tell "this
+   is the first run, and there is nothing to read" from "the file exists, but it
+   does not set each field". */
 static int load_settings(app_settings_t *settings, const char *path) {
     FILE *f = fopen(path, "r");
     char line[1200];
@@ -598,14 +632,15 @@ static int load_settings(app_settings_t *settings, const char *path) {
     settings->show_console = 0;
     settings->ir_link_diagnostics = 0;
     settings->show_shadows = 0;
-    /* Defaults to off, so a fresh install behaves exactly as it did before this
-       override existed. */
+    /* The default value is off. Thus a new installation operates the same way as
+       before this override existed. */
     settings->datetime_override = DATETIME_OVERRIDE_OFF;
-    /* Full volume, so an install that has never touched Tools > Sound > Volume sounds
-       exactly as it did before this setting existed. */
+    /* Full volume. Thus an installation where nobody changed
+       Tools > Sound > Volume sounds the same way as before this setting
+       existed. */
     settings->master_volume = MASTER_VOLUME_DEFAULT;
-    /* Unlike master_volume this default is not "as it was before" - see
-       SPEAKER_SIM_DEFAULT for why. */
+    /* master_volume has a default that makes no change, but this default does
+       make a change. See SPEAKER_SIM_DEFAULT for the reason. */
     settings->speaker_sim = SPEAKER_SIM_DEFAULT;
     if (f) {
         while (fgets(line, sizeof(line), f)) {
@@ -645,9 +680,10 @@ static int load_settings(app_settings_t *settings, const char *path) {
                 settings->datetime_override =
                     strcmp(line + 18, "os") == 0 ? DATETIME_OVERRIDE_OS : DATETIME_OVERRIDE_OFF;
             } else if (strncmp(line, "master_volume=", 14) == 0) {
-                /* Clamped rather than rejected: a hand-edited file with 150 in
-                   it means "as loud as possible", and there is no wrong-enough
-                   value here to be worth refusing to start over. */
+                /* This code limits the value. It does not refuse the value. A
+                   manually edited file with the value 150 means "the maximum
+                   loudness". No value here is sufficiently incorrect to prevent
+                   a start. */
                 settings->master_volume = clamp_master_volume(atoi(line + 14));
             } else if (strncmp(line, "speaker=", 8) == 0) {
                 settings->speaker_sim = speaker_sim_from_name(line + 8);
@@ -661,14 +697,14 @@ static int load_settings(app_settings_t *settings, const char *path) {
         }
         fclose(f);
     }
-    /* This handles two cases: no settings.cfg yet, or an existing file written
-       before one of these fields existed.
-       Fill in the real default for each field that is still blank:
+    /* This code covers two conditions: settings.cfg does not exist, or the file
+       exists but a program wrote it before one of these fields existed.
+       Write the true default value into each field that is empty:
        PSEMU_DEFAULT_HARDWARE_ID, the Classic color scheme, the default shadow
-       color, and the original hardcoded key bindings.
-       Do not leave any field blank.
-       This way, the file always shows what is actually in effect, instead of
-       an implicit fallback that nothing on disk hints at. */
+       color, and the original key bindings.
+       Leave no field empty.
+       Thus the file always shows the values that are in effect. It does not use
+       a default value that the file gives no data about. */
     if (settings->hardware_id[0] == '\0') {
         psemu_format_hardware_id(PSEMU_DEFAULT_HARDWARE_ID, settings->hardware_id, sizeof(settings->hardware_id));
     }
@@ -753,9 +789,9 @@ static int hex_nibble(char c) {
     return -1;
 }
 
-/* Parses exactly 6 hex digits ("RRGGBB") and nothing else.
-   This is deliberately strict, with no alternate format allowed, matching
-   psemu_parse_hardware_id in psemu.h. */
+/* Reads exactly 6 hex digits ("RRGGBB") and nothing else.
+   This rule is deliberately strict, and it permits no other format. It agrees
+   with psemu_parse_hardware_id in psemu.h. */
 static int parse_hex_rgb(const char *s, uint8_t *r, uint8_t *g, uint8_t *b) {
     int nibbles[6];
     int i;
@@ -774,44 +810,45 @@ static int parse_hex_rgb(const char *s, uint8_t *r, uint8_t *g, uint8_t *b) {
     return 1;
 }
 
-/* One entry of the live key-to-PocketStation-button mapping.
-   The main loop polls this mapping every frame (see button_scancodes in main).
-   display_name is used only for remap prompts and labels. This app never
-   persists display_name itself; it persists the scancode's own
-   SDL_GetScancodeName to settings.cfg instead.
-   `bit` is 0 for the trailing "Create Debug Log" entry.
-   This entry is not a real PocketStation button.
-   See button_scancodes in main for how this entry is actually consumed. */
+/* One entry in the map from a key to a PocketStation button.
+   The main loop reads this map at each frame (see button_scancodes in main).
+   Only the remap dialog and its labels use display_name. This app never keeps
+   display_name in a file. It keeps the SDL_GetScancodeName value of the scancode
+   in settings.cfg.
+   `bit` is 0 for the last entry, "Create Debug Log".
+   That entry is not a PocketStation button.
+   See button_scancodes in main for the use of that entry. */
 typedef struct {
     SDL_Scancode scancode;
     uint32_t bit;
     const char *display_name;
 } button_binding_t;
 
-/* Number of rows in Tools > Remap Controls: Up, Down, Left, Right, Fire,
-   plus 4 non-button hotkeys - Create Debug Log, Reset, Save State,
-   Load State.
-   This matches IDD_REMAP_CONTROLS' row count.
-   This also matches the IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE ranges in
-   resource.h (9 consecutive IDs each). */
+/* The number of rows in Tools > Remap Controls: Up, Down, Left, Right, and Fire,
+   and then 4 hotkeys that are not buttons: Create Debug Log, Reset, Save State,
+   and Load State.
+   This value agrees with the row count of IDD_REMAP_CONTROLS.
+   It also agrees with the IDC_REMAP_LABEL_BASE and IDC_REMAP_CHANGE_BASE ranges
+   in resource.h. Each of those ranges has 9 sequential IDs. */
 #define REMAP_BINDING_COUNT 9
 
-/* This app writes this marker to a settings.cfg key_* field in place of a
-   real key name, when that row was explicitly cleared because another row
-   just claimed its key (see prompt_remap_controls).
-   This marker is distinct from an empty field. An empty field means "never
-   set, use the hardcoded default" (see resolve_key_binding).
-   Without this distinction, persisting an unbound row as "" would silently
-   revert it to its original default key on the next launch. */
+/* This app writes this marker into a key_* field in settings.cfg, in place of a
+   real key name. It does this when a user clears that row, because a different
+   row now uses its key (see prompt_remap_controls).
+   This marker is different from an empty field. An empty field means "a user
+   never set this row, thus use the default key" (see resolve_key_binding).
+   Without this difference, this app writes an unbound row as "". The row then
+   returns to its default key at the next start, and gives no message. */
 #define KEY_BINDING_UNBOUND_MARKER "(unbound)"
 
-/* `saved_name` is a settings.cfg key_* field.
-   This function parses it via SDL_GetScancodeFromName.
-   It falls back to `fallback` if `saved_name` is empty, or does not name a
-   real key (for example, hand-edited to garbage).
-   An explicitly unbound field (see KEY_BINDING_UNBOUND_MARKER) returns
-   SDL_SCANCODE_UNKNOWN instead of falling back.
-   This is a deliberate "no key" state, not a missing or invalid one. */
+/* `saved_name` is a key_* field from settings.cfg.
+   This function reads it with SDL_GetScancodeFromName.
+   It uses `fallback` if `saved_name` is empty, or if `saved_name` is not the name
+   of a real key. An incorrect manual edit is one cause of an invalid name.
+   For a field that a user cleared (see KEY_BINDING_UNBOUND_MARKER), this function
+   returns SDL_SCANCODE_UNKNOWN. It does not use `fallback`.
+   That result is a deliberate "no key" state. It is not a missing or invalid
+   state. */
 static SDL_Scancode resolve_key_binding(const char *saved_name, SDL_Scancode fallback) {
     if (strcmp(saved_name, KEY_BINDING_UNBOUND_MARKER) == 0) {
         return SDL_SCANCODE_UNKNOWN;
@@ -826,10 +863,10 @@ static SDL_Scancode resolve_key_binding(const char *saved_name, SDL_Scancode fal
 }
 
 /* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) returns "".
-   Once written to settings.cfg, "" is indistinguishable from "never set"
-   (see resolve_key_binding).
-   This function writes KEY_BINDING_UNBOUND_MARKER instead, for an
-   explicitly-unbound row. */
+   In settings.cfg, "" is the same as "a user never set this row" (see
+   resolve_key_binding).
+   Thus this function writes KEY_BINDING_UNBOUND_MARKER for a row that a user
+   cleared. */
 static void format_key_binding_name(char *out, size_t out_size, SDL_Scancode scancode) {
     if (scancode == SDL_SCANCODE_UNKNOWN) {
         snprintf(out, out_size, "%s", KEY_BINDING_UNBOUND_MARKER);
@@ -838,10 +875,10 @@ static void format_key_binding_name(char *out, size_t out_size, SDL_Scancode sca
     }
 }
 
-/* Inverse of resolve_key_binding.
-   `bindings` must hold exactly REMAP_BINDING_COUNT entries, in fixed
-   Up/Down/Left/Right/Fire/Create-Debug-Log/Reset/Save-State/
-   Load-State order (see button_scancodes in main). */
+/* The inverse of resolve_key_binding.
+   `bindings` must hold exactly REMAP_BINDING_COUNT entries. The order is fixed:
+   Up, Down, Left, Right, Fire, Create Debug Log, Reset, Save State, and Load
+   State (see button_scancodes in main). */
 static void save_key_bindings(app_settings_t *settings, const button_binding_t bindings[REMAP_BINDING_COUNT]) {
     format_key_binding_name(settings->key_up, sizeof(settings->key_up), bindings[0].scancode);
     format_key_binding_name(settings->key_down, sizeof(settings->key_down), bindings[1].scancode);
@@ -877,9 +914,9 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
     return buf;
 }
 
-/* State the menu bar's WM_COMMAND handlers need to reach.
-   This is bundled because SDL_SetWindowsMessageHook only takes a single
-   void *userdata. */
+/* The state that the WM_COMMAND handlers of the menu bar must access.
+   This structure collects that state, because SDL_SetWindowsMessageHook accepts
+   only one void *userdata pointer. */
 typedef struct {
     psemu_t *ps;
     uint8_t **bios;
@@ -897,7 +934,7 @@ typedef struct {
     uint32_t *bg_rgba;
     int *show_shadows;
     uint32_t *shadow_rgba;
-    button_binding_t *button_scancodes; /* fixed REMAP_BINDING_COUNT-element Up/Down/Left/Right/Fire/Debug-Log/Reset/Save-State/Load-State array, see main */
+    button_binding_t *button_scancodes; /* an array of REMAP_BINDING_COUNT entries, in the fixed order Up, Down, Left, Right, Fire, Debug Log, Reset, Save State, Load State. See main. */
     app_settings_t *settings;
     const char *settings_path;
     const char *exe_dir;
@@ -905,18 +942,19 @@ typedef struct {
     content_writeback_t *content_writeback;
 } menu_context_t;
 
-/* Shows IR Link's live status as the entire window title, e.g. "IR - Connected", replacing the plain
-   "pokketstation" title while the link is active. Kept intentionally short: the default window is small
-   enough that a longer title just gets clipped by Windows, and the status is the one thing worth seeing
-   at a glance.
-   Hosting and connecting get their own fixed short strings rather than ir_link_status_text's wording
-   verbatim, since that text is shared with ir_link_selftest.c/ir_probe's console output and can carry
-   more detail than fits here. Connected and error states pass status_text through as-is: "Connected" is
-   already short (plus live counters if ir_link_diagnostics is on), and an error's detail is worth keeping.
-   Every action that can change ir_link's state calls this. Those actions are Host, Connect, and Disconnect
-   from the menu.
-   main's loop also calls it once per frame. A hosting or connecting link can change status on its own, with no
-   menu click: a peer connects, or the link fails. */
+/* Shows the live status of the IR link as the full window title, for example
+   "IR - Connected". This title replaces the usual "pokketstation" title while the link is active. The
+   text is deliberately short: the default window is small, thus Windows cuts a longer title. The status
+   is the one item that a user must see quickly.
+   The hosting state and the connecting state get their own short strings. They do not use the text of
+   ir_link_status_text, because ir_link_selftest.c and ir_probe also use that text for console output.
+   That text can hold more detail than this title permits. The connected state and the error states use
+   status_text without a change: "Connected" is already short, and it also contains the live counters if
+   ir_link_diagnostics is on. The detail of an error message is also necessary.
+   Each action that can change the state of ir_link calls this function. Those actions are Host,
+   Connect, and Disconnect in the menu.
+   The main loop also calls this function one time for each frame. A link that hosts or connects can
+   change its state without a menu selection: a peer connects, or the link fails. */
 static void ir_link_refresh_title(menu_context_t *ctx) {
     char title[192];
     if (!ir_link_is_active(ctx->ir_link)) {
@@ -931,10 +969,11 @@ static void ir_link_refresh_title(menu_context_t *ctx) {
     SetWindowTextA(ctx->hwnd, title);
 }
 
-/* Core wipes ir_t's clock and any queued edges on both psemu_reset and psemu_load_state (see ir_link.h's
-   comment on ir_link_disconnect). A link left connected across either would silently desync: this instance's
-   IR clock jumps back to zero while the peer's does not, so every subsequently-relayed timestamp would be
-   wrong. Every call site that resets or loads state calls this first. */
+/* psemu_reset and psemu_load_state both clear the clock of ir_t and each edge in its queues (see the
+   comment on ir_link_disconnect in ir_link.h). A link that stays connected through either call loses
+   synchronization and gives no error: the IR clock of this instance returns to zero, and the clock of
+   the peer does not. Thus each subsequent timestamp is incorrect. Each function that resets the
+   emulator or loads a state calls this function first. */
 static void drop_ir_link_if_active(menu_context_t *ctx) {
     if (ir_link_is_active(ctx->ir_link)) {
         ir_link_disconnect(ctx->ir_link);
@@ -1009,8 +1048,9 @@ static void prompt_open_app(menu_context_t *ctx) {
         return;
     }
 
-    /* Before the file being replaced goes out of reach. Opening something else is not a reason to
-       discard an edit the app already made to what is loaded now. */
+    /* This call occurs before the code loses access to the file that it replaces. An open operation
+       on a different file is not a reason to discard an edit that the app already made to the
+       loaded content. */
     content_writeback_commit(ctx->content_writeback, ctx->ps);
 
     free(*ctx->app);
@@ -1023,13 +1063,14 @@ static void prompt_open_app(menu_context_t *ctx) {
     *ctx->cpu_faulted_reported = 0;
 }
 
-/* Restarts the currently loaded BIOS and app/card from a clean state.
-   It reloads neither file.
-   psemu_reset already performs this same reset after a fresh load. See its comment in psemu.c.
-   This triggers it on demand, instead of only after a file dialog succeeds. */
+/* Starts the loaded BIOS and the loaded app or card again, from a clean state.
+   This function loads neither file again.
+   psemu_reset does this same reset after a new load. See its comment in psemu.c.
+   This function causes the reset when a user asks for it, and not only after a successful file
+   dialog. */
 static void reset_emulation(menu_context_t *ctx) {
-    /* A reset leaves flash alone (see psemu_reset), so this commits an edit the app has already made
-       rather than losing it, and then treats what survives as the new baseline. */
+    /* A reset does not change flash (see psemu_reset). Thus this code writes an edit that the app
+       already made, and does not discard it. It then uses the remaining data as the new baseline. */
     content_writeback_commit(ctx->content_writeback, ctx->ps);
     psemu_reset(ctx->ps);
     content_writeback_resync(ctx->content_writeback, ctx->ps);
@@ -1101,15 +1142,17 @@ static void load_state_from_slot(menu_context_t *ctx, int slot) {
 
     size_t state_size = psemu_state_size(ctx->ps);
 
-    /* The blob has to be exactly one state for THIS build, and only the file's
-       own length can say so. psemu_load_state cannot: its size argument comes
-       from psemu_state_size right here, so it is always exactly sizeof(psemu_t)
-       and its own check can never fire. A blob saved by a build whose psemu_t
-       was smaller is caught by the short read below; one saved by a build whose
-       psemu_t was larger is not - the fread succeeds on the leading bytes and
-       loads a silently misaligned state. QUICKSAVE_VERSION is meant to catch
-       both, but it only works if every psemu_t change remembers to bump it, and
-       this check does not depend on anyone remembering. */
+    /* The state data must be exactly one state for THIS build, and only the
+       length of the file can show this. psemu_load_state cannot show it: its
+       size argument comes from psemu_state_size in this same function, thus the
+       argument is always sizeof(psemu_t), and the test in that function can
+       never fail. The short read below finds state data from a build with a
+       smaller psemu_t. It does not find state data from a build with a larger
+       psemu_t: the fread call is successful on the first bytes, and the code
+       then loads a state with an incorrect alignment and gives no error.
+       QUICKSAVE_VERSION must find both conditions, but it operates only if a
+       person increases it at each change to psemu_t. This test does not depend
+       on a person. */
     long body_start = ftell(f);
     if (body_start < 0 || fseek(f, 0, SEEK_END) != 0) {
         snprintf(msg, sizeof(msg), "Couldn't read the save state in %s.", save_slot_label(slot));
@@ -1138,18 +1181,18 @@ static void load_state_from_slot(menu_context_t *ctx, int slot) {
 
     free(buf);
     fclose(f);
-    /* A save state carries its own copy of flash, so the card just changed wholesale without any app
-       writing to it. That is not an edit to write back: take it as the new baseline instead, and let
-       whatever the app does from here be what reaches the file. */
+    /* A save state contains its own copy of flash. Thus the full card changed, and no app wrote to
+       it. That change is not an edit to write to the file. Use it as the new baseline instead, and
+       write only the changes that the app makes after this point. */
     content_writeback_resync(ctx->content_writeback, ctx->ps);
     drop_ir_link_if_active(ctx);
     *ctx->cpu_faulted_reported = 0;
 }
 
-/* lParam payload for hwid_dialog_proc.
-   Passed in via DialogBoxParamA, retrieved with GetWindowLongPtrA(GWLP_USERDATA).
-   parsed_id is filled in, and IDOK is allowed to close the dialog, only
-   after the edit control's text passes psemu_parse_hardware_id. */
+/* The lParam data for hwid_dialog_proc.
+   DialogBoxParamA supplies it, and GetWindowLongPtrA(GWLP_USERDATA) reads it.
+   This code writes parsed_id, and permits IDOK to close the dialog, only after
+   psemu_parse_hardware_id accepts the text in the edit control. */
 typedef struct {
     char text[PSEMU_HARDWARE_ID_STRING_SIZE];
     uint32_t parsed_id;
@@ -1160,10 +1203,10 @@ static INT_PTR CALLBACK hwid_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPA
     case WM_INITDIALOG:
         SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)lparam);
         SetDlgItemTextA(hdlg, IDC_HWID_EDIT, ((hwid_dialog_data_t *)lparam)->text);
-        /* PSEMU_HARDWARE_ID_STRING_SIZE includes the '\0'.
+        /* PSEMU_HARDWARE_ID_STRING_SIZE includes the '\0' character.
            The canonical form is always exactly 8 hex digits.
-           Cap typed input at that length instead of letting
-           psemu_parse_hardware_id reject it later. */
+           Limit the input to that length here. Do not let
+           psemu_parse_hardware_id refuse the value later. */
         SendDlgItemMessageA(hdlg, IDC_HWID_EDIT, EM_SETLIMITTEXT, PSEMU_HARDWARE_ID_STRING_SIZE - 1, 0);
         return TRUE;
     case WM_COMMAND:
@@ -1197,12 +1240,13 @@ static void prompt_edit_hardware_id(menu_context_t *ctx) {
     }
 }
 
-/* Resizes the window so its *client* area, where the framebuffer actually
-   renders, becomes exactly PSEMU_LCD_{WIDTH,HEIGHT} * SCALE * multiplier.
-   This holds regardless of how much chrome (menu bar, title bar, borders)
-   the window currently has.
-   This uses the same before/after-GetClientRect technique that compensates
-   for the menu bar's height at startup. */
+/* Changes the window size. Thus its *client* area, where this app renders the
+   framebuffer, becomes exactly PSEMU_LCD_WIDTH * SCALE * multiplier by
+   PSEMU_LCD_HEIGHT * SCALE * multiplier.
+   This is true for each quantity of window decoration: the menu bar, the title
+   bar, and the borders.
+   This function uses the same GetClientRect method, before and after the change,
+   that corrects for the height of the menu bar at startup. */
 static void resize_client_to_scale(HWND hwnd, int multiplier) {
     RECT client, window_rect;
     int chrome_w, chrome_h, target_w, target_h;
@@ -1216,24 +1260,26 @@ static void resize_client_to_scale(HWND hwnd, int multiplier) {
     SetWindowPos(hwnd, NULL, 0, 0, target_w + chrome_w, target_h + chrome_h, SWP_NOMOVE | SWP_NOZORDER);
 }
 
-/* --- Deriving a whole scheme from one picked color -----------------------
-   View > Colors > Advanced Colors... asks for one color, the screen
-   (background), and works the other two out from it.
-   The background is the anchor rather than the active pixel color because
-   most of the LCD is unlit most of the time: the background *is* the color a
-   user perceives the screen to be, the same way an LCD is described by its
-   panel tint ("that green Game Boy screen"), not by its ink.
-   The two derived colors stay in the picked color's own hue, which is what
-   keeps any pick from coming out jarring - a real STN LCD's ink is its panel
-   color darkened, not a separate color. Only lightness and saturation move.
-   Sanity check: feeding the shipped Classic background (BCC7B9) through
-   derive_theme_colors returns 20291D / 939E90, a slightly softer take on the
-   hand-picked Classic ink and shadow (111A15 / 909A8E) this project already
-   used - close enough to say the rule agrees with a human eye. */
+/* --- The calculation of a full scheme from one selected color -------------
+   View > Colors > Advanced Colors... asks for one color, the screen color
+   (the background). It calculates the other two colors from that color.
+   The background is the reference color, and not the active pixel color,
+   because most of the LCD is unlit for most of the time. The background *is*
+   the color that a user sees on the screen. A person also describes an LCD by
+   the tint of its panel, and not by the color of its ink.
+   The two calculated colors keep the hue of the selected color. This rule
+   prevents an unpleasant result from any selection: the ink of a real STN LCD
+   is a darker form of its panel color, and not a separate color. Only the
+   lightness and the saturation change.
+   A test of this rule: derive_theme_colors converts the Classic background
+   (BCC7B9) to 20291D and 939E90. Those values are slightly softer than the
+   manual Classic ink and shadow that this project used (111A15 and 909A8E).
+   Thus the rule agrees with the selection of a person. */
 
-/* Undoes sRGB's transfer function for one 0..1 channel, so channels can be
-   weighted into a real luminance. Straight RGB averages are not perceptual:
-   full green looks far brighter than full blue at the same numeric value. */
+/* Reverses the sRGB transfer function for one channel in the range 0 to 1. Thus
+   this code can give a weight to each channel and calculate a true luminance. A
+   simple average of the RGB values is not perceptual: full green looks much
+   brighter than full blue at the same numeric value. */
 static double srgb_to_linear(double c) {
     return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
 }
@@ -1263,9 +1309,9 @@ static void rgba_to_hsl(uint32_t rgba, double *h, double *s, double *l) {
     double delta = max - min;
     *l = (max + min) / 2.0;
     if (delta <= 0.0) {
-        /* A pure gray has no meaningful hue. Reporting 0 (red) is harmless:
-           derive_theme_colors keeps saturation at 0 for it either way, so the
-           derived colors stay gray too. */
+        /* A pure gray has no hue with a meaning. A result of 0 (red) has no bad
+           effect: derive_theme_colors keeps the saturation at 0 for such a
+           color. Thus the calculated colors also stay gray. */
         *h = 0.0;
         *s = 0.0;
         return;
@@ -1344,69 +1390,73 @@ static uint32_t blend_rgba(uint32_t from, uint32_t to, double t) {
     return RGBA_PACK(out[0], out[1], out[2]);
 }
 
-/* The derived ink has to clear this contrast ratio against the background
-   wherever the picked color physically allows it. 8.5:1 is comfortably past
-   WCAG AAA (7:1) without going all the way to the harshest possible pair;
-   the shipped Classic scheme sits at about 10:1 for reference. */
+/* The calculated ink color must get to this contrast ratio against the
+   background, for each selected color that physically permits it. A ratio of
+   8.5:1 is above the AAA level (7:1), but it is not the maximum possible
+   contrast. For comparison, the Classic scheme has a ratio of approximately
+   10:1. */
 #define THEME_INK_MIN_CONTRAST 8.5
-/* Contrast alone is not enough to make ink *look* like ink. A light
-   background whose contrast target is already met at 34% lightness still
-   reads as gray-on-white rather than as a display, so dark ink is pushed at
-   least this dark, and light ink at least this light. */
+/* Contrast alone is not sufficient to make the ink *look* like ink. A light
+   background can meet the contrast target at a lightness of 34%. But that
+   result looks like gray on white, and not like a display. Thus this code makes
+   dark ink at least this dark, and light ink at least this light. */
 #define THEME_INK_DARK_MAX_LIGHTNESS 0.30
 #define THEME_INK_LIGHT_MIN_LIGHTNESS 0.78
-/* The ghosting trail is a partially-switched pixel, so it belongs between the
-   background and the ink, much nearer the background. 0.26 is not arbitrary:
-   it is where the ghosting color hand-picked for the Classic scheme before
-   any of this existed (8E9B8E) sits between that scheme's background and its
-   ink, to within a rounding step. The rule was fitted to the eye, not the
-   other way round. */
+/* The ghosting trail is a pixel with a partial change of state. Thus its color
+   is between the background color and the ink color, and much nearer to the
+   background. The value 0.26 is not arbitrary: it is the position of the manual
+   Classic ghosting color (8E9B8E) between the background and the ink of that
+   scheme, to within one rounding step. A person selected that color before this
+   rule existed. Thus this rule agrees with the selection of a person. */
 #define THEME_SHADOW_MIX 0.26
 
-/* The one rule for what a scheme's ghosting trail looks like, shared by the
-   Light/Dark/Classic presets and by Advanced Colors...' matched scheme, so no
-   path can drift from the others.
-   DISPLAY_SHADOW_COLOR is this function's own result for the Classic scheme,
-   kept as a constant because settings.cfg's defaults are filled in long
-   before any scheme is chosen. */
+/* The one rule for the ghosting trail of a scheme. The Light, Dark, and Classic
+   presets use this rule, and the calculated scheme of Advanced Colors... also
+   uses it. Thus no path can become different from the others.
+   DISPLAY_SHADOW_COLOR is the result of this function for the Classic scheme.
+   That value is a constant, because this app writes the default values of
+   settings.cfg before a user selects a scheme. */
 static uint32_t theme_shadow_for(uint32_t bg_rgba, uint32_t pixel_rgba) {
     return blend_rgba(bg_rgba, pixel_rgba, THEME_SHADOW_MIX);
 }
 
-/* Works out the active pixel color and the sprite shadow color that go with
-   `bg_rgba`. Neither output is ever equal to the input.
-   The caller keeps the picked background exactly as picked - it is never
-   "corrected" - so a deliberately loud pick still gets a usable scheme rather
-   than a silently different color. */
+/* Calculates the active pixel color and the sprite shadow color for `bg_rgba`.
+   Neither result is ever equal to the input.
+   The caller keeps the selected background color without a change. This code
+   never "corrects" that color. Thus a deliberately bright selection still gets a
+   usable scheme, and not a different color with no message. */
 static void derive_theme_colors(uint32_t bg_rgba, uint32_t *out_pixel, uint32_t *out_shadow) {
     double h, s, l, ink_s, ink_l, step;
-    /* Ink goes whichever way has more room to move. Comparing against both
-       ends rather than testing lightness > 50% is what gets mid-tone picks
-       right: a saturated mid blue has more headroom towards white than the
-       naive lightness test suggests. */
+    /* The ink moves in the direction with more available range. This code
+       compares against both limits. It does not test for a lightness of more
+       than 50%. That method gives the correct result for a mid-tone selection: a
+       saturated middle blue has more available range towards white than the
+       simple lightness test shows. */
     int dark_ink = contrast_ratio(bg_rgba, RGBA_PACK(0x00, 0x00, 0x00))
         >= contrast_ratio(bg_rgba, RGBA_PACK(0xFF, 0xFF, 0xFF));
     int i;
 
     rgba_to_hsl(bg_rgba, &h, &s, &l);
     if (dark_ink) {
-        /* Saturation has to go *up* for dark ink or the hue disappears into
-           black; a near-gray dark tone is what makes a scheme look muddy. */
+        /* The saturation must increase for dark ink. If it does not, the hue
+           becomes black. A dark tone that is near to gray makes a scheme look
+           unclear. */
         ink_s = s * 1.5 > 0.45 ? 0.45 : s * 1.5;
         step = -0.005;
     } else {
-        /* Light ink is the opposite case: carrying the background's full
-           saturation up into a near-white tone comes out neon. */
+        /* Light ink is the opposite condition: the full saturation of the
+           background in a tone that is near to white looks too bright. */
         ink_s = s * 0.6 > 0.30 ? 0.30 : s * 0.6;
         step = 0.005;
     }
-    /* Walk away from the background's own lightness and stop at the first
-       step that clears the contrast target, rather than jumping straight to
-       black or white. Stopping early is the whole point: the softest ink that
-       is still legible is the one that does not fight the background.
-       Starting the search from the extreme end covers picks where the target
-       is physically unreachable (a saturated mid-tone red screen tops out
-       around 5:1) - those get the best contrast available instead. */
+    /* Move away from the lightness of the background, and stop at the first step
+       that meets the contrast target. Do not go directly to black or to white.
+       An early stop is the purpose of this loop: the softest ink that a user can
+       still read is the ink that agrees best with the background.
+       The search starts at the extreme end. Thus it also covers a selection where
+       the target is physically impossible. For example, a saturated mid-tone red
+       screen has a maximum ratio of approximately 5:1. Such a selection gets the
+       best available contrast. */
     ink_l = dark_ink ? 0.0 : 1.0;
     for (i = 0; i <= 200; i++) {
         double candidate = l + step * (double)i;
@@ -1439,35 +1489,37 @@ static void apply_display_colors_full(menu_context_t *ctx, uint32_t pixel_rgba, 
     save_settings(ctx->settings, ctx->settings_path);
 }
 
-/* Switching to a whole scheme - the Light/Dark/Classic presets - re-matches
-   the sprite shadow to it, the same way Advanced Colors... does. A scheme is
-   all three colors: the sage-gray ghost that suits Classic is plainly wrong
-   over Light's white, and picking a preset is a decision about the whole
-   look, not about two thirds of it.
-   This does mean a preset discards a shadow color set by hand in Advanced
-   Colors..., which is the same thing it already does to a hand-set pixel or
-   background color.
-   Note this re-matches around each preset's own hand-picked ink rather than
-   running the preset's background back through derive_theme_colors - the
-   presets' pairings are deliberate and stay exactly as authored. */
+/* A change to a full scheme, which is the Light, Dark, or Classic preset,
+   calculates the sprite shadow color again. Advanced Colors... does the same
+   operation. A scheme is all three colors: the sage-gray ghost of the Classic
+   scheme is clearly incorrect over the white background of the Light scheme.
+   A selection of a preset is a decision about the full appearance, and not about
+   two of the three colors.
+   Thus a preset discards a shadow color that a user set manually in
+   Advanced Colors.... A preset already does the same operation for a manual
+   pixel color or background color.
+   This code calculates the shadow color around the manual ink color of each
+   preset. It does not send the background of the preset through
+   derive_theme_colors. The color pairs of the presets are deliberate, and they
+   stay exactly as a person wrote them. */
 static void apply_display_colors(menu_context_t *ctx, uint32_t pixel_rgba, uint32_t bg_rgba) {
     apply_display_colors_full(ctx, pixel_rgba, bg_rgba, theme_shadow_for(bg_rgba, pixel_rgba));
 }
 
-/* Fills the hex edit control at `edit_id` with whatever ChooseColorA returns,
-   and reports whether the user actually picked something.
-   This seeds ChooseColorA from that field's current text, falling back to
-   black if the text is not valid hex yet.
-   A "Choose..." click and hand-typing the hex code can freely mix: either
-   one just overwrites the same field.
-   The return value matters for IDC_SCREEN_CHOOSE, which re-derives the other
-   two colors afterwards - re-deriving on a cancelled pick would throw away
-   hand-set colors in exchange for nothing. */
+/* Writes the result of ChooseColorA into the hex edit control at `edit_id`. It
+   also reports whether the user selected a color.
+   This function gives ChooseColorA the current text of that field as its start
+   value. If that text is not valid hex, it uses black.
+   A "Choose..." selection and a manual entry of the hex code can both occur:
+   each one writes over the same field.
+   The return value is important for IDC_SCREEN_CHOOSE, which calculates the
+   other two colors after this call. A calculation after a cancelled selection
+   discards manual colors and gives nothing in exchange. */
 static int choose_color_into_hex_field(HWND hdlg, int edit_id) {
-    /* CHOOSECOLOR requires a caller-owned 16-entry custom-color scratch array.
-       This array is static so the user's custom-palette additions survive
-       between picks, both within one dialog session and across separate menu
-       invocations, instead of resetting every time. */
+    /* CHOOSECOLOR needs an array of 16 custom colors that the caller owns.
+       This array is static. Thus the custom colors of the user continue between
+       selections, in one dialog session and across separate menu selections. The
+       array does not return to its initial state at each call. */
     static COLORREF custom_colors[16] = {0};
     char text[7], new_hex[7];
     uint8_t r, g, b;
@@ -1489,26 +1541,28 @@ static int choose_color_into_hex_field(HWND hdlg, int edit_id) {
     return 1;
 }
 
-/* lParam payload for advanced_colors_dialog_proc.
-   Same pattern as hwid_dialog_data_t: parsed_*_rgba is filled in, and IDOK
-   is allowed to close the dialog, only after every hex field passes
-   parse_hex_rgb.
-   The three hex fields are always the source of truth on OK, never the
-   derivation - a hand-set color has to survive. IDC_SCREEN_CHOOSE and
-   IDC_REMATCH are the only controls that write a field the user did not
-   click into, and both are unambiguous requests to re-match. */
+/* The lParam data for advanced_colors_dialog_proc.
+   The pattern is the same as the pattern of hwid_dialog_data_t: this code writes
+   the parsed_*_rgba fields, and permits IDOK to close the dialog, only after
+   parse_hex_rgb accepts each hex field.
+   At OK, the three hex fields are always the authority. The calculation is never
+   the authority, because a manual color must continue. IDC_SCREEN_CHOOSE and
+   IDC_REMATCH are the only controls that write a field that the user did not
+   select. Both of those controls are clear requests for a new calculation. */
 typedef struct {
     char pixel_hex[7];
     char bg_hex[7];
     char shadow_hex[7];
-    /* Mirrors IDC_SHADOWS_ENABLE, so the preview can draw the ghosting trail
-       only when it is actually switched on rather than advertising one that
-       is not there. Applied on OK like every other field here. */
+    /* This field holds the state of IDC_SHADOWS_ENABLE. Thus the preview draws
+       the ghosting trail only while that control is on. It does not show a trail
+       that is not in use. This app applies this field at OK, the same as each
+       other field here. */
     int show_shadows;
     int custom_visible;
-    /* Window heights in pixels. expanded_height is measured from the template
-       at WM_INITDIALOG; collapsed_height is derived from IDC_CUSTOM_TOGGLE's
-       own position, so neither is a second copy of a resource.rc number. */
+    /* The window heights in pixels. This code measures expanded_height from the
+       template at WM_INITDIALOG. It calculates collapsed_height from the
+       position of IDC_CUSTOM_TOGGLE. Thus neither value is a second copy of a
+       number in resource.rc. */
     int collapsed_height;
     int expanded_height;
     uint32_t parsed_pixel_rgba;
@@ -1516,17 +1570,19 @@ typedef struct {
     uint32_t parsed_shadow_rgba;
 } advanced_colors_dialog_data_t;
 
-/* Everything inside (and including) the Custom Colors group box. Hidden
-   controls drop out of the tab order on their own, so a collapsed dialog
-   cannot be keyboard-navigated into the fields it is hiding. */
+/* Each control in the Custom Colors group box, and the group box itself. A
+   hidden control leaves the tab order automatically. Thus a user cannot move the
+   keyboard focus into the fields that a collapsed dialog hides. */
 static const int advanced_colors_custom_ids[] = {IDC_CUSTOM_GROUP, IDC_CUSTOM_BG_LABEL, IDC_BG_HEX, IDC_BG_CHOOSE,
     IDC_CUSTOM_PIXEL_LABEL, IDC_PIXEL_HEX, IDC_PIXEL_CHOOSE, IDC_CUSTOM_SHADOW_LABEL, IDC_SHADOW_HEX,
     IDC_SHADOW_CHOOSE, IDC_REMATCH};
 
-/* 8x8 sample sprite for the preview swatch, MSB (0x80) = leftmost column.
-   A face, rather than a scrap of a real PocketStation frame: it has isolated
-   lit pixels, solid runs, and a flat bottom edge, so every part of the scheme
-   (ink, background, and the ghosting row under a lit pixel) shows up. */
+/* An 8x8 sample sprite for the preview area. The MSB (0x80) is the leftmost
+   column.
+   The sprite is a face, and not a part of a real PocketStation frame. It has
+   single lit pixels, continuous groups of lit pixels, and a flat bottom edge.
+   Thus it shows each part of the scheme: the ink, the background, and the
+   ghosting row below a lit pixel. */
 static const uint8_t preview_sprite[8] = {0x3C, 0x42, 0xA5, 0x81, 0xA5, 0x99, 0x42, 0x3C};
 
 static COLORREF rgba_to_colorref(uint32_t rgba) {
@@ -1542,11 +1598,11 @@ static uint32_t hex_field_rgba(HWND hdlg, int edit_id, uint32_t fallback) {
     return parse_hex_rgb(text, &r, &g, &b) ? RGBA_PACK(r, g, b) : fallback;
 }
 
-/* Draws the IDC_COLOR_PREVIEW swatch: preview_sprite rendered exactly the way
-   render_framebuffer renders the real LCD, in whatever colors the three hex
-   fields currently hold. This is the dialog's answer to "what do these three
-   look like together", which is the actual question a color picker leaves
-   unanswered. */
+/* Draws the IDC_COLOR_PREVIEW area. It renders preview_sprite exactly the way
+   that render_framebuffer renders the real LCD, in the colors that the three hex
+   fields hold. This preview answers the question "what do these three colors look
+   like together". A usual color selection dialog does not answer that
+   question. */
 static void draw_color_preview(HWND hdlg, const DRAWITEMSTRUCT *dis) {
     advanced_colors_dialog_data_t *data = (advanced_colors_dialog_data_t *)GetWindowLongPtrA(hdlg, GWLP_USERDATA);
     uint32_t bg_rgba = hex_field_rgba(hdlg, IDC_BG_HEX, DISPLAY_BG_CLASSIC);
@@ -1555,8 +1611,8 @@ static void draw_color_preview(HWND hdlg, const DRAWITEMSTRUCT *dis) {
     RECT rc = dis->rcItem;
     int width = rc.right - rc.left;
     int height = rc.bottom - rc.top;
-    /* 8 sprite rows plus the ghosting row below them, with the rest of the
-       height left as margin so the background reads as a screen. */
+    /* 8 sprite rows, and the ghosting row below them. The remainder of the height
+       is a margin. Thus the background looks like a screen. */
     int cell = height / 12;
     int origin_x, origin_y, row, col;
     HBRUSH bg_brush, pixel_brush, shadow_brush;
@@ -1581,9 +1637,10 @@ static void draw_color_preview(HWND hdlg, const DRAWITEMSTRUCT *dis) {
             if (!lit) {
                 continue;
             }
-            /* Same two cases as render_framebuffer's second pass: the ghost
-               lands one row below a lit pixel, and only where that row is
-               dark, so two stacked lit pixels never dim each other. */
+            /* The same two conditions as the second pass of render_framebuffer:
+               the ghost is one row below a lit pixel, and only where that row is
+               dark. Thus two lit pixels in a vertical line never make each other
+               darker. */
             for (draw_row = 0; draw_row < 2; draw_row++) {
                 if (draw_row == 1 && (lit_below || !show_shadows)) {
                     continue;
@@ -1601,12 +1658,13 @@ static void draw_color_preview(HWND hdlg, const DRAWITEMSTRUCT *dis) {
     DeleteObject(shadow_brush);
 }
 
-/* Refills the active pixel and sprite shadow fields from whatever IDC_BG_HEX
-   currently holds. Only IDC_SCREEN_CHOOSE and IDC_REMATCH call this, so a
-   color set by hand is never overwritten behind the user's back.
-   A field that does not parse is left alone rather than treated as an error:
-   there is nothing to derive from a half-typed hex code, and the user is
-   mid-edit, not mistaken. */
+/* Writes the active pixel field and the sprite shadow field again, from the
+   current value of IDC_BG_HEX. Only IDC_SCREEN_CHOOSE and IDC_REMATCH call this
+   function. Thus this code never writes over a manual color without a request
+   from the user.
+   This function does not change a field that it cannot parse, and it does not
+   report an error. An incomplete hex code gives no data for a calculation, and
+   the user is in the middle of an edit. The user did not make an error. */
 static void rematch_derived_fields(HWND hdlg) {
     char text[7], hex[7];
     uint8_t r, g, b;
@@ -1642,11 +1700,11 @@ static INT_PTR CALLBACK advanced_colors_dialog_proc(HWND hdlg, UINT msg, WPARAM 
         RECT window_rect, client, toggle, margin = {0, 0, 0, 7};
         SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)data);
 
-        /* Measure before anything is hidden or resized: the template is
-           authored at its expanded size (see resource.rc). The collapsed size
-           ends one dialog-unit margin below the Custom Colors toggle row,
-           which is read back off the live control instead of hardcoded again
-           here. */
+        /* Measure the size before this code hides or resizes a control. A person
+           wrote the template at its expanded size (see resource.rc). The
+           collapsed size ends one dialog-unit margin below the Custom Colors
+           toggle row. This code reads that position from the live control. It
+           does not use a second copy of the number here. */
         GetWindowRect(hdlg, &window_rect);
         data->expanded_height = window_rect.bottom - window_rect.top;
         GetClientRect(hdlg, &client);
@@ -1663,8 +1721,9 @@ static INT_PTR CALLBACK advanced_colors_dialog_proc(HWND hdlg, UINT msg, WPARAM 
         SendDlgItemMessageA(hdlg, IDC_PIXEL_HEX, EM_SETLIMITTEXT, 6, 0);
         SendDlgItemMessageA(hdlg, IDC_SHADOW_HEX, EM_SETLIMITTEXT, 6, 0);
         CheckDlgButton(hdlg, IDC_SHADOWS_ENABLE, data->show_shadows ? BST_CHECKED : BST_UNCHECKED);
-        /* Always opens collapsed. The whole point of matching the other two
-           colors is that the common case is one decision, not three. */
+        /* This dialog always opens in its collapsed form. The purpose of the
+           calculation of the other two colors is one decision for the usual
+           condition, and not three decisions. */
         set_custom_colors_visible(hdlg, data, 0);
         return TRUE;
     }
@@ -1683,25 +1742,27 @@ static INT_PTR CALLBACK advanced_colors_dialog_proc(HWND hdlg, UINT msg, WPARAM 
             if (edit_id != IDC_BG_HEX && edit_id != IDC_PIXEL_HEX && edit_id != IDC_SHADOW_HEX) {
                 break;
             }
-            /* Typing a color only repaints the preview. Editing the screen
-               color by hand deliberately does *not* re-derive the other two:
-               inside the Custom Colors group all three fields are the user's,
-               and IDC_REMATCH is there to re-match them on request. */
+            /* A manual entry of a color only draws the preview again. A manual
+               edit of the screen color deliberately does *not* calculate the
+               other two colors again. In the Custom Colors group, all three
+               fields belong to the user, and IDC_REMATCH calculates them again
+               when the user asks. */
             InvalidateRect(GetDlgItem(hdlg, IDC_COLOR_PREVIEW), NULL, TRUE);
             return TRUE;
         }
         switch (LOWORD(wparam)) {
         case IDC_SCREEN_CHOOSE:
-            /* The one-color path: pick a screen color and take the matching
-               pixel and shadow colors with it. Nothing happens on a cancelled
-               pick, so this can never quietly discard hand-set colors. */
+            /* The one-color path: the user selects a screen color, and this code
+               calculates the applicable pixel color and shadow color. A
+               cancelled selection causes no change. Thus this code can never
+               discard manual colors without a message. */
             if (choose_color_into_hex_field(hdlg, IDC_BG_HEX)) {
                 rematch_derived_fields(hdlg);
             }
             return TRUE;
         case IDC_BG_CHOOSE:
-            /* Each of these writes its own field with SetDlgItemTextA, so the
-               EN_CHANGE path above is what repaints the preview. */
+            /* Each of these controls writes its own field with SetDlgItemTextA.
+               Thus the EN_CHANGE path above draws the preview again. */
             choose_color_into_hex_field(hdlg, IDC_BG_HEX);
             return TRUE;
         case IDC_PIXEL_CHOOSE:
@@ -1714,8 +1775,9 @@ static INT_PTR CALLBACK advanced_colors_dialog_proc(HWND hdlg, UINT msg, WPARAM 
             rematch_derived_fields(hdlg);
             return TRUE;
         case IDC_SHADOWS_ENABLE:
-            /* AUTOCHECKBOX has already flipped its own state by the time this
-               arrives; this just mirrors it so the preview matches. */
+            /* AUTOCHECKBOX already changed its own state before this message
+               arrives. This code copies that state, thus the preview agrees with
+               the control. */
             data->show_shadows = IsDlgButtonChecked(hdlg, IDC_SHADOWS_ENABLE) == BST_CHECKED;
             InvalidateRect(GetDlgItem(hdlg, IDC_COLOR_PREVIEW), NULL, TRUE);
             return TRUE;
@@ -1761,17 +1823,18 @@ static void prompt_advanced_colors(menu_context_t *ctx) {
             advanced_colors_dialog_proc, (LPARAM)&data) != IDOK) {
         return;
     }
-    /* The sprite shadow toggle is set here rather than through a helper of
-       its own so that all four values this dialog owns land in one
-       save_settings, instead of writing settings.cfg twice for one OK. */
+    /* This code sets the sprite shadow control here, and not through a separate
+       function. Thus all four values of this dialog go into one save_settings
+       call. This app does not write settings.cfg two times for one OK
+       selection. */
     *ctx->show_shadows = data.show_shadows;
     ctx->settings->show_shadows = data.show_shadows;
     apply_display_colors_full(ctx, data.parsed_pixel_rgba, data.parsed_bg_rgba, data.parsed_shadow_rgba);
 }
 
-/* IDD_CAPTURE_PROMPT is purely a static text display.
-   It has no buttons, so this handler only lets the default dialog
-   handling run. */
+/* IDD_CAPTURE_PROMPT shows only static text.
+   It has no buttons. Thus this handler permits only the default dialog
+   operations. */
 static INT_PTR CALLBACK capture_prompt_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam) {
     (void)hdlg;
     (void)wparam;
@@ -1779,25 +1842,25 @@ static INT_PTR CALLBACK capture_prompt_dialog_proc(HWND hdlg, UINT msg, WPARAM w
     return msg == WM_INITDIALOG ? TRUE : FALSE;
 }
 
-/* Blocks by draining SDL's own event queue directly.
-   This is the same way DialogBoxParamA blocks the caller with its own
-   message loop.
-   Returns the pressed key once the user presses one.
-   Returns SDL_SCANCODE_UNKNOWN, treated as "cancelled", if the user presses
-   Esc or closes the window.
+/* This function blocks the caller. It reads the SDL event queue directly.
+   DialogBoxParamA blocks the caller in the same way, with its own message loop.
+   This function returns the key that the user presses.
+   It returns SDL_SCANCODE_UNKNOWN if the user presses Esc or closes the window.
+   The caller treats that value as a cancel.
 
-   This uses SDL_PollEvent instead of a native dialog or message loop.
-   Capturing a raw Win32 WM_KEYDOWN and converting it to an SDL_Scancode by
-   hand would mean reimplementing SDL's own per-platform scancode table.
-   That table is nontrivial. button_scancodes[].scancode and
-   SDL_GetKeyboardState both already rely on SDL to get it right.
-   Asking SDL directly is safer, the same way normal gameplay input already does.
+   This function uses SDL_PollEvent. It does not use a platform dialog or a
+   platform message loop. To capture a raw Win32 WM_KEYDOWN message and convert
+   it to an SDL_Scancode manually needs a second copy of the per-platform
+   scancode table of SDL. That table is complex. button_scancodes[].scancode and
+   SDL_GetKeyboardState already depend on SDL for that conversion.
+   A request to SDL is safer, and it is the same method that the usual input path
+   uses.
 
-   A real SDL_QUIT during this wait cannot cleanly bubble back out through
-   the nested call stack that led here (WM_COMMAND handler, then this
-   function). This function treats SDL_QUIT as a cancel too.
-   The user's next close attempt proceeds normally after that, since this
-   function only ever blocks for a single keypress. */
+   A real SDL_QUIT event during this wait cannot return correctly through the
+   call stack that reaches this point. That stack is the WM_COMMAND handler, and
+   then this function. Thus this function also treats SDL_QUIT as a cancel.
+   The next close request from the user then operates normally, because this
+   function blocks only for one key press. */
 static SDL_Scancode capture_next_key(HWND hwnd, const char *button_name) {
     char message[160];
     HWND prompt;
@@ -1805,14 +1868,14 @@ static SDL_Scancode capture_next_key(HWND hwnd, const char *button_name) {
     int have_result = 0;
     SDL_Scancode result = SDL_SCANCODE_UNKNOWN;
 
-    /* This uses CreateDialogParamA (modeless), not DialogBoxParamA.
-       A modal dialog would block this function from ever reaching the
-       SDL_PollEvent loop below. MessageBoxA had this same problem.
-       This shows the dialog via SW_SHOWNOACTIVATE, so it never takes
-       activation or keyboard focus away from `hwnd`.
-       Without SW_SHOWNOACTIVATE, Windows' own menu-mnemonic handling ate the
-       pressed key (heard as the system beep) instead of it ever reaching SDL
-       as a real SDL_KEYDOWN. */
+    /* This code uses CreateDialogParamA, which is modeless. It does not use
+       DialogBoxParamA. A modal dialog prevents this function from reaching the
+       SDL_PollEvent loop below. MessageBoxA had the same problem.
+       This code shows the dialog with SW_SHOWNOACTIVATE. Thus the dialog never
+       takes the activation or the keyboard focus from `hwnd`.
+       Without SW_SHOWNOACTIVATE, the menu-mnemonic function of Windows consumed
+       the key press, which the user heard as the system beep. The key press then
+       never got to SDL as a real SDL_KEYDOWN event. */
     prompt = CreateDialogParamA(
         GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_CAPTURE_PROMPT), hwnd, capture_prompt_dialog_proc, 0);
     snprintf(message, sizeof(message), "Press the key you want to use for %s.\n\nPress Esc to cancel.", button_name);
@@ -1857,8 +1920,9 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
         SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)bindings);
         for (i = 0; i < REMAP_BINDING_COUNT; i++) {
             /* SDL_GetScancodeName(SDL_SCANCODE_UNKNOWN) returns "".
-               Show a label the user will recognize as "this row lost its key to a
-               clash" (see prompt_remap_controls), instead of a blank label. */
+               Show a label that the user recognizes as "a different row took the
+               key of this row" (see prompt_remap_controls). Do not show an empty
+               label. */
             const char *name =
                 bindings[i].scancode == SDL_SCANCODE_UNKNOWN ? "(unbound)" : SDL_GetScancodeName(bindings[i].scancode);
             SetDlgItemTextA(hdlg, IDC_REMAP_LABEL_BASE + i, name);
@@ -1872,9 +1936,9 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
             return TRUE;
         }
         if (cmd >= IDC_REMAP_CHANGE_BASE && cmd < IDC_REMAP_CHANGE_BASE + REMAP_BINDING_COUNT) {
-            /* 100+ is well clear of any real IDOK/IDCANCEL/control ID.
-               prompt_remap_controls uses this range to tell "row N's Change... was
-               clicked" apart from a plain close. */
+            /* Values of 100 and above are outside each real IDOK, IDCANCEL, and
+               control ID. prompt_remap_controls uses this range to tell "the user
+               selected Change... in row N" from a simple close. */
             EndDialog(hdlg, 100 + (cmd - IDC_REMAP_CHANGE_BASE));
             return TRUE;
         }
@@ -1884,14 +1948,14 @@ static INT_PTR CALLBACK remap_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LP
     return FALSE;
 }
 
-/* Shows the current REMAP_BINDING_COUNT bindings, each with a per-row
+/* Shows the current REMAP_BINDING_COUNT key bindings. Each row has its own
    "Change..." button.
-   Clicking a "Change..." button closes this dialog (see remap_dialog_proc).
-   This lets capture_next_key below capture the actual keypress, outside of
-   any native dialog's own keyboard-navigation message loop.
-   This function then reopens the dialog to show the result, and to allow
-   changing another row.
-   This loops until the user clicks Close. */
+   A selection of a "Change..." button closes this dialog (see
+   remap_dialog_proc). Thus capture_next_key below can capture the key press,
+   outside of the keyboard-navigation message loop of a platform dialog.
+   This function then opens the dialog again, to show the result and to permit a
+   change to a different row.
+   This loop continues until the user selects Close. */
 static void prompt_remap_controls(menu_context_t *ctx) {
     for (;;) {
         INT_PTR result = DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_REMAP_CONTROLS), ctx->hwnd,
@@ -1952,10 +2016,10 @@ static void show_about(menu_context_t *ctx) {
     DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_ABOUT), ctx->hwnd, about_dialog_proc, 0);
 }
 
-/* Handlers for IR Link > Host Session, Connect, and Disconnect.
-   These use one fixed well-known pipe name, IR_LINK_DEFAULT_PIPE_NAME, rather than a dialog that asks for one.
-   That is the simplest thing that works for two instances on one machine.
-   See ir_link.h for the transport itself. */
+/* The handlers for IR Link > Host Session, Connect, and Disconnect.
+   These handlers use one fixed pipe name, IR_LINK_DEFAULT_PIPE_NAME. They do not use a dialog that asks
+   for a name. One fixed name is the simplest method that operates for two instances on one machine.
+   See ir_link.h for the transport. */
 static void ir_link_host_from_menu(menu_context_t *ctx) {
     ir_link_host(ctx->ir_link, IR_LINK_DEFAULT_PIPE_NAME);
     ir_link_refresh_title(ctx);
@@ -1971,20 +2035,21 @@ static void ir_link_disconnect_from_menu(menu_context_t *ctx) {
     ir_link_refresh_title(ctx);
 }
 
-/* Which of the three color presets is currently in effect, as its menu
-   command ID, or 0 for none.
+/* Gives the color preset that is in effect, as its menu command ID. It returns 0
+   if no preset is in effect.
 
-   There is no stored "current scheme" to read: a scheme is just the three
-   colors it produced, and Advanced Colors... can leave those at any values at
-   all. So the active preset is recovered by asking which preset, if applied
-   right now, would produce exactly what is already in effect. The shadow is
-   part of that comparison because a preset sets all three (see
-   apply_display_colors) - a hand-picked shadow over Classic's ink and
-   background is no longer Classic, and should not claim to be.
+   This app stores no "current scheme" value. A scheme is only the three colors
+   that it produced, and Advanced Colors... can set those colors to any values.
+   Thus this function finds the active preset with a different method: it asks
+   which preset, at this time, would produce exactly the colors that are in
+   effect. The shadow color is part of that comparison, because a preset sets all
+   three colors (see apply_display_colors). A manual shadow color over the ink and
+   the background of the Classic scheme is no longer the Classic scheme, and this
+   app must not report it as the Classic scheme.
 
-   Returning 0 for a custom scheme is deliberate: the menu then shows no
-   preset checked, which is honest, rather than checking whichever one the
-   colors were last derived from. */
+   A return value of 0 for a custom scheme is deliberate: the menu then shows no
+   checked preset, which is correct. It does not check the preset that supplied
+   the last calculation. */
 static int active_color_preset_id(const menu_context_t *ctx) {
     static const struct {
         int id;
@@ -2004,10 +2069,10 @@ static int active_color_preset_id(const menu_context_t *ctx) {
     return 0;
 }
 
-/* CheckMenuRadioItem wants the menu that directly contains the group, and
-   both override groups plus Colors live in nested popups. Rather than hard-code
-   submenu positions, which would break the moment the menu is reordered, find
-   the containing popup by command ID. */
+/* CheckMenuRadioItem needs the menu that contains the group directly. Both
+   override groups and the Colors group are in nested popup menus. Thus this code
+   finds the containing popup menu by its command ID. It does not use fixed
+   submenu positions, which become incorrect after a change to the menu order. */
 static HMENU find_menu_containing(HMENU menu, UINT id) {
     int count = GetMenuItemCount(menu);
     for (int i = 0; i < count; i++) {
@@ -2024,30 +2089,31 @@ static HMENU find_menu_containing(HMENU menu, UINT id) {
     return NULL;
 }
 
-/* Brings every checkable menu item in line with the current state.
+/* Puts each checkable menu item in agreement with the current state.
 
-   This is called after each menu command rather than from WM_INITMENUPOPUP,
-   which would be the natural place for it. SDL2 invokes its Windows message
-   hook from inside its own PeekMessage loop, so the hook only ever sees
-   POSTED messages. WM_COMMAND from a menu is posted, which is why the command
-   handlers work; WM_INITMENUPOPUP is sent straight to the window procedure by
-   the menu system and never enters the queue, so a handler for it there never
-   runs at all. Catching it would mean subclassing the window.
+   This app calls this function after each menu command. It does not call the
+   function from WM_INITMENUPOPUP, which is the usual location. SDL2 calls its
+   Windows message hook from inside its own PeekMessage loop, thus the hook sees
+   only POSTED messages. The menu posts its WM_COMMAND message, which is why the
+   command handlers operate. The menu system sends WM_INITMENUPOPUP directly to
+   the window procedure, and that message never enters the queue. Thus a handler
+   for it there never executes. To receive that message, this app must subclass
+   the window.
 
-   Syncing eagerly is enough because nothing changes this state except the
-   commands below: the overrides are set from the menu, the color scheme is set
-   from the menu or from the dialog one of those commands opens, and whether
-   the override groups are usable at all depends on the loaded BIOS, which also
-   only changes via a menu command. */
+   A call after each command is sufficient, because only the commands below
+   change this state. The menu sets the overrides. The menu, or a dialog that one
+   of those commands opens, sets the color scheme. The loaded BIOS controls
+   whether the override groups are usable, and only a menu command changes the
+   loaded BIOS. */
 static void sync_menu_state(menu_context_t *ctx) {
     HMENU root = GetMenu(ctx->hwnd);
     if (root == NULL) {
         return;
     }
 
-    /* The override addresses are only valid on a BIOS revision this project
-       has traced; on anything else the group is greyed rather than left
-       clickable (see psemu_settings_offsets_known). */
+    /* The override addresses are valid only on a BIOS revision that this project
+       traced. On each other revision, this code disables the group. It does not
+       leave the group available (see psemu_settings_offsets_known). */
     int usable = psemu_settings_offsets_known(ctx->ps);
     static const int datetime_ids[] = {ID_TOOLS_DATETIME_DEFAULT, ID_TOOLS_DATETIME_OS};
 
@@ -2061,11 +2127,11 @@ static void sync_menu_state(menu_context_t *ctx) {
             datetime_ids[ctx->settings->datetime_override], MF_BYCOMMAND);
     }
 
-    /* Tools > Sound > Volume is this application's own output level, so unlike
-       the group above it is never greyed: it works with no BIOS loaded at all.
-       A stored percent that is not a whole 10% step (only reachable by hand-
-       editing settings.cfg) rounds to the nearest item the menu can show. The
-       stored value itself is left alone - the menu just cannot draw it. */
+    /* Tools > Sound > Volume is the output level of this app. Thus this code
+       never disables it, and it operates with no BIOS. A stored percentage that
+       is not a step of 10% rounds to the nearest item that the menu can show.
+       Only a manual edit of settings.cfg can give such a value. This code does
+       not change the stored value. The menu cannot draw it. */
     HMENU volume_menu = find_menu_containing(root, ID_TOOLS_SOUND_BASE);
     if (volume_menu != NULL) {
         int step = (clamp_master_volume(ctx->settings->master_volume) + 5) / 10;
@@ -2073,21 +2139,22 @@ static void sync_menu_state(menu_context_t *ctx) {
             volume_menu, ID_TOOLS_SOUND_BASE, ID_TOOLS_SOUND_LAST, ID_TOOLS_SOUND_BASE + step, MF_BYCOMMAND);
     }
 
-    /* Tools > Sound > Speaker sits beside Volume rather than inside it, so it
-       needs its own lookup - find_menu_containing returns the popup that
-       directly holds the group, and these are two different popups. Never
-       greyed, for the same reason as Volume: it is this application's own
-       output filtering and needs no BIOS. */
+    /* Tools > Sound > Speaker is next to Volume, and it is not inside Volume.
+       Thus it needs its own search: find_menu_containing returns the popup menu
+       that holds the group directly, and these are two different popup menus.
+       This code never disables this group, for the same reason as Volume: it is
+       the output filter of this app, and it needs no BIOS. */
     HMENU speaker_menu = find_menu_containing(root, ID_TOOLS_SPEAKER_BASE);
     if (speaker_menu != NULL) {
         CheckMenuRadioItem(speaker_menu, ID_TOOLS_SPEAKER_BASE, ID_TOOLS_SPEAKER_LAST,
             ID_TOOLS_SPEAKER_BASE + clamp_speaker_sim(ctx->settings->speaker_sim), MF_BYCOMMAND);
     }
 
-    /* The radio range stops at ID_COLORS_CLASSIC so "Advanced Colors..." stays
-       an action item rather than joining the group - it opens a dialog, it is
-       not a scheme you can be "on". A custom scheme checks nothing, so every
-       preset is cleared first instead of leaving whichever was last checked. */
+    /* The radio range ends at ID_COLORS_CLASSIC. Thus "Advanced Colors..." stays
+       an action item, and it does not join the group. That item opens a dialog.
+       It is not a scheme that can be active. A custom scheme checks no item, thus
+       this code clears each preset first. It does not leave the last checked
+       preset. */
     HMENU colors_menu = find_menu_containing(root, ID_COLORS_CLASSIC);
     if (colors_menu != NULL) {
         static const int color_ids[] = {ID_COLORS_CLASSIC, ID_COLORS_STANDARD, ID_COLORS_REVERSED};
@@ -2101,10 +2168,10 @@ static void sync_menu_state(menu_context_t *ctx) {
     }
 }
 
-/* Installed via SDL_SetWindowsMessageHook.
-   Fires synchronously from within SDL_PollEvent's own message pump, on
-   the same thread, so no locking is needed.
-   It is safe to mutate *ctx and call psemu_* functions directly here. */
+/* SDL_SetWindowsMessageHook installs this function.
+   It executes synchronously from the message loop of SDL_PollEvent, on the same
+   thread. Thus no lock is necessary.
+   This function can change *ctx and call psemu_* functions directly. */
 static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned int message, Uint64 wparam,
     Sint64 lparam) {
     (void)hwnd;
@@ -2113,30 +2180,32 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
     if (message != WM_COMMAND) {
         return;
     }
-    /* Tools > Sound > Volume is one contiguous ID range rather than a named ID per step
-       (see resource.h), so it is matched here instead of as eleven cases in the
-       switch below. The main loop reads settings->master_volume every frame, so
-       storing it is the whole of applying it. */
+    /* Tools > Sound > Volume uses one contiguous ID range. It does not use a
+       separate named ID for each step (see resource.h). Thus this code tests it
+       here, and not as eleven cases in the selection below. The main loop reads
+       settings->master_volume at each frame, thus a store of the value applies
+       it. */
     if (LOWORD(wparam) >= ID_TOOLS_SOUND_BASE && LOWORD(wparam) <= ID_TOOLS_SOUND_LAST) {
         ctx->settings->master_volume = (int)(LOWORD(wparam) - ID_TOOLS_SOUND_BASE) * 10;
         save_settings(ctx->settings, ctx->settings_path);
         sync_menu_state(ctx);
         return;
     }
-    /* Tools > Sound > Speaker, matched the same way and for the same reason.
-       Storing it is likewise all of applying it: the main loop reads
-       settings->speaker_sim every frame, and the filter rebuilds itself when it
-       sees the value change (see apply_speaker_filter). */
+    /* Tools > Sound > Speaker uses the same method, for the same reason.
+       A store of the value also applies it: the main loop reads
+       settings->speaker_sim at each frame, and the filter calculates its
+       coefficients again at a change of the value (see apply_speaker_filter). */
     if (LOWORD(wparam) >= ID_TOOLS_SPEAKER_BASE && LOWORD(wparam) <= ID_TOOLS_SPEAKER_LAST) {
         ctx->settings->speaker_sim = (int)(LOWORD(wparam) - ID_TOOLS_SPEAKER_BASE);
         save_settings(ctx->settings, ctx->settings_path);
         sync_menu_state(ctx);
         return;
     }
-    /* File > Save State and File > Load State, one contiguous ID range each
-       (see resource.h), matched the same way as the two Sound groups above.
-       Slot 0 of each is the quick slot, so these two checks also cover what
-       the Save State/Load State hotkeys do. */
+    /* File > Save State and File > Load State each use one contiguous ID range
+       (see resource.h). This code tests them the same way as the two Sound
+       groups above.
+       Slot 0 of each group is the quick slot. Thus these two tests also cover the
+       operation of the Save State and Load State hotkeys. */
     if (LOWORD(wparam) >= ID_FILE_SAVE_SLOT_BASE && LOWORD(wparam) <= ID_FILE_SAVE_SLOT_LAST) {
         save_state_to_slot(ctx, (int)(LOWORD(wparam) - ID_FILE_SAVE_SLOT_BASE));
         return;
@@ -2164,9 +2233,9 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
     case ID_TOOLS_REMAP_CONTROLS:
         prompt_remap_controls(ctx);
         break;
-    /* Switching to Default just stops the frontend re-applying its value.
-       Whatever the BIOS last had stays put, and its system menus work
-       normally again from that point on. */
+    /* A change to Default only stops the frontend from a write of its value at
+       each frame. The last value of the BIOS stays in position, and the system
+       menus of the BIOS then operate normally. */
     case ID_TOOLS_DATETIME_DEFAULT:
     case ID_TOOLS_DATETIME_OS:
         ctx->settings->datetime_override = (int)(LOWORD(wparam) - ID_TOOLS_DATETIME_DEFAULT);
@@ -2203,11 +2272,11 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         ir_link_disconnect_from_menu(ctx);
         break;
     }
-    /* Every command that can change a checkable item's state runs through the
-       switch above, so one sync here covers all of them - including the color
-       scheme changing inside the Advanced Colors... dialog, and the override
-       groups becoming usable after a BIOS is loaded. See sync_menu_state for
-       why this is not done from WM_INITMENUPOPUP. */
+    /* Each command that can change the state of a checkable item uses the
+       selection above. Thus one call here covers all of them. This includes a
+       color scheme change in the Advanced Colors... dialog, and the override
+       groups that become usable after a BIOS loads. See sync_menu_state for the
+       reason that this app does not do this from WM_INITMENUPOPUP. */
     sync_menu_state(ctx);
 }
 
@@ -2222,27 +2291,29 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels, uint32_t pix
     const uint8_t *fb = psemu_get_framebuffer(ps);
     for (int row = 0; row < PSEMU_LCD_HEIGHT; row++) {
         for (int col = 0; col < PSEMU_LCD_WIDTH; col++) {
-            /* SDL_PIXELFORMAT_RGBA8888 packs a 32-bit value as (R<<24)|(G<<16)|(B<<8)|A,
-               regardless of host endianness.
-               Example: 0xFF000000 means R=0xFF, G=0, B=0, A=0. This is pure red with
-               transparent alpha, not opaque black.
-               pixel_rgba and bg_rgba (see RGBA_PACK) already account for this layout.
-               Callers must not pass plain 0xRRGGBB values here. */
+            /* SDL_PIXELFORMAT_RGBA8888 holds a 32-bit value as
+               (R<<24)|(G<<16)|(B<<8)|A, for each host byte order.
+               For example, 0xFF000000 means R = 0xFF, G = 0, B = 0, and A = 0.
+               That value is pure red with a transparent alpha value. It is not
+               opaque black.
+               pixel_rgba and bg_rgba use this layout (see RGBA_PACK).
+               A caller must not supply a 0xRRGGBB value here. */
             pixels[row * PSEMU_LCD_WIDTH + col] = lcd_bit_on(fb, row, col) ? pixel_rgba : bg_rgba;
         }
     }
     if (!show_shadows) {
         return;
     }
-    /* Approximates the faint "ghosting" a real late-90s STN/passive-matrix LCD
-       shows trailing a lit pixel.
-       This ghosting comes from slow crystal response, not a real drop shadow.
-       This draws shadow_rgba (matched to the active color scheme, and settable
-       by hand from View > Colors > Advanced Colors...) one row below each lit
-       pixel.
-       This runs as a second pass, so it never overwrites an actually-lit pixel.
-       This checks against `fb` directly, not the just-written output.
-       Two adjacent lit source pixels must never dim each other. */
+    /* An approximation of the small "ghosting" that a real STN passive-matrix LCD
+       from the late 1990s shows after a lit pixel.
+       The cause of this ghosting is the slow response of the liquid crystal. It is
+       not a drop shadow.
+       This code draws shadow_rgba one row below each lit pixel. That color agrees
+       with the active color scheme, and a user can set it manually from
+       View > Colors > Advanced Colors....
+       This code is a second pass. Thus it never writes over a lit pixel.
+       This code tests `fb` directly. It does not test the output that it just
+       wrote. Two adjacent lit source pixels must never make each other darker. */
     for (int row = 0; row < PSEMU_LCD_HEIGHT - 1; row++) {
         for (int col = 0; col < PSEMU_LCD_WIDTH; col++) {
             if (lcd_bit_on(fb, row, col) && !lcd_bit_on(fb, row + 1, col)) {
@@ -2252,17 +2323,19 @@ static void render_framebuffer(const psemu_t *ps, uint32_t *pixels, uint32_t pix
     }
 }
 
-/* A quarter of a megabyte of card snapshots, kept out of main's stack frame. One per process, which is
-   what an IR Link pair already is: two processes, each with its own card. */
+/* A quarter of a megabyte of card copies. This data stays outside the stack frame of main. There is
+   one such structure for each process, and an IR link pair is two processes, each with its own
+   card. */
 static content_writeback_t content_writeback;
 
 int main(int argc, char **argv) {
     char exe_dir[900];
     char settings_config_path[1024];
-    /* Mutable, not just const char * into argv.
-       File > Load BIOS.../Open App can overwrite the current path in place
-       after a successful reload.
-       Used for the F12/crash diagnostic report's "bios:"/"app:" lines. */
+    /* These buffers are writable. They are not const char * pointers into argv.
+       File > Load BIOS... and File > Open App can write the new path into the
+       same buffer after a successful load.
+       The "bios:" and "app:" lines of the diagnostic report use these
+       buffers. */
     char bios_path[1024];
     char app_path[1024];
     const char *positional[2];
@@ -2274,39 +2347,40 @@ int main(int argc, char **argv) {
     int i;
 
     {
-        /* Registers SysLink, Help > About's clickable repo link.
-           This is a no-op for every other dialog in this file.
-           Doing this once up front is simpler than threading it through each
-           DialogBoxParamA call site individually. */
+        /* Registers SysLink, the clickable repository link in Help > About.
+           This call has no effect for each other dialog in this file.
+           One call here is simpler than a separate call at each
+           DialogBoxParamA call. */
         INITCOMMONCONTROLSEX icc;
         icc.dwSize = sizeof(icc);
         icc.dwICC = ICC_LINK_CLASS;
         InitCommonControlsEx(&icc);
     }
 
-    /* Computed regardless of how paths or flags are given below.
-       The settings file always lives next to the executable, not next to
-       whatever content path the user passed on the command line. */
+    /* This code calculates this path for each form of the paths and flags below.
+       The settings file is always next to the executable. It is not next to the
+       content path that the user supplies on the command line. */
     get_exe_dir(argv[0], exe_dir, sizeof(exe_dir));
     join_path(settings_config_path, sizeof(settings_config_path), exe_dir, SETTINGS_CONFIG_NAME);
     if (!load_settings(&settings, settings_config_path)) {
-        /* This is a first run: settings.cfg did not exist yet.
-           Write it out right away with the defaults load_settings just filled in
-           (for example, hardware_id).
-           Do not wait for some other change (BIOS load, hardware ID edit, etc.)
-           to trigger the first save.
-           An existing file is left exactly as read here, even if a field happened
-           to be blank in it.
-           This app rewrites a field only on an actual update, the same as
-           everything else in settings.cfg. */
+        /* This is the first run: settings.cfg did not exist.
+           Write the file immediately, with the default values that load_settings
+           supplied. hardware_id is one example.
+           Do not wait for a different change, for example a BIOS load or a
+           hardware ID edit, to cause the first save.
+           This code does not change an existing file, even if a field in that
+           file is empty.
+           This app writes a field again only at a true change, the same as each
+           other value in settings.cfg. */
         save_settings(&settings, settings_config_path);
     }
 
-    /* --console and --no-console are the only flags; everything else is a
-       positional arg.
-       This silently ignores extra positional args beyond 2.
-       This matches this parsing's long-standing behavior of reading only the
-       first two positional args. */
+    /* --console and --no-console are the only flags. Each other argument is a
+       positional argument.
+       This code ignores each positional argument after the first two, and gives
+       no message.
+       This behavior agrees with the established behavior of this parser, which
+       reads only the first two positional arguments. */
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--console") == 0) {
             saw_console_flag = 1;
@@ -2316,23 +2390,23 @@ int main(int argc, char **argv) {
             positional[npositional++] = argv[i];
         }
     }
-    /* An explicit flag always wins, but only for this run.
-       Absent either flag, this falls back to the persisted preference from
-       settings.cfg (0 if there is no settings file yet).
-       A one-off --console/--no-console must not silently rewrite settings.cfg:
-       that file only reflects a choice the user made to persist, not whatever
-       flag happened to be on the command line this time. There is currently no
-       in-app toggle for this value; changing it for good means editing
-       settings.cfg's show_console line directly. */
+    /* An explicit flag always has priority, but only for this run.
+       Without either flag, this code uses the stored preference from
+       settings.cfg. That value is 0 if no settings file exists.
+       A --console or --no-console flag for one run must not write settings.cfg
+       again without a message. That file holds only a choice that the user made
+       to keep. It does not hold a flag from one command line.
+       This app has no control for this value. To change it permanently, a user
+       must edit the show_console line in settings.cfg directly. */
     show_console = saw_console_flag ? 1 : (saw_no_console_flag ? 0 : settings.show_console);
 
     if (show_console) {
-        /* This app is built as a GUI-subsystem executable (see CMakeLists.txt's
-           add_executable(... WIN32 ...)).
-           No console is attached by default, so every fprintf(stderr, ...) below
-           would otherwise go nowhere visible.
-           --console opts back into a console, for anyone who wants to see this
-           output, for example while testing from a terminal. */
+        /* The build makes this app a GUI-subsystem executable (see
+           add_executable(... WIN32 ...) in CMakeLists.txt).
+           The app has no console by default. Thus each fprintf(stderr, ...) call
+           below goes to no visible location.
+           --console gives the app a console, for a person who must see this
+           output, for example during a test from a terminal. */
         AllocConsole();
         freopen("CONOUT$", "w", stdout);
         freopen("CONOUT$", "w", stderr);
@@ -2342,15 +2416,17 @@ int main(int argc, char **argv) {
         snprintf(bios_path, sizeof(bios_path), "%s", positional[0]);
         snprintf(app_path, sizeof(app_path), "%s", positional[1]);
     } else if (npositional == 0) {
-        /* No positional arguments at all means Explorer double-click-launched the
-           .exe, rather than a terminal invocation.
-           There is no command line to pass a path on, so this falls back first to
-           the BIOS path remembered in settings.cfg from a previous run's
-           File > Open (or CLI argument), then to a BIOS dump sitting next to the
-           .exe.
-           settings.cfg does not remember the memory-card/app path; it remembers
-           only the BIOS path (see its comment above).
-           The app path always falls back to the same next-to-the-.exe convention. */
+        /* No positional arguments means that a user started the executable with a
+           double click in the file manager. It does not mean a start from a
+           terminal.
+           There is no command line for a path. Thus this code first uses the BIOS
+           path in settings.cfg, from an earlier File > Open or command-line
+           argument. If that path is absent, it uses a BIOS dump next to the
+           executable.
+           settings.cfg does not hold the memory-card path or the app path. It
+           holds only the BIOS path (see its comment above).
+           For the app path, this code always uses the file next to the
+           executable. */
         if (settings.bios_path[0] != '\0') {
             snprintf(bios_path, sizeof(bios_path), "%s", settings.bios_path);
         } else {
@@ -2370,12 +2446,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* A missing or invalid BIOS/app-or-card file is no longer fatal.
-       The menu bar's File > Load BIOS.../Open App/Card... lets the user
-       browse to one after the window comes up.
-       This app launches either way, and leaves psemu without one loaded.
-       psemu_run no-ops until a BIOS is actually loaded (see psemu_run's
-       !ps->has_bios check). */
+    /* A BIOS file, app file, or card file that is absent or invalid does not stop
+       this app.
+       File > Load BIOS... and File > Open App/Card... in the menu bar let the
+       user select a file after the window opens.
+       This app starts in both conditions, and psemu then has no loaded file.
+       psemu_run does nothing until a BIOS loads (see the !ps->has_bios test in
+       psemu_run). */
     size_t bios_size = 0, app_size = 0;
     uint8_t *bios = read_file(bios_path, &bios_size);
     uint8_t *app = read_file(app_path, &app_size);
@@ -2403,12 +2480,12 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Colors > Light/Dark/Classic/Advanced Colors... all funnel through here on
-       the next launch (see save_settings above).
-       load_settings always fills in a real value for both fields (Classic, on
-       a fresh settings.cfg).
-       This Light fallback matters only if settings.cfg's content fails to
-       parse, for example if it was hand-edited to something invalid. */
+    /* The Light, Dark, Classic, and Advanced Colors... selections all use this
+       code at the next start (see save_settings above).
+       load_settings always writes a real value into both fields. For a new
+       settings.cfg file, that value is the Classic scheme.
+       This Light default is important only if this code cannot parse the content
+       of settings.cfg. An incorrect manual edit is one cause. */
     uint32_t pixel_rgba = DISPLAY_PIXEL_LIGHT;
     uint32_t bg_rgba = DISPLAY_BG_LIGHT;
     {
@@ -2446,10 +2523,12 @@ int main(int argc, char **argv) {
     psemu_reset(ps);
     content_writeback_arm(&content_writeback, ps, app_path, app, app ? app_size : 0);
 
-    /* Persist a successfully-loaded BIOS path right away, whether it came from
-       a CLI argument or the settings-remembered/next-to-the-.exe default.
-       Do not wait for exit. See the settings-file comment above for why.
-       A failed load leaves settings.bios_path untouched. */
+    /* Write the path of a BIOS that loaded correctly immediately. Do this for a
+       path from a command-line argument, for a path from settings.cfg, and for
+       the default path next to the executable.
+       Do not wait for the exit. See the comment on the settings file above for
+       the reason.
+       A failed load does not change settings.bios_path. */
     if (bios) {
         snprintf(settings.bios_path, sizeof(settings.bios_path), "%s", bios_path);
         save_settings(&settings, settings_config_path);
@@ -2460,12 +2539,12 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* This window is resizable.
-       The 32x32 framebuffer stretches to fill the entire render target on
-       every frame, regardless of its size (render_copy's NULL dstrect below).
-       Free-form resizing works without any extra handling.
-       View > Native/Double Size are just a shortcut back to a known-good size,
-       not the only sizes this app supports. */
+    /* A user can change the size of this window.
+       The 32x32 framebuffer fills the full render target at each frame, for each
+       target size. The NULL dstrect argument of render_copy below does this.
+       Thus a change to any size operates with no extra code.
+       View > Native Size and View > Double Size are only a method to return to a
+       known size. They are not the only sizes that this app supports. */
     SDL_Window *window = SDL_CreateWindow("pokketstation", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         PSEMU_LCD_WIDTH * SCALE, PSEMU_LCD_HEIGHT * SCALE, SDL_WINDOW_RESIZABLE);
     SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
@@ -2502,11 +2581,11 @@ int main(int argc, char **argv) {
     HWND hwnd = wm_info.info.win.window;
 
     /* SDL registers its own window class with no icon.
-       The exe's resource icon (see resource.rc) is already the taskbar and
-       Explorer icon, but it does not show up on the title bar or Alt-Tab on
-       its own.
-       Load the icon explicitly at both sizes Windows actually asks for, and
-       set it on the window directly. */
+       The resource icon of the executable (see resource.rc) is already the icon
+       in the taskbar and the file manager. But that icon does not appear on the
+       title bar or in the application switcher.
+       Thus this code loads the icon at both sizes that Windows requests, and sets
+       the icon on the window directly. */
     HICON icon_big = (HICON)LoadImageA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDI_MAINICON), IMAGE_ICON,
         GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), LR_DEFAULTCOLOR);
     HICON icon_small = (HICON)LoadImageA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDI_MAINICON), IMAGE_ICON,
@@ -2518,11 +2597,11 @@ int main(int argc, char **argv) {
     RECT client_before;
     GetClientRect(hwnd, &client_before);
     SetMenu(hwnd, menu);
-    /* SetMenu shrinks the client area to make room for the menu bar, unless
-       the window grows to compensate.
-       Grow the window by exactly however much the client area just shrank.
-       This keeps the emulator rendering at its native SCALE-scaled size,
-       instead of getting clipped or letterboxed. */
+    /* SetMenu makes the client area smaller, to give space to the menu bar.
+       The window must become larger to compensate for that reduction.
+       Thus this code increases the window size by the exact reduction of the
+       client area. This keeps the emulator at its native SCALE size. The
+       framebuffer is not cut, and it has no border. */
     RECT client_after;
     GetClientRect(hwnd, &client_after);
     int shrink =
@@ -2530,33 +2609,33 @@ int main(int argc, char **argv) {
     if (shrink > 0) {
         RECT window_rect;
         GetWindowRect(hwnd, &window_rect);
-        /* SWP_FRAMECHANGED forces Windows to recompute the menu bar's cached item
-           rects for the new window size.
-           Without it, the menu bar keeps the geometry it had at SetMenu time,
-           before this resize.
-           The first click on any menu then opens its dropdown using stale
-           coordinates: visibly left-facing instead of the normal right-facing
-           direction.
-           This wrong direction persists until some later hover or click forces a
-           recalculation on its own. */
+        /* SWP_FRAMECHANGED makes Windows calculate the cached item rectangles of
+           the menu bar again, for the new window size.
+           Without this flag, the menu bar keeps the geometry from the SetMenu
+           call, before this size change.
+           The first selection on a menu then opens its list with the old
+           coordinates. The list opens to the left, and not to the right.
+           That incorrect direction continues until a later pointer movement or
+           selection causes a new calculation. */
         SetWindowPos(hwnd, NULL, 0, 0, window_rect.right - window_rect.left,
             (window_rect.bottom - window_rect.top) + shrink, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
     }
 
-    /* Live key-to-PocketStation-button mapping. The main loop polls this
-       mapping every frame.
-       Fixed order: Up, Down, Left, Right, Fire, Create-Debug-Log, Reset,
-       Quick-Save-State, Quick-Load-State.
-       This order matches IDC_REMAP_LABEL_BASE/IDC_REMAP_CHANGE_BASE and
+    /* The live map from a key to a PocketStation button. The main loop reads this
+       map at each frame.
+       The order is fixed: Up, Down, Left, Right, Fire, Create Debug Log, Reset,
+       Quick Save State, and Quick Load State.
+       This order agrees with IDC_REMAP_LABEL_BASE, IDC_REMAP_CHANGE_BASE, and
        save_key_bindings.
-       Not const or static: Tools > Remap Controls... mutates entries in place
-       through menu_ctx.button_scancodes, which points at this same array.
-       The trailing 4 entries (Create Debug Log, Reset, Save State,
-       Load State) are not real PocketStation buttons. Their bit is 0,
-       so the polling loop below harmlessly ORs them into nothing.
-       The SDL_KEYDOWN checks further down are what actually use their
-       scancodes. Each check triggers its action on a real edge, once per
-       press, not every frame the key is held. */
+       This array is not const and not static: Tools > Remap Controls... changes
+       the entries through menu_ctx.button_scancodes, which points to this same
+       array.
+       The last 4 entries (Create Debug Log, Reset, Save State, and Load State)
+       are not PocketStation buttons. Their bit value is 0, thus the loop below
+       ORs them into the button mask with no effect.
+       The SDL_KEYDOWN tests below use their scancodes. Each test causes its
+       action at a real key-down edge, one time for each press. It does not cause
+       the action at each frame while the user holds the key. */
     button_binding_t button_scancodes[REMAP_BINDING_COUNT] = {
         {resolve_key_binding(settings.key_up, SDL_SCANCODE_UP), PSEMU_BUTTON_UP, "Up"},
         {resolve_key_binding(settings.key_down, SDL_SCANCODE_DOWN), PSEMU_BUTTON_DOWN, "Down"},
@@ -2605,53 +2684,56 @@ int main(int argc, char **argv) {
     speaker_filter_init(&speaker_filter);
     unsigned long frame = 0;
 
-    /* Minimum number of frames a button reads as pressed, counted from the
-       press itself.
-       This stretches a quick real tap to match the duration confirmed, via
-       scripted headless testing, to reliably register with the real BIOS.
-       At 32Hz, a real ~40ms tap is only ~1.3 frames.
-       If a tap lands awkwardly between two per-frame SDL_GetKeyboardState
-       polls, this emulator could see it for only a small fraction of a frame.
-       That fraction is too short for the BIOS's own input handling to count
-       it as a completed press.
+    /* The minimum number of frames that a button reads as pressed. The count
+       starts at the press.
+       This minimum makes a short real press as long as the duration that a
+       scripted headless test confirms. The real BIOS accepts that duration
+       reliably.
+       At 32Hz, a real press of approximately 40ms is only approximately 1.3
+       frames.
+       A press between two SDL_GetKeyboardState calls can be visible to this
+       emulator for only a small part of one frame. That part is too short, and
+       the input code of the BIOS does not count it as a complete press.
 
-       This is a *minimum*, not an extension: a key held longer than this is
-       released to the core the same frame the real key comes up, and nothing
-       is added on the end. That distinction is the whole point. This used to
-       reload a 5-frame counter on every frame the key was down, which made it
-       a fixed 5-frame tail after release rather than a minimum, and every
-       press - however long - ran 5 frames past the key.
+       This value is a *minimum*. It is not an extension. If a user holds a key
+       for a longer time, the core sees the release in the same frame as the real
+       key release, and this code adds no time at the end. This difference is
+       important. This code loaded a 5-frame counter again at each frame while the
+       key was down. That method gave a fixed 5-frame tail after the release, and
+       not a minimum. Thus each press, at each length, continued 5 frames after
+       the key.
 
-       The usable window is narrow, and both of its edges are measured by
-       tools/button_timing_probe.c against the real BIOS and a real app, in
-       emulated real time rather than frames:
-       - The BIOS browse screen ignores an Action press shorter than about
-         35ms. That is close to the ~40ms real hardware tap docs/app-notes.md
-         describes, so this is the real BIOS behaving normally, not a timing
-         error on this emulator's side.
-       - An app with an in-app exit screen hands control back to that browse
-         screen about 62-94ms after the press, varying with where the press
-         lands in the app's own tick. Action still asserted at that moment
-         reads to the browse screen as a fresh press on the app it is already
-         sitting on, and it relaunches immediately.
-       So a press has to last longer than ~35ms and be over inside ~62ms.
+       The usable window is narrow. tools/button_timing_probe.c measures both of
+       its limits against the real BIOS and a real app, in emulated real time and
+       not in frames:
+       - The BIOS browse screen ignores an Action press of less than
+         approximately 35ms. That limit is near to the real hardware press of
+         approximately 40ms in docs/app-notes.md. Thus the real BIOS operates
+         normally, and this emulator has no timing error.
+       - An app with an exit screen returns control to that browse screen
+         approximately 62ms to 94ms after the press. The exact time depends on the
+         position of the press in the tick of the app. If Action is still asserted
+         at that moment, the browse screen reads a new press on the app that it
+         shows. It then starts that app again immediately.
+       Thus a press must be longer than approximately 35ms, and it must end
+       before approximately 62ms.
 
-       This loop can only express whole frames, and a frame is 31.25ms, so the
-       only durations available are 31ms, 62ms, 94ms and up. Exactly one of
-       them lands in the window, and the sweep confirms it end to end: at 2
-       frames the exit stays clean across all 64 timing offsets tested, while
-       3 frames survives only 27 of them and 4 frames just 1. Below 2 frames
-       the BIOS's own boot navigation (Down, Action, Right, Action) never
-       registers and never reaches an app at all.
+       This loop can use only full frames, and a frame is 31.25ms. Thus the
+       available durations are 31ms, 62ms, 94ms, and longer. Exactly one duration
+       is in the window, and the test sweep confirms this: at 2 frames the exit
+       operates correctly at all 64 tested timing offsets. At 3 frames, only 27
+       offsets operate correctly, and at 4 frames only 1 offset. Below 2 frames,
+       the boot navigation of the BIOS (Down, Action, Right, Action) never
+       registers, and it never gets to an app.
 
-       Raising this is therefore not a free safety margin - it is what broke
-       the exit. See also tools/pk_exit_test.c, which covers the app-side half
-       of the same hazard. */
+       Thus an increase to this value is not a free safety margin. An increase
+       broke the exit function. See also tools/pk_exit_test.c, which covers the
+       app-side half of the same hazard. */
 #define BUTTON_MIN_PRESS_FRAMES 2
     int frames_pressed[sizeof(button_scancodes) / sizeof(button_scancodes[0])] = {0};
 
-    /* Reflect the settings just loaded from settings.cfg before the menu is
-       ever opened. Afterwards each command keeps it in step; see
+    /* Show the settings from settings.cfg before a user opens the menu. After
+       this call, each command keeps the menu in agreement with the state. See
        sync_menu_state. */
     sync_menu_state(&menu_ctx);
 
@@ -2661,10 +2743,11 @@ int main(int argc, char **argv) {
             if (event.type == SDL_QUIT) {
                 running = 0;
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[5].scancode) {
-                /* On-demand snapshot for manual testing.
-                   Press this key the moment something looks wrong (frozen screen, missing
-                   sound, garbled graphics), whether or not the CPU has actually faulted.
-                   Remappable via Tools > Remap Controls..., default F12.
+                /* A report that the user requests, for a manual test.
+                   Press this key immediately when a condition looks incorrect. A frozen
+                   screen, no sound, and incorrect graphics are examples. Press the key
+                   for each such condition, and not only for a CPU fault.
+                   Tools > Remap Controls... can change this key. The default is F12.
                    See button_scancodes above. */
                 char reason[64];
                 snprintf(reason, sizeof(reason), "manual (%s)", SDL_GetScancodeName(button_scancodes[5].scancode));
@@ -2673,9 +2756,11 @@ int main(int argc, char **argv) {
                 /* Remappable via Tools > Remap Controls..., default F8. See button_scancodes above. */
                 reset_emulation(&menu_ctx);
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[7].scancode) {
-                /* Remappable via Tools > Remap Controls..., default F5. See button_scancodes above.
-                   Slot 0, the quick slot: only it has key bindings, so slots 1
-                   and 2 cannot be overwritten by a stray keypress. */
+                /* Tools > Remap Controls... can change this key. The default is F5.
+                   See button_scancodes above.
+                   This key uses slot 0, the quick slot. Only that slot has a key
+                   binding. Thus an incorrect key press cannot write over slot 1 or
+                   slot 2. */
                 save_state_to_slot(&menu_ctx, 0);
             } else if (event.type == SDL_KEYDOWN && event.key.keysym.scancode == button_scancodes[8].scancode) {
                 /* Remappable via Tools > Remap Controls..., default F9. See button_scancodes above. */
@@ -2688,11 +2773,11 @@ int main(int argc, char **argv) {
         size_t bi;
         for (bi = 0; bi < sizeof(button_scancodes) / sizeof(button_scancodes[0]); bi++) {
             int held = keys[button_scancodes[bi].scancode] != 0;
-            /* A press that has not yet reached the minimum keeps reading as
-               pressed. frames_pressed[bi] stays 0 until a real key-down is
-               seen, so a key that was never down is never synthesized, and it
-               saturates at the minimum, so a long hold adds nothing on
-               release. */
+            /* A press that is shorter than the minimum continues to read as
+               pressed. frames_pressed[bi] stays at 0 until a real key-down
+               event occurs. Thus this code never makes a press for a key that
+               was never down. The counter stops at the minimum, thus a long
+               hold adds no time after the release. */
             int pressed = held || (frames_pressed[bi] > 0 && frames_pressed[bi] < BUTTON_MIN_PRESS_FRAMES);
             if (pressed) {
                 if (frames_pressed[bi] < BUTTON_MIN_PRESS_FRAMES) {
@@ -2705,64 +2790,70 @@ int main(int argc, char **argv) {
         }
         psemu_set_buttons(ps, buttons);
 
-        /* This budget is 33000 cycles per frame at a 32Hz refresh, ~1.056MHz effective.
-           This reverts an earlier attempt to match rtc.h's RTC_TICK_CYCLES (~4MHz).
-           That earlier attempt was an unvalidated guess, matching one uncalibrated
-           constant to another.
-           Real-hardware testing showed that "fix" made on-screen blinking visibly
-           too fast.
-           Real hardware runs at a variable clock, up to ~7.995MHz (see
-           the CPU_FREQ table in core/src/clk.c, and docs/hardware-notes.md,
-           "CLK_MODE").
-           psemu_run scales its overall throughput by both the app's
-           currently-programmed CLK_MODE, and each instruction's real
-           per-instruction cycle cost (see "Memory access timing" in
-           docs/hardware-notes.md).
-           This fixed per-frame budget is a real-time reference rate, not an
-           instruction-count approximation.
-           33000 cycles per frame is kept here because real-hardware testing
-           confirmed it looks right, not because it is independently derived.
-           See dac.h's PSEMU_ASSUMED_CPU_HZ for the matching audio-rate conversion
-           (33000 * 32). Keep both values in sync if this ever changes. */
-        /* If the CPU hits an opcode this emulator does not recognize, register and
-           memory state are no longer meaningful.
-           A real, confirmed bug found this way (see docs/hardware-notes.md,
-           "Known open questions", "Chocobo World event-screen crash") reaches this
-           point after ~1.3 billion instructions of otherwise-correct real gameplay.
-           Do not assume this state is harmless just because it has not happened yet.
-           Stop stepping the CPU once this trips, freezing on the last good frame.
-           Do not silently continue feeding the CPU garbage forever.
-           Before this fix, that silent continuation looked to a player like an
-           unexplained hang or crash with zero diagnostic information. */
+        /* This budget is 33000 cycles for each frame, at a 32Hz refresh rate. The
+           effective rate is approximately 1.056MHz.
+           This value reverses an earlier change that made the budget agree with
+           RTC_TICK_CYCLES in rtc.h (approximately 4MHz). That earlier change was
+           an assumption with no validation: it matched one uncalibrated constant
+           to another.
+           A test on real hardware showed that the earlier value made the
+           on-screen blink rate too fast.
+           Real hardware operates at a variable clock rate, to a maximum of
+           approximately 7.995MHz (see the CPU_FREQ table in core/src/clk.c, and
+           docs/hardware-notes.md, "CLK_MODE").
+           psemu_run scales its total throughput by two values: the CLK_MODE value
+           that the app programs, and the real cycle cost of each instruction (see
+           "Memory access timing" in docs/hardware-notes.md).
+           This fixed budget for each frame is a real-time reference rate. It is
+           not an approximation of an instruction count.
+           This code keeps 33000 cycles for each frame because a test on real
+           hardware confirms that the result is correct. The value has no
+           independent derivation.
+           See PSEMU_ASSUMED_CPU_HZ in dac.h for the applicable audio-rate
+           conversion (33000 * 32). If this value changes, change that value to
+           agree with it. */
+        /* If the CPU meets an opcode that this emulator does not recognize, the
+           register state and the memory state have no more meaning.
+           A real, confirmed fault that this method found (see
+           docs/hardware-notes.md, "Known open questions") gets to this point after
+           approximately 1.3 billion instructions of correct operation.
+           Do not assume that this state is safe because the fault has not occurred
+           yet.
+           Stop the CPU when this flag becomes set, and hold the last correct
+           frame.
+           Do not continue to execute incorrect data, and do not do this without a
+           message.
+           Before this correction, such a continuation looked to a user like an
+           unexplained stop or crash, with no diagnostic data. */
         /* Tools > Date/Time Override.
-           This setting lives in emulated RAM that the BIOS's own system menus
-           also write, so holding a value means re-applying it rather than
-           setting it once. Re-applying here, every frame, also covers reset,
-           startup and state load with no extra hooks: there is no event to
-           miss, because the next frame corrects whatever changed.
+           This setting is in emulated RAM, and the system menus of the BIOS also
+           write to that RAM. Thus, to hold a value, this app must write the value
+           again. One write is not sufficient. A write at each frame here also
+           covers a reset, the startup, and a state load, with no extra code.
+           There is no event to miss, because the next frame corrects each change.
 
-           This is a handful of byte stores against the ~26,500 instructions a
-           frame already emulates.
+           The cost is a few byte stores against the approximately 26,500
+           instructions that a frame already emulates.
 
-           Guarded on psemu_settings_offsets_known so an untraced BIOS revision
-           is left alone entirely, matching the greyed-out menu items.
+           psemu_settings_offsets_known guards this code. Thus this app makes no
+           change on a BIOS revision that nobody traced. This agrees with the
+           disabled menu items.
 
-           Also guarded on psemu_app_running, because "re-apply every frame" is
-           only correct while the BIOS shell owns that RAM. Once the BIOS
-           dispatches an app off the card, those two bytes belong to the app,
-           and continuing to stamp them 32 times a second corrupts it: with
-           testdata/YGO_jap.mcr this was enough to make the app reject the PS1
-           save on the card and drop to its "ODD DATA" screen, which is how the
-           bug was found. The override resumes on its own once the app hands
-           control back. */
+           psemu_app_running also guards this code, because a write at each frame
+           is correct only while the BIOS shell owns that RAM. When the BIOS
+           dispatches an app from the card, those two bytes belong to the app. A
+           write to them 32 times each second then corrupts the app. With one
+           real trading-card app, this was sufficient to make the app reject the
+           PS1 save on the card and show its "ODD DATA" screen. That result is how
+           this project found the fault. The override starts again when the app
+           returns control. */
         if (psemu_settings_offsets_known(ps) && settings.datetime_override == DATETIME_OVERRIDE_OS &&
             !psemu_app_running(ps)) {
             SYSTEMTIME now;
             GetLocalTime(&now);
-            /* SYSTEMTIME's wDayOfWeek is 0=Sunday; the RTC's field is
-               1=Sunday. psemu_set_datetime declines while the BIOS is
-               mid-way through programming the clock, and the next frame
-               simply tries again. */
+            /* In SYSTEMTIME, wDayOfWeek gives 0 for Sunday. The RTC field
+               gives 1 for Sunday. psemu_set_datetime refuses the call while
+               the BIOS programs the clock, and the next frame tries again. */
             psemu_set_datetime(
                 ps, now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, (int)now.wDayOfWeek + 1);
         }
@@ -2778,13 +2869,14 @@ int main(int argc, char **argv) {
             write_diagnostic_report(ps, "cpu fault (unrecognized opcode)", frame, bios_path, app_path);
         }
 
-        /* Drains this frame's new TX edges onto the pipe.
-           It also pushes in every RX edge that arrived from the other instance since the last frame.
-           Those edges arrive in time for the next frame's psemu_run to process them through ir_tick.
-           This is the same one-frame granularity, about 31ms, that every other input path already accepts.
-           Buttons are one example. See ir_link.h.
-           ir_link's own status can change here with no menu action: a peer connects, or the link fails.
-           The title therefore refreshes whenever the status text changes. */
+        /* Moves the new TX edges of this frame onto the pipe.
+           It also sends each RX edge that arrived from the other instance after the last frame.
+           Those edges arrive in time for the psemu_run call of the next frame, which processes
+           them through ir_tick.
+           This is the same one-frame resolution, approximately 31ms, that each other input path
+           uses. The buttons are one example. See ir_link.h.
+           The status of ir_link can change here with no menu action: a peer connects, or the link
+           fails. Thus this code writes the title again at each change of the status text. */
         {
             const char *status_before = ir_link_status_text(&ir_link);
             char status_before_copy[sizeof(((ir_link_t *)0)->status)];
@@ -2798,15 +2890,16 @@ int main(int argc, char **argv) {
         if (audio_dev != 0) {
             uint32_t n = psemu_get_audio_samples(ps, audio_buf, sizeof(audio_buf) / sizeof(audio_buf[0]));
             if (n > 0) {
-                /* Tools > Sound > Volume, read fresh each frame so a change takes effect
-                   on the next one. The core is always drained regardless, and
-                   silence is still queued at 0%: skipping the queue instead
-                   would leave whatever is already buffered playing on, and
-                   would drift this instance's audio clock against its frames.
-                   The speaker filter runs first so the percentage stays a plain
-                   loudness control over whatever the speaker produced, rather
-                   than changing how hard the filter's makeup gain drives into
-                   its own clamp. */
+                /* Tools > Sound > Volume. This code reads the value at each frame,
+                   thus a change takes effect at the next frame. This code always
+                   drains the core, and it queues silence at 0%. If it did not queue
+                   the silence, the data in the buffer would continue to play, and the
+                   audio clock of this instance would become different from its
+                   frames.
+                   The speaker filter operates first. Thus the percentage stays a
+                   simple loudness control above the output of the speaker. It does not
+                   change how much the gain of the filter drives into the limiter of
+                   that filter. */
                 apply_speaker_filter(&speaker_filter, audio_buf, n, settings.speaker_sim);
                 apply_master_volume(audio_buf, n, clamp_master_volume(settings.master_volume));
                 SDL_QueueAudio(audio_dev, audio_buf, n * sizeof(audio_buf[0]));
@@ -2835,11 +2928,11 @@ int main(int argc, char **argv) {
     SDL_DestroyWindow(window);
     SDL_Quit();
 
-    /* No settings save here.
-       bios_path and hardware_id are each already persisted immediately at the
-       point they last changed (see the settings-file comment above).
-       This app never writes show_console at all. See the same comment.
-       Nothing is left to flush on exit. */
+    /* This code does not save the settings.
+       This app already wrote bios_path and hardware_id immediately at their last
+       change (see the comment on the settings file above).
+       This app never writes show_console. See the same comment.
+       Thus there is nothing to write at the exit. */
     psemu_destroy(ps);
     free(bios);
     free(app);

@@ -14,51 +14,53 @@
 #include "rtc.h"
 #include "timer.h"
 
-/* Diagnostic flag. See intc.c's psemu_intc_trace_enabled for the same
-   pattern. tools/inspect.c's `clktrace` flag turns this on to log every
-   real CLK_MODE and DAC_CTRL write, with its real PC (see
-   docs/hardware-notes.md, "CLK_MODE"). Kept as permanent diagnostic
-   infrastructure. */
+/* Diagnostic flag. See psemu_intc_trace_enabled in intc.c for the same
+   pattern. The `clktrace` flag in tools/inspect.c sets this flag, to
+   record each real CLK_MODE write and DAC_CTRL write with its real PC
+   (see docs/hardware-notes.md, "CLK_MODE"). This is permanent diagnostic
+   equipment. */
 int psemu_clk_trace_enabled = 0;
 
 #ifdef PSEMU_TRACE_HOOKS
-/* Diagnostic hook. When set, every bus read reports its address, value,
-   and the real PC that issued it. Reads are the half of bus access that a
-   snapshot-diff probe cannot see: that is what tools/volume_probe.c
-   needed to find which RAM the BIOS's audio code consults, and what
-   tools/datetime_probe.c needs to see which registers the BIOS checks
-   before resetting the clock. Callbacks filter by address themselves.
+/* Diagnostic hook. While this hook is set, each bus read reports its
+   address, its value, and the real PC that issued it. A snapshot
+   comparison probe cannot see reads. tools/volume_probe.c needed this
+   hook to find the RAM that the audio code of the BIOS reads.
+   tools/datetime_probe.c needs it to see the registers that the BIOS
+   tests before it resets the clock. Each callback filters by address.
 
-   Unlike psemu_clk_trace_enabled above, this one is compiled out by
-   default rather than merely switched off at runtime. It sits on the
-   hottest path there is - once per byte of every bus read, opcode fetches
-   included - and even an always-false check costs about 20% on a fixed
-   6.5M instruction workload. Only the psemu_trace library target defines
-   PSEMU_TRACE_HOOKS (see core/CMakeLists.txt); frontends link plain
-   psemu and pay nothing. */
+   psemu_clk_trace_enabled above is only switched off during execution.
+   This hook is different: the compiler removes it by default. It is on
+   the busiest path in the emulator, one time for each byte of each bus
+   read, and this includes opcode fetches. A test that is always false
+   still costs approximately 20% on a fixed workload of 6.5M
+   instructions. Only the psemu_trace library target defines
+   PSEMU_TRACE_HOOKS (see core/CMakeLists.txt). Frontends link the usual
+   psemu library, and they have no cost. */
 void (*psemu_bus_read_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc) = NULL;
 
-/* The write-side counterpart, and it answers a question a snapshot diff
-   structurally cannot: whether a write was *attempted*. A diff sees only
-   the net change, so it reports nothing both when an app never writes and
-   when an app writes a value identical to what was already there - and
-   nothing at all when some layer between the app and storage silently
-   discards the write. Those three have very different causes and the same
-   evidence without this hook.
+/* The equivalent hook for writes. It answers a question that a snapshot
+   comparison cannot answer: did a write occur? A comparison sees only the
+   net change. Thus it reports nothing in three different conditions: an
+   app never writes, an app writes the same value that the location
+   already holds, or a layer between the app and the storage discards the
+   write and gives no error. Those three conditions have very different
+   causes, and without this hook they give the same evidence.
 
-   That distinction is not hypothetical here. The IR transmit path had
-   exactly this shape: an app bit-banged IRDA_DATA thousands of times while
-   a mode-bit test upstream discarded every one, so the app looked idle
-   when it was in fact working correctly (see ir.c's tx_emit_active).
-   tools/ir_probe.c uses this hook to tell the same three cases apart for
-   flash writes when investigating whether an app commits data to the PS1
-   save sharing its memory card.
+   This difference is not theoretical. The IR transmit path had this exact
+   shape: an app wrote IRDA_DATA thousands of times, while a mode-bit test
+   before the write discarded each one. Thus the app looked idle, but it
+   operated correctly (see tx_emit_active in ir.c).
+   tools/ir_probe.c uses this hook to identify the same three conditions
+   for flash writes. That tool examines whether an app writes data to the
+   PS1 save on the same memory card.
 
-   Reports the value the write carried, before any region-specific handling
-   reinterprets or drops it. Same compile-out rules as the read hook: only
-   the psemu_trace target defines PSEMU_TRACE_HOOKS. This one sits on the
-   write path rather than the opcode-fetch path, so it is far cheaper than
-   the read hook, but it is gated identically for consistency. */
+   This hook reports the value of the write, before region-specific code
+   changes or discards the value. The compile-out rules are the same as
+   the rules for the read hook: only the psemu_trace target defines
+   PSEMU_TRACE_HOOKS. This hook is on the write path and not on the
+   opcode-fetch path, thus it is much less expensive than the read hook.
+   The gate is the same, for consistency. */
 void (*psemu_bus_write_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc) = NULL;
 #endif
 
@@ -77,90 +79,94 @@ void psemu_bus_init(
     bus->clk = clk;
     bus->iop = iop;
     bus->pending_cycles = 0;
-    bus->ram_lock_addr = PSEMU_RAM_SIZE; /* no byte locked */
+    bus->ram_lock_addr = PSEMU_RAM_SIZE; /* no byte is locked */
     bus->ram_lock_value = 0;
 }
 
-/* Real per-region data-access wait-state cost (the documented "Memory
-   Access Time for Data Read/Write" table). See docs/hardware-notes.md,
-   "Memory access timing". Confirmed: this cost does not depend on
-   8/16/32-bit width, or on sequential vs. non-sequential access. This
-   function is called exactly once per logical psemu_bus_read/write*
-   call below, never once per byte. */
+/* The real per-region data-access wait-state cost. This is the "Memory
+   Access Time for Data Read/Write" table. See docs/hardware-notes.md,
+   "Memory access timing". A test confirms that this cost does not change
+   with the access width (8, 16, or 32 bits). It also does not change
+   between a sequential access and a non-sequential access. Each logical
+   psemu_bus_read or psemu_bus_write call below calls this function one
+   time. No call occurs for each byte. */
 static uint32_t psemu_region_data_cycles(uint32_t addr) {
     if (addr < PSEMU_RAM_SIZE) {
         return 1u; /* WRAM */
     }
-    /* FLASH_CTRL (the F_xxx bank-select/F_WAIT/F_SN registers) gets
-       WRAM's fast 1-cycle rate. Confirmed on real hardware, via this
-       project's own homebrew timing-benchmark app: a tight loop reading
-       FLASH_CTRL+0x100 (F_BANK_VAL[0]) 30000 times returned the exact
-       same elapsed-tick count as an identical loop reading plain WRAM.
+    /* FLASH_CTRL (the F_xxx bank-select, F_WAIT, and F_SN registers) gets
+       the fast 1-cycle rate of WRAM. A test on real hardware confirms
+       this, with the timing-benchmark app of this project. A loop that
+       read FLASH_CTRL+0x100 (F_BANK_VAL[0]) 30000 times gave exactly the
+       same elapsed-tick count as an identical loop that read WRAM.
 
-       The documented table says only "WRAM (and SOME F_xxx ports)" get
-       the fast rate, without naming which ports. This had previously
-       been guessed the other way: slow, matching FLASH/BIOS, based on
-       disassembling an independent third-party emulator's source. Real
-       hardware now overrides that guess, per this project's own trust
-       order: real hardware over independent-emulator disassembly. See
-       docs/hardware-notes.md's "Memory access timing" section and
-       docs/app-notes.md for the full real-hardware result. */
+       The available table gives only "WRAM (and SOME F_xxx ports)" for
+       the fast rate. It does not name the applicable ports. An earlier
+       assumption used the slow rate, the same as FLASH and BIOS. That
+       assumption came from a disassembly of the source of an independent
+       emulator. Real hardware now replaces that assumption. This agrees
+       with the order of trust of this project: real hardware has more
+       authority than a disassembly of an independent emulator. See the
+       "Memory access timing" section of docs/hardware-notes.md, and
+       docs/app-notes.md, for the full real-hardware result. */
     if (addr >= PSEMU_FLASH_CTRL_BASE && addr < PSEMU_FLASH_CTRL_BASE + FLASH_CTRL_SPAN) {
         return 1u;
     }
-    /* VIRT/PHYS/XTRA_FLASH, BIOS, VRAM, I/O = 2 cycles. */
+    /* VIRT_FLASH, PHYS_FLASH, XTRA_FLASH, BIOS, VRAM, and I/O get 2 cycles. */
     return 2u;
 }
 
 uint32_t psemu_region_fetch_cycles(uint32_t addr, int thumb) {
     if (addr < PSEMU_RAM_SIZE) {
-        return 1u; /* WRAM: 1 cycle, ARM or Thumb alike */
+        return 1u; /* WRAM: 1 cycle, for ARM and for Thumb */
     }
     if ((addr >= PSEMU_FLASH1_BASE && addr < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) ||
         (addr >= PSEMU_FLASH2_BASE && addr < PSEMU_FLASH2_BASE + PSEMU_FLASH_SIZE)) {
-        return thumb ? 1u : 2u; /* FLASH: 2 cycles ARM, 1 cycle Thumb */
+        return thumb ? 1u : 2u; /* FLASH: 2 cycles for ARM, 1 cycle for Thumb */
     }
     if (addr >= PSEMU_BIOS_BASE && addr < PSEMU_BIOS_BASE + PSEMU_BIOS_SIZE) {
-        /* The real kernel executes directly out of BIOS ROM constantly,
-           so this cost cannot be left unassigned. This emulator gives
-           BIOS the same rate as FLASH, including its ARM/Thumb split: 2
-           cycles ARM, 1 cycle Thumb, not a flat 2 cycles for both.
+        /* BIOS gets the same rate as FLASH. This includes the ARM and
+           Thumb difference: 2 cycles for ARM, and 1 cycle for Thumb. It
+           is not 2 cycles for both. A test on real hardware confirms
+           this rate. The available opcode-fetch table gives only a "?"
+           for BIOS, thus the table alone cannot give this value. The
+           real kernel executes from BIOS ROM continuously, thus this
+           cost must have a value.
 
-           Reasoning from documentation: the external reference
-           data-access table groups BIOS with VIRT/PHYS/XTRA_FLASH as one
-           slow-rate entry. Its bus-width section separately states:
-           "FLASH and BIOS ROM seem to be allowed to be read only in
-           16bit and 32bit units... RAM can be freely read/written in
-           8bit, 16bit, and 32bit units". Both mentions pair BIOS with
-           FLASH's bus behavior, never WRAM's, so FLASH's full rate is
-           the reasonable choice.
+           Real hardware: the pk_timing_bench homebrew app of this
+           project timed a real BIOS ARM helper against a copy of that
+           helper in WRAM. The BIOS version was approximately 1.2 times
+           slower. This agrees with a 2-cycle ARM rate for BIOS against a
+           1-cycle rate for WRAM. The app timed a real BIOS Thumb helper
+           the same way, and the result was approximately 1.02 times.
+           This agrees with a Thumb rate for BIOS that is equal to the
+           1-cycle rate of WRAM, and equal to the Thumb rate of FLASH.
+           The loop cost and the timer cost reduce each ratio from a pure
+           2:1 signal. The same app measures the documented 2:1 rate of
+           FLASH as approximately 1.7:1, thus that reduction is a known
+           property of the method.
 
-           Now also backed by real hardware, not just documentation
-           inference. This project's own pk_timing_bench homebrew timed
-           a real BIOS ARM helper against a WRAM-copied version: about
-           1.2x slower, consistent with BIOS paying FLASH's 2-cycle ARM
-           rate against WRAM's 1-cycle rate. It timed a real BIOS Thumb
-           helper the same way: about 1.02x, consistent with BIOS's
-           Thumb rate matching WRAM's 1-cycle rate, the same as FLASH's
-           own Thumb rate. Both results point in the same direction as
-           the documentation-based reasoning above.
+           The available data agrees with the same rate. The data-access
+           table puts BIOS with VIRT_FLASH, PHYS_FLASH, and XTRA_FLASH in
+           one slow-rate entry. The bus-width section gives "FLASH and
+           BIOS ROM seem to be allowed to be read only in 16bit and 32bit
+           units... RAM can be freely read/written in 8bit, 16bit, and
+           32bit units". Both statements put BIOS with the bus behavior
+           of FLASH, and never with the behavior of WRAM.
 
-           This is not as strong as a direct BIOS-disassembly trace,
-           since loop and timer overhead dilutes the pure fetch-cost
-           signal. It is still real, independent, hardware-level
-           support. See "Memory access timing" in docs/hardware-notes.md
-           and pk_timing_bench/README.md. */
+           See "Memory access timing" in docs/hardware-notes.md, and
+           screens 1, 3, and 4 in pk_timing_bench/VERIFICATION.md. */
         return thumb ? 1u : 2u;
     }
-    /* Everything else (VRAM, I/O) = 2 cycles. */
+    /* All other regions (VRAM and I/O) get 2 cycles. */
     return 2u;
 }
 
-/* Raw, uncosted 8-bit access: the actual region-routing logic. Only
-   called from within this file, by the costed psemu_bus_* functions
-   below, which add the region's wait-state cost exactly once per
-   logical call. Never call this directly. Otherwise accesses go
-   uncounted. */
+/* Raw 8-bit access with no cost. This is the region-routing logic. Only
+   this file calls this function, from the psemu_bus_* functions below.
+   Those functions add the wait-state cost of the region one time for
+   each logical call. Never call this function directly. If you do, the
+   accesses have no cost. */
 static uint8_t bus_read8_untraced(psemu_bus_t *bus, uint32_t addr) {
     if (addr < PSEMU_RAM_SIZE) {
         return bus->ram[addr];
@@ -168,8 +174,8 @@ static uint8_t bus_read8_untraced(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_BIOS_BASE && addr < PSEMU_BIOS_BASE + PSEMU_BIOS_SIZE) {
         return bus->bios[addr - PSEMU_BIOS_BASE];
     }
-    /* FLASH1 is a banked window onto FLASH2, offset by the block selected
-       via FLASH_CTRL (see docs/hardware-notes.md). */
+    /* FLASH1 is a banked window onto FLASH2. FLASH_CTRL selects the block
+       that gives the offset (see docs/hardware-notes.md). */
     if (addr >= PSEMU_FLASH1_BASE && addr < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) {
         return flash1_read8(bus->flash, addr - PSEMU_FLASH1_BASE);
     }
@@ -210,9 +216,9 @@ static uint8_t bus_read8_untraced(psemu_bus_t *bus, uint32_t addr) {
 }
 
 #ifdef PSEMU_TRACE_HOOKS
-/* Reads exactly once, then reports that same value to the trace hook.
-   Several regions have read side effects, so the value must not be
-   re-fetched just to trace it. */
+/* Reads one time, then sends that same value to the trace hook. Several
+   regions have side effects at a read. Thus this function must not read
+   the value a second time for the trace. */
 static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
     uint8_t value = bus_read8_untraced(bus, addr);
     if (psemu_bus_read_trace_cb) {
@@ -224,20 +230,20 @@ static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
 #define bus_read8_raw bus_read8_untraced
 #endif
 
-/* Raw, uncosted 8-bit write - see bus_read8_raw. */
+/* Raw 8-bit write with no cost. See bus_read8_raw. */
 static void bus_write8_raw(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
 #ifdef PSEMU_TRACE_HOOKS
-    /* Before any region dispatch below, so a write that a region then drops
-       is still reported as attempted. That is the whole point of the hook;
-       see psemu_bus_write_trace_cb. */
+    /* This callback occurs before the region dispatch below. Thus this
+       code still reports a write that a region then discards. This is
+       the function of the hook. See psemu_bus_write_trace_cb. */
     if (psemu_bus_write_trace_cb) {
         psemu_bus_write_trace_cb(addr, value, psemu_debug_current_pc);
     }
 #endif
     if (addr < PSEMU_RAM_SIZE) {
-        /* One compare, on the RAM-write path only. Unlike the read hook
-           above, this is not on the opcode-fetch path. See ram_lock_addr
-           in memory.h. */
+        /* One compare, on the RAM-write path only. The read hook above is
+           on the opcode-fetch path, but this compare is not. See
+           ram_lock_addr in memory.h. */
         if (addr != bus->ram_lock_addr) {
             bus->ram[addr] = value;
         }
@@ -299,20 +305,20 @@ static void bus_write8_raw(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
     }
     if (addr >= PSEMU_IOP_BASE && addr < PSEMU_IOP_BASE + IOP_REG_SPAN) {
         iop_write8(bus->iop, addr - PSEMU_IOP_BASE, value);
-        /* Mirror the sound-enable gate into the DAC directly. Both this
-           gate and DAC_CTRL's own enable bit must be set for audio to
-           play. Confirmed against real hardware, see iop.h/dac.h. */
+        /* Copy the sound-enable gate into the DAC directly. This gate and
+           the enable bit of DAC_CTRL must both be set before audio
+           plays. Confirmed against real hardware. See iop.h and dac.h. */
         dac_set_iop_muted(bus->dac, !iop_sound_enabled(bus->iop));
         return;
     }
 }
 
-/* Costed public accessors below. Each adds its region's wait-state cost
-   exactly once (see psemu_region_data_cycles/psemu_region_fetch_cycles),
-   regardless of access width, then defers to the raw/uncosted routing
-   logic above. Fetch variants are used only by arm7tdmi_step's opcode
-   fetch. Every instruction-handler data access (arm_exec.c, thumb_exec.c)
-   goes through the data-access variants instead. */
+/* The public accessors below apply the cost. Each one adds the
+   wait-state cost of its region one time (see psemu_region_data_cycles
+   and psemu_region_fetch_cycles), for each access width. It then calls
+   the raw routing logic above. Only the opcode fetch in arm7tdmi_step
+   uses the fetch functions. Each data access in an instruction handler
+   (arm_exec.c and thumb_exec.c) uses the data-access functions. */
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr) {
     bus->pending_cycles += psemu_region_data_cycles(addr);
