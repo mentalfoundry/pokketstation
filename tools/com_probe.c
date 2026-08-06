@@ -29,12 +29,15 @@
               each frame of the card that changed, and the number of attempted flash writes.
      selbit - finds the COM_STAT1 bit that ends a command. It sets one candidate bit at a time, and
               it reports which bit lets a second command run.
+     func   - runs command 0x5B with FUNC 00h and FUNC 01h. FUNC 01h reads BIOS ROM, and this mode
+              compares the reply against the loaded BIOS image.
 
    usage: com_probe <bios.bin> dock [boot_frames]
           com_probe <bios.bin> cmd <hexbyte>... [--frames N] [--trace] [--card F] [--timeout N]
           com_probe <bios.bin> wait [boot_frames]
           com_probe <bios.bin> write [sector] [--card F] [--badsum] [--writeenable]
-          com_probe <bios.bin> selbit [boot_frames] */
+          com_probe <bios.bin> selbit [boot_frames]
+          com_probe <bios.bin> func [boot_frames] */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -550,6 +553,105 @@ static int mode_selbit(const char *bios_path, unsigned boot_frames) {
     return 0;
 }
 
+/* Runs command 0x5B, which executes a function and moves data to the console.
+   This command is the reason to model the hardware and not the protocol. The function numbers 0x80
+   to 0xFF resolve through a function table in the header of the app file. Only the app holds that
+   code. Thus no protocol code outside the emulated machine can answer them. The transport below is
+   the same transport that those app functions use. Only the table lookup is different.
+
+   FUNC 00h gets the date and the time. It needs no parameters, and it returns 8 bytes.
+   FUNC 01h reads memory. It needs 5 parameter bytes: a 32-bit address, and then a length. This mode
+   reads the first bytes of BIOS ROM, and it compares them against the loaded BIOS image. That
+   comparison is an independent check: the reply must agree with a file that this tool already
+   holds. */
+#define FUNC_READ_ADDR 0x04000000u /* BIOS ROM. psemu_load_bios put a known image here. */
+#define FUNC_READ_LEN 16u
+
+static int mode_func(const char *bios_path, unsigned boot_frames) {
+    psemu_t *ps = boot(bios_path, boot_frames);
+    uint8_t out = 0xFF;
+    uint8_t got[FUNC_READ_LEN];
+    unsigned i;
+    unsigned mismatch = 0;
+
+    if (!ps) {
+        return 1;
+    }
+    if (!dock_and_settle(ps, 60)) {
+        printf("communication never enabled\n");
+        psemu_destroy(ps);
+        return 1;
+    }
+
+    /* FUNC 00h. The replies are one exchange behind the sends, thus the marker for a variable length
+       arrives with the send after the function number. See com.h. */
+    printf("=== command 0x5B, FUNC 00h (get date and time) ===\n");
+    {
+        static const uint8_t SEQ[] = {0x81u, 0x5Bu, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u,
+            0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u};
+        static const char *const NAME[] = {"", "", "FF marker", "LEN1", "LEN2", "BCD day",
+            "BCD month", "BCD year", "BCD century", "BCD second", "BCD minute", "BCD hour",
+            "BCD day of week", "FF end"};
+        for (i = 0; i < sizeof(SEQ); i++) {
+            int ack = psemu_com_transfer(ps, SEQ[i], &out, g_timeout_cycles);
+            printf("  send 0x%02X -> 0x%02X %-16s ack=%s\n", (unsigned)SEQ[i], (unsigned)out, NAME[i],
+                ack ? "yes" : "NO");
+        }
+    }
+    end_command(ps);
+
+    /* FUNC 01h. The address goes out with its low byte first. */
+    printf("\n=== command 0x5B, FUNC 01h (read %u bytes at 0x%08X) ===\n", FUNC_READ_LEN,
+        (unsigned)FUNC_READ_ADDR);
+    {
+        uint8_t seq[10 + FUNC_READ_LEN + 2];
+        size_t n = 0;
+        seq[n++] = 0x81u;
+        seq[n++] = 0x5Bu;
+        seq[n++] = 0x01u; /* the function number */
+        seq[n++] = 0x00u; /* this send receives LEN1 */
+        seq[n++] = (uint8_t)(FUNC_READ_ADDR & 0xFFu);
+        seq[n++] = (uint8_t)((FUNC_READ_ADDR >> 8) & 0xFFu);
+        seq[n++] = (uint8_t)((FUNC_READ_ADDR >> 16) & 0xFFu);
+        seq[n++] = (uint8_t)((FUNC_READ_ADDR >> 24) & 0xFFu);
+        seq[n++] = (uint8_t)FUNC_READ_LEN;
+        while (n < sizeof(seq)) {
+            seq[n++] = 0x00u;
+        }
+        for (i = 0; i < n; i++) {
+            int ack = psemu_com_transfer(ps, seq[i], &out, g_timeout_cycles);
+            if (i == 3u) {
+                printf("  LEN1 = 0x%02X (expects 0x05)\n", (unsigned)out);
+            } else if (i == 9u) {
+                printf("  LEN2 = 0x%02X (expects 0x%02X)\n", (unsigned)out, FUNC_READ_LEN);
+            } else if (i >= 10u && i < 10u + FUNC_READ_LEN) {
+                got[i - 10u] = out;
+            }
+            (void)ack;
+        }
+    }
+    end_command(ps);
+
+    printf("  read back:");
+    for (i = 0; i < FUNC_READ_LEN; i++) {
+        printf(" %02X", (unsigned)got[i]);
+    }
+    printf("\n  BIOS file:");
+    for (i = 0; i < FUNC_READ_LEN; i++) {
+        printf(" %02X", (unsigned)ps->bus.bios[i]);
+        if (got[i] != ps->bus.bios[i]) {
+            mismatch++;
+        }
+    }
+    printf("\n  %u of %u bytes differ\n", mismatch, FUNC_READ_LEN);
+    if (mismatch == 0) {
+        printf("  the kernel executed the function and returned the correct memory\n");
+    }
+
+    psemu_destroy(ps);
+    return mismatch ? 1 : 0;
+}
+
 static void usage(void) {
     fprintf(stderr,
         "usage: com_probe <bios.bin> dock [boot_frames]\n"
@@ -599,6 +701,12 @@ int main(int argc, char **argv) {
             boot_frames = (unsigned)strtoul(argv[3], NULL, 10);
         }
         return mode_dock(bios_path, boot_frames);
+    }
+    if (strcmp(mode, "func") == 0) {
+        if (argc >= 4 && argv[3][0] != '-') {
+            boot_frames = (unsigned)strtoul(argv[3], NULL, 10);
+        }
+        return mode_func(bios_path, boot_frames);
     }
     if (strcmp(mode, "selbit") == 0) {
         if (argc >= 4 && argv[3][0] != '-') {
