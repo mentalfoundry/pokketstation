@@ -37,7 +37,7 @@
    This string is the only location to change for a new release.
    A build from a source archive has no git. Thus an automatic value can become incorrect, and give
    no error. */
-#define POKKETSTATION_VERSION "v1.11.0"
+#define POKKETSTATION_VERSION "v1.11.1"
 
 /* Returns the directory of the running executable.
    This function gets the directory from argv[0]. It does not use an operating-system interface for
