@@ -6,31 +6,25 @@
 
 /* The save-state format of this emulator.
 
-   THIS FILE REPLACES A RAW COPY OF psemu_t. The earlier psemu_save_state did memcpy of
-   sizeof(psemu_t), and psemu_load_state did the opposite copy. That method had four faults. This
-   file corrects each one:
+   ONE VISITOR SERVES THE THREE OPERATIONS. state_visit walks the machine one field at a time. The
+   mode of the cursor selects measure, write, or read. Thus a write and a read cannot become
+   different from each other.
 
-   - The layout depended on the compiler. Structure padding and pointer width are not the same on
-     each target. Thus a state from an x64 build did not load into an arm64 build, and it gave no
-     error. This emulator has targets with 32-bit pointers and targets with 64-bit pointers.
-   - The state held a copy of the BIOS. A BIOS dump is not the property of this project. A state file
-     must not carry one.
-   - Each new field in psemu_t changed the size. The size test found only a state that became
-     smaller. Thus an older build read a newer state as a truncated state of its own version. Each
-     field after the new one was then incorrect. Nothing reported the fault. A frontend had to track
-     the layout of psemu_t with its own version number to prevent that condition.
-   - The state held data that no machine behavior needs. That data is the diagnostic trace ring of
-     the CPU (64KB), the two IR edge queues (128KB), and the full audio ring of the DAC. Only the
-     used part of each one is necessary.
+   The format has four properties. Each one is a requirement:
 
-   ONE VISITOR SERVES ALL THREE OPERATIONS. state_visit walks the machine one field at a time, and
-   the mode of the cursor selects the operation: measure, write, or read. Thus a write and a read
-   cannot become different from each other. That divergence is the usual fault of a format with two
-   separate functions, and it gives no error at the time of the write.
+   - It is portable across targets. Each integer uses an explicit width and little-endian order.
+     Structure padding and pointer width are not the same on each target, and this emulator has
+     targets with 32-bit pointers and targets with 64-bit pointers.
+   - It holds no BIOS image. A BIOS dump is not the property of this project.
+   - It carries its own version, in PSEMU_STATE_VERSION. psemu_load_state refuses a file with a
+     different version. Thus a frontend does not track the layout of psemu_t.
+   - It holds only the state that machine behavior needs. The diagnostic trace ring of the CPU is
+     absent, and a load clears it.
 
-   TO CHANGE THE FORMAT, CHANGE PSEMU_STATE_VERSION. Add a field at the end of its section, and never
-   change the order of the existing fields. psemu_load_state refuses a file that carries a different
-   version number. */
+   TO CHANGE THE FORMAT, CHANGE PSEMU_STATE_VERSION. Add a field at the end of its section. Never
+   change the order of the existing fields.
+
+   docs/hardware-notes.md, "Save states", records these properties. */
 
 #define STATE_MAGIC_0 'P'
 #define STATE_MAGIC_1 'K'
@@ -162,15 +156,12 @@ static void st_carry(st_t *s, double *v) {
 }
 
 /* THE SIZE OF THIS FORMAT IS THE SAME FOR EACH STATE OF THE MACHINE. A ring buffer below writes its
-   full capacity, and not only the entries that it holds now. The count still travels with it, thus a
-   read restores the correct number of entries.
+   full capacity, and not only the entries that it holds now. The count travels with it, thus a read
+   restores the correct number of entries.
 
-   A format whose size follows the contents is not usable. The libretro interface calls
-   retro_serialize_size one time and keeps the result. Thus that size must never change. A caller
-   that measures the state, changes the machine, and then writes the state must also get a buffer
-   that is large enough. A first version of this file wrote only the live entries. A test then pushed
-   two IR edges between the measure step and the write step, and the write failed. A frontend uses
-   that same sequence.
+   A fixed size is a requirement. The libretro interface calls retro_serialize_size one time and
+   keeps the result. A caller also measures the state, then changes the machine, and then writes the
+   state into the buffer of that measurement.
 
    An IR edge queue holds IR_EDGE_QUEUE_CAPACITY entries. A write starts at `head` and goes through
    the ring. A read fills the array from index 0 and sets head to 0. Thus the order of the entries

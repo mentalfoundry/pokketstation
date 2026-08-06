@@ -8,7 +8,7 @@ struct intc;
 #define COM_REG_SPAN 0x20u
 
 /* The PocketStation communication port. This block is the link to a PS1. The link goes through the
-   memory card connector. A PocketStation is a memory card in that connector. This block carries the
+   memory card connector. A PocketStation is a memory card in that connector. This block holds the
    bytes of that connection.
 
    Register layout, at 0x0C000000:
@@ -16,7 +16,7 @@ struct intc;
    | Offset | Register  | Contents |
    |---|---|---|
    | +0x00 | COM_MODE  | bit0 Data Output Enable. bit1 /ACK Output Level (1 = drive LOW). bit2 unknown. |
-   | +0x04 | COM_STAT1 | bit0 a byte arrived. bit1 the console released /SEL. See selected below. |
+   | +0x04 | COM_STAT1 | bit0 a byte arrived. bit1 the PS1 released /SEL. See selected below. |
    | +0x08 | COM_DATA  | bits 0 to 7. A read gets the byte from the PS1. A write sends a byte to the PS1. |
    | +0x10 | COM_CTRL1 | bit0 and bit1 unknown. The observed values are 0, 2, and 3. |
    | +0x14 | COM_STAT2 | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. |
@@ -36,11 +36,11 @@ struct intc;
    then selects a reply and writes the reply back. Thus this file models only the byte path and the
    handshake lines.
 
-   The real firmware supplies each command. The memory card commands are 0x52 Read Sector, 0x53 Get
-   ID, and 0x57 Write Sector. The PocketStation commands are 0x50, and 0x58 to 0x5F.
+   The kernel gives each command. The memory card commands are 0x52 Read Sector, 0x53 Get ID, and
+   0x57 Write Sector. The PocketStation commands are 0x50, and 0x58 to 0x5F.
 
    This division is necessary. The commands 0x5B and 0x5C execute a function number. The numbers 0x80
-   to 0xFF resolve through a function table in the header of the app file. Only the app supplies that
+   to 0xFF resolve through a function table in the header of the app file. Only the app gives that
    code. Thus no protocol code outside the emulated machine can answer those commands.
 
    THE DOCKING SIGNAL IS SEPARATE FROM THIS BLOCK. INT_IOP (bit 11, see intc.h) is the docking sense.
@@ -71,9 +71,9 @@ typedef struct com {
        tx_data is the output holding register. A write to COM_DATA sets this value.
 
        THE OUTPUT IS ONE BYTE BEHIND THE INPUT. This block is a shift register. One exchange moves
-       the byte of the console in. The same exchange moves the held byte out. Thus the console
-       receives the byte of exchange N during exchange N+1. The kernel writes 0xFF into this register
-       at initialization. That write gives the first exchange a byte to send.
+       the byte of the PS1 in. The same exchange moves the held byte out. Thus the PS1 receives the
+       byte of exchange N during exchange N+1. The kernel writes 0xFF into this register at
+       initialization. That write gives the first exchange a byte to send.
 
        A trace of the kernel confirms this behavior. During the Get ID command, the kernel writes
        FLAG while it processes the 0x81 byte. It writes 0x5A while it processes the 0x53 byte. A
@@ -88,8 +88,8 @@ typedef struct com {
     int rx_ready;     /* COM_STAT2 bit 0. A byte arrived. The kernel did not read the byte yet. */
     int ack_asserted; /* The kernel drove /ACK LOW through COM_MODE bit 1. */
 
-    /* The /SEL line of the connector. The console holds this line for the full duration of one
-       command. It releases the line between commands.
+    /* The /SEL line of the connector. The PS1 holds this line for the full duration of one command.
+       It releases the line between commands.
 
        selected is the level of that line. sel_drop_latch records a release since the last read of
        COM_STAT1. That latch is COM_STAT1 bit 1.
@@ -132,14 +132,14 @@ void com_write(com_t *com, struct intc *intc, uint32_t offset, uint32_t value);
 void com_set_docked(com_t *com, struct intc *intc, int docked);
 
 /* Sets the /SEL line. `selected` is 0 for released. A nonzero value holds the line.
-   A console holds this line for one command, and it releases the line between commands.
+   A PS1 holds this line for one command, and it releases the line between commands.
    A release sets COM_STAT1 bit 1, and that bit ends the wait of the kernel. See selected in the
    structure above. */
 void com_set_selected(com_t *com, int selected);
 
 /* Starts one byte exchange. `data_in` is the byte from the PS1.
    This function puts the byte at COM_DATA. It sets the Ready bit of COM_STAT2. It then asserts
-   INT_COM. The CPU must execute after this call, because the kernel supplies the answer.
+   INT_COM. The CPU must execute after this call, because the kernel gives the answer.
    The caller reads com_transfer_acked for that answer. */
 void com_begin_transfer(com_t *com, struct intc *intc, uint8_t data_in);
 

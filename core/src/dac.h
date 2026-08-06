@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "psemu/psemu.h" /* PSEMU_REFERENCE_CLOCK_HZ */
+
 /* Sony PocketStation DAC (audio output). Confirmed against real hardware. See
    docs/hardware-notes.md.
 
@@ -43,22 +45,18 @@
    If the psemu_run() cycle count in main.c changes, change this value to agree with it. If the two
    values do not agree, the audio pitch and tempo become different from the on-screen timing.
 
-   History: an earlier version of this file used approximately 4MHz. That value agreed with
-   RTC_TICK_CYCLES_RUN in rtc.h at that time. That was an assumption with no validation: it matched
-   one uncalibrated constant to another, with no independent confirmation. The RTC constant is now
-   corrected to this same reference rate, for its own reasons (see rtc.h). Thus the two values now
-   agree by derivation, not by coincidence. Tests on real hardware showed that the 4MHz rate made
-   on-screen animations too fast. This value now follows the confirmed pacing of the frontend.
+   RTC_TICK_CYCLES_RUN in rtc.h holds this same reference rate. The two agree by derivation, and not
+   by coincidence. Each one has its own independent confirmation (see rtc.h).
 
-   Later work tried a value tuned by ear, 1077120u, after Timer started to track CLK_MODE directly
-   (see the comment on psemu_run in psemu.c). That change tried to correct an audio pitch that a
-   report gave as "slightly too high". That value was a temporary measure, with no hardware frequency
-   reference. It is not known whether the value concealed a real fault in a different location, for
-   example an ARM cycle-timing error in arm_exec.c or thumb_exec.c.
-   This constant went back to 33000u * 32u (1056000u) on request, to prevent an unconfirmed value in
-   the code. If the "slightly too high" pitch report occurs again, find the cycle-timing fault that
-   causes it. Do not tune this value by ear again. */
-#define PSEMU_ASSUMED_CPU_HZ 1056000u
+   DO NOT TUNE THIS VALUE BY EAR. The value is 33000u * 32u, and the pacing of the frontend confirms
+   it. A value tuned to an audio pitch has no hardware frequency reference, and it conceals a
+   cycle-timing fault in a different file. If the audio pitch is incorrect, find that fault instead.
+   arm_exec.c and thumb_exec.c are the candidates.
+
+   PSEMU_REFERENCE_CLOCK_HZ (psemu/psemu.h) supplies the number. A frontend needs the rate to pace
+   psemu_run, thus the public header carries it. This name continues here, because 23 lines in 5
+   files of core/src use it. */
+#define PSEMU_ASSUMED_CPU_HZ PSEMU_REFERENCE_CLOCK_HZ
 #define PSEMU_DAC_SAMPLE_RATE_HZ 8000u
 #define DAC_CYCLES_PER_SAMPLE (PSEMU_ASSUMED_CPU_HZ / PSEMU_DAC_SAMPLE_RATE_HZ) /* = 132 */
 

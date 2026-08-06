@@ -8,7 +8,7 @@
 /* See com.h. This flag is off by default. tools/com_probe.c sets it. */
 int psemu_com_trace_enabled = 0;
 
-/* The value that goes out while the kernel supplies no reply byte.
+/* The value that goes out while the kernel gives no reply byte.
    COM_MODE bit 0 (Data Output Enable) stays clear in that condition. Thus the PS1 sees an idle line.
    An idle data line on this bus is high. */
 #define COM_REPLY_IDLE 0xFFu
@@ -48,20 +48,16 @@ void com_init(com_t *com) {
 }
 
 /* A SIDE EFFECT OF A READ MUST OCCUR ON ONE BYTE LANE ONLY, AND THAT LANE MUST BE THE LANE THAT
-   CARRIES THE BITS. Two registers here clear state at a read: COM_DATA takes the arrived byte, and
-   COM_STAT1 clears the /SEL latch. Each of those values is in the low byte, thus each clear happens
+   HOLDS THE BITS. Two registers here clear state at a read: COM_DATA takes the arrived byte, and
+   COM_STAT1 clears the /SEL latch. Each of those values is in the low byte, thus each clear occurs
    only for shift == 0.
 
-   This rule is necessary, and it is not a simplification. psemu_bus_read32 (core/src/memory.c) makes
-   four calls to this function, one for each byte lane, and it combines the four results with the |
-   operator. C does not sequence the operands of that operator. Thus a compiler can call the lanes in
-   any order.
+   This rule is necessary. psemu_bus_read32 (core/src/memory.c) makes four calls to this function,
+   one for each byte lane, and it combines the four results with the | operator. C does not sequence
+   the operands of that operator, thus a compiler can call the lanes in any order. A clear on every
+   lane makes the result depend on that order, and the assembled word then loses the bit.
 
-   A clear on every lane made the result depend on that order. A build that called lane 3 first got
-   the value, discarded it through the shift, and cleared the latch. Lane 0 then read a latch that
-   was already clear, and the assembled word lost the bit. A Debug build called lane 0 first and gave
-   the correct result. A Release build reordered the calls and gave 0. See
-   test_sel_release_sets_the_end_of_command_bit in tests/com_test.c. */
+   See test_sel_release_sets_the_end_of_command_bit in tests/com_test.c. */
 uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
     uint32_t word_index = (offset / 4u) % 8u;
     uint32_t shift = (offset % 4u) * 8u;
@@ -72,24 +68,16 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
         value = com->mode;
         break;
     case 1:
-        /* COM_STAT1 carries two flags that the kernel needs.
+        /* COM_STAT1 holds two flags that the kernel needs.
 
            BIT 1 REPORTS A RELEASE OF THE /SEL LINE. That release is the end of one command. The
-           kernel waits for this bit after the last byte, at 0x040007B8 in the J110 revision. See
-           selected in com.h for the test that confirms the bit.
+           kernel waits for this bit after the last byte, at 0x040007B8 in the J110 revision.
 
-           BIT 0 REPORTS AN ARRIVED BYTE. This bit gives the same condition as the Ready bit of
-           COM_STAT2. The write path of the kernel polls this register in place of COM_STAT2, at
-           0x040015D6. Two other models of this bit both failed. A model that held bit 0 clear
-           stopped that path after one data byte. A model that held bit 0 always set made the kernel
-           read the same byte many times. The Write Sector command then answered 0x4E ("N", bad
-           checksum). Only a bit that follows the arrival of a byte gives a correct write.
+           BIT 0 REPORTS AN ARRIVED BYTE. It gives the same condition as the Ready bit of COM_STAT2.
+           The write path of the kernel polls this register in place of COM_STAT2, at 0x040015D6.
 
-           A READ OF THIS REGISTER CLEARS THE /SEL LATCH. The published register map records a dummy
-           read of this register by the kernel at the end of each transfer. It gives a hardware clear
-           at a read as one candidate reason. This model uses that candidate.
-
-           ONLY THE LOW BYTE LANE CLEARS THE LATCH. See the note on side effects below. */
+           A READ OF THIS REGISTER CLEARS THE /SEL LATCH. Only the low byte lane clears it. See the
+           note on side effects above. */
         value = com->stat1 | (com->rx_ready ? 1u : 0u) | (com->sel_drop_latch ? COM_STAT1_ERROR : 0u);
         if (shift == 0u) {
             com->sel_drop_latch = 0;
@@ -97,21 +85,14 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
         break;
     case 2:
         /* A read of COM_DATA takes the byte that the PS1 sent.
+
            THIS READ CLEARS THE READY BIT OF COM_STAT2. IT ALSO CLEARS THE COM INTERRUPT REQUEST.
-           A receive-ready interrupt of this type clears at a read of its data register. This is the
-           usual design. A test against a real BIOS confirms the behavior here.
+           The kernel answers one byte for each interrupt. The interrupt lines of this emulator are
+           level-triggered (see intc.h), thus INT_COM must clear here. Without this clear the FIQ
+           handler starts again immediately, and it processes the remainder of the command inside one
+           exchange.
 
-           The kernel answers the Get ID command one byte at a time. Each answer needs one interrupt.
-           Without this clear, INT_COM stays asserted for the full exchange. The interrupt lines of
-           this emulator are level-triggered (see intc.h). Thus the FIQ handler starts again
-           immediately. It then processes the remainder of the command inside one exchange.
-
-           A test recorded that result directly. The first four bytes were correct: 0xFF, FLAG, 0x5A,
-           and 0x5D. The reply then stayed at 0x80 for each byte after those four. 0x80 is the LAST
-           byte of that command, thus the handler ran to the end of the command.
-           With this clear, one exchange gives one answer.
-
-           ONLY THE LOW BYTE LANE TAKES THE BYTE. See the note on side effects below. */
+           ONLY THE LOW BYTE LANE TAKES THE BYTE. See the note on side effects above. */
         value = com->rx_data;
         if (shift == 0u) {
             com->rx_ready = 0;
@@ -188,28 +169,17 @@ void com_write(com_t *com, struct intc *intc, uint32_t offset, uint32_t value) {
 
     if (word_index == 0u && (com->mode & COM_MODE_ACK_LOW) != 0u) {
         /* The kernel drove /ACK LOW. That signal tells the PS1 two facts. This device accepted the
-           byte, and this device supplied its reply. The signal is the end of one byte exchange.
-           This code records the event. It does not follow the level. The kernel clears the bit again
-           to release the line. The caller can read the result at any time after that.
+           byte, and this device gave its reply. The signal is the end of one byte exchange. This
+           code records the event, and it does not follow the level.
 
            THE ACKNOWLEDGE ALSO CLEARS THE READY BIT OF COM_STAT2. The exchange is complete at this
-           point. The shift register then waits for 8 new bits. Ready reports the arrival of those
-           bits. Thus Ready must read 0 until they arrive.
+           point, and the shift register then waits for 8 new bits. Ready reports the arrival of
+           those bits, thus Ready must read 0 until they arrive.
 
-           A trace against a real BIOS makes this behavior necessary. No other event can replace it.
-           The kernel handles a full command inside one FIQ. It polls COM_STAT2 for each byte after
-           the first byte. That poll is at 0x04001592 in the J110 revision. The data phase of a
-           command sends bytes, and it receives only dummy bytes. Thus the kernel never reads
-           COM_DATA during that phase.
-
-           Without this clear, the Ready bit kept the value from the byte before. The poll loop then
-           read a byte that never arrived. It ran through the remainder of the command inside one
-           exchange. The recorded result was 0xFF, FLAG, 0x5A, and 0x5D, and then a reply of 0x80 for
-           each byte after those four. 0x80 is the LAST byte of the Get ID command.
-
-           The same trace agrees with this behavior at the first byte. There the kernel reads
-           COM_DATA, and it then acknowledges. It reads COM_STAT2 immediately after, at 0x04000800.
-           That read must give 0. Both clear events are true. One event alone is not sufficient. */
+           A read of COM_DATA is not sufficient on its own. The kernel handles a full command inside
+           one FIQ, and it polls COM_STAT2 for each byte after the first byte. That poll is at
+           0x04001592 in the J110 revision. The data phase of a command sends bytes and receives only
+           dummy bytes, thus the kernel never reads COM_DATA during that phase. */
         com->ack_asserted = 1;
         com->rx_ready = 0;
         intc_set_line(intc, INT_COM, 0);
@@ -227,14 +197,14 @@ void com_set_docked(com_t *com, struct intc *intc, int docked) {
 void com_set_selected(com_t *com, int selected) {
     int now = selected ? 1 : 0;
     if (com->selected && !now) {
-        /* The console released the line. This is the end of one command. */
+        /* The PS1 released the line. This is the end of one command. */
         com->sel_drop_latch = 1;
     }
     com->selected = now;
 }
 
 void com_begin_transfer(com_t *com, struct intc *intc, uint8_t data_in) {
-    /* The two directions of the exchange occur together. The byte of the console moves in. The byte
+    /* The two directions of the exchange occur together. The byte of the PS1 moves in. The byte
        in the output register moves out. Copy that held byte now. The kernel writes the byte for the
        next exchange over it. See tx_data in com.h. */
     com->tx_shifted = com->tx_data;

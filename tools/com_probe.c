@@ -10,7 +10,7 @@
    same method for the date and time settings.
 
    This tool found four behaviors that no source records. Each one is now in core/src/com.c:
-   - The block is a shift register. The console receives the byte of exchange N during exchange N+1.
+   - The block is a shift register. The PS1 receives the byte of exchange N during exchange N+1.
    - COM_STAT1 bit 1 reports a release of the /SEL line. That release ends a command. The selbit mode
      confirms bit 1 and rejects each of bits 2 to 7.
    - COM_STAT1 bit 0 reports an arrived byte. The write path polls this register in place of
@@ -166,7 +166,7 @@ static unsigned dock_and_settle(psemu_t *ps, unsigned max_frames) {
 }
 
 /* Releases the /SEL line, then runs the machine so the kernel can leave its end-of-command wait.
-   A console does this between commands. Without it the kernel answers one command and then stops.
+   A PS1 does this between commands. Without it the kernel answers one command and then stops.
    See psemu_com_set_selected. */
 static void end_command(psemu_t *ps) {
     unsigned i;
@@ -240,7 +240,7 @@ static int mode_cmd(const char *bios_path, unsigned boot_frames, const uint8_t *
         int ack = psemu_com_transfer(ps, bytes[i], &out, g_timeout_cycles);
         printf(" %3u   0x%02X   0x%02X   %s\n", (unsigned)i, (unsigned)bytes[i], (unsigned)out, ack ? "yes" : "NO");
         if (!ack) {
-            printf("       no acknowledge. A real console stops the transfer here.\n");
+            printf("       no acknowledge. A real PS1 stops the transfer here.\n");
         }
     }
     psemu_com_trace_enabled = 0;
@@ -370,12 +370,11 @@ static int mode_write(const char *bios_path, unsigned boot_frames, uint16_t sect
 
        An official kernel specification gives bit 0 as "Write to flash memory (0=Enabled,
        1=Disabled)". It records that the kernel disables bits 0 to 3 when a user puts the device in
-       the console. The observed status word after docking is 0x0007020F, and bits 0 to 3 are set.
-       That combination suggested a block on flash writes, and the suggestion was incorrect. The real
-       cause of an earlier failed write was a missing release of the /SEL line.
-       A published register map records that the two layouts of this word come from different BIOS
-       revisions, and that neither layout supersedes the other. The J110 revision follows the
-       reverse-engineered layout, where bits 0 to 3 have no recorded meaning. */
+       the PS1. The observed status word after docking is 0x0007020F, and bits 0 to 3 are set.
+       That combination does not block a write on this revision. A published register map records
+       that the two layouts of this word come from different BIOS revisions, and that neither layout
+       supersedes the other. The J110 revision follows the reverse-engineered layout, where bits 0
+       to 3 have no recorded meaning. */
     if (enable_writes) {
         /* Exactly four bytes. The published command table gives 0x81, then 0x5F, then a dummy byte
            that receives the length 0x01, then the new value of bit 0. A fifth byte arrives after the
@@ -511,7 +510,7 @@ static int mode_write(const char *bios_path, unsigned boot_frames, uint16_t sect
 
 /* Finds the COM_STAT1 bit that reports the end of a command.
    The kernel waits at 0x040007B8 after the last byte of a command. It polls COM_STAT1 there, and it
-   does not accept bit 0 in either state. A real console deasserts the /SEL line between commands,
+   does not accept bit 0 in either state. A real PS1 deasserts the /SEL line between commands,
    thus a bit that reports that line is the candidate. This mode sets one candidate bit at a time,
    and it reports which bit lets a second command run. */
 static int mode_selbit(const char *bios_path, unsigned boot_frames) {
@@ -553,7 +552,7 @@ static int mode_selbit(const char *bios_path, unsigned boot_frames) {
     return 0;
 }
 
-/* Runs command 0x5B, which executes a function and moves data to the console.
+/* Runs command 0x5B, which executes a function and moves data to the PS1.
    This command is the reason to model the hardware and not the protocol. The function numbers 0x80
    to 0xFF resolve through a function table in the header of the app file. Only the app holds that
    code. Thus no protocol code outside the emulated machine can answer them. The transport below is

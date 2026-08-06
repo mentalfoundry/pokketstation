@@ -263,6 +263,18 @@ int psemu_parse_hardware_id(const char *str, uint32_t *out_id);
    8-hex-digit form. `buf` must be PSEMU_HARDWARE_ID_STRING_SIZE bytes or more. */
 void psemu_format_hardware_id(uint32_t id, char *buf, size_t buf_size);
 
+/* This value is the reference clock rate for the cycle budget of psemu_run. The unit is Hz.
+
+   The CPU of real hardware runs at a variable rate, and CLK_MODE selects that rate. The `cycles`
+   argument of psemu_run is NOT in those variable cycles. It is in the fixed reference rate here.
+   psemu_run converts between the two. The RTC and the DAC also use this rate.
+
+   A frontend needs this value to pace the machine. The budget for one frame is this rate divided by
+   the frame rate of the frontend. The screen of the device refreshes at approximately 32Hz, thus
+   PSEMU_REFERENCE_CLOCK_HZ / 32 is one frame of the device. A host with a different rate divides by
+   its own rate. One example of such a host is a PS1 emulator at 60Hz. */
+#define PSEMU_REFERENCE_CLOCK_HZ 1056000u
+
 /* Runs for approximately `cycles` CPU cycles. Returns the number of cycles that it
    executed. */
 uint32_t psemu_run(psemu_t *ps, uint32_t cycles);

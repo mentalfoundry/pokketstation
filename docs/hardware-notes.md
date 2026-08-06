@@ -320,9 +320,11 @@ Two facts together give this conclusion. The kernel writes FLAG while it process
 
 **The Ready bit of `COM_STAT2` clears at a read of `COM_DATA`. It also clears when the kernel drives /ACK LOW.** Both events are true. One event alone is not sufficient.
 
-No source records the acknowledge event. A trace found it. The data phase of a command sends bytes, and it receives only dummy bytes. Thus the kernel never reads `COM_DATA` during that phase. With only the data-read rule, the Ready bit kept the value from the byte before. The poll loop of the kernel then read a byte that never arrived. It ran through the remainder of the command inside one exchange. The recorded result was `0xFF`, FLAG, `0x5A`, and `0x5D`, and then a reply of `0x80` for each byte after those four. `0x80` is the *last* byte of the Get ID command.
+No published source records the acknowledge event. A trace of the `J110` kernel gives it.
 
-The data-read rule is still necessary for the first byte. There the trace shows two steps in order: the kernel acknowledges, and it then reads `COM_STAT2`. That read must give 0.
+The data-read rule alone is not sufficient. The data phase of a command sends bytes and receives only dummy bytes, thus the kernel never reads `COM_DATA` during that phase. Ready must still clear there. Without that, the poll loop of the kernel reads a byte that never arrived, and it runs through the remainder of the command inside one exchange.
+
+The acknowledge rule alone is not sufficient either. At the first byte the kernel acknowledges and then reads `COM_STAT2`, at `0x04000800`. That read must give 0.
 
 ### The /SEL line
 
@@ -334,9 +336,9 @@ The published register map names bit 1 "Error flag", and it gives four candidate
 
 A read of `COM_STAT1` clears this latch. The same map records a dummy read of the register by the kernel at the end of each transfer. It gives a hardware clear at a read as one candidate reason for that dummy read.
 
-**`COM_STAT1` bit 0 reports an arrived byte.** It gives the same condition as the Ready bit of `COM_STAT2`. The write path of the kernel polls `COM_STAT1` in place of `COM_STAT2`, at `0x040015D6`. A model that held bit 0 clear stopped that path after one data byte. A model that held bit 0 always set made the kernel read one byte many times, and Write Sector then failed with `0x4E` ("N", bad checksum). Only a bit that follows the arrival of a byte gives a correct write.
+**`COM_STAT1` bit 0 reports an arrived byte.** It gives the same condition as the Ready bit of `COM_STAT2`. The write path of the kernel polls `COM_STAT1` in place of `COM_STAT2`, at `0x040015D6`. The bit must follow the arrival of a byte exactly. A bit that stays clear stops that path after one data byte. A bit that stays set makes the kernel read one byte many times, and Write Sector then answers `0x4E` ("N", bad checksum).
 
-**The kernel programs flash only after the command ends.** No store reaches the flash regions during the byte exchanges of a Write Sector command. The stores follow the release of /SEL. A first investigation read that delay as a block on flash writes, and looked for a status bit that enabled them. That reading was incorrect. The cause was the missing /SEL release alone.
+**The kernel programs flash only after the command ends.** No store reaches the flash regions during the byte exchanges of a Write Sector command. The stores follow the release of /SEL.
 
 ### Verified exchanges
 
@@ -677,16 +679,16 @@ Note that `0x290` is in the region that the memory map above calls user RAM (`0x
 
 **One visitor serves the three operations.** `state_visit` walks the machine one field at a time. The mode of the cursor selects measure, write, or read. Thus a write and a read cannot become different from each other. That divergence is the usual fault of a format with two separate functions. It also gives no error at the time of the write.
 
-**The format replaced a raw copy of `psemu_t`.** The earlier `psemu_save_state` did `memcpy` of `sizeof(psemu_t)`. That method had four faults:
+The format has four required properties. A raw copy of `psemu_t` satisfies none of them:
 
-- **The layout followed the compiler.** Structure padding and pointer width are not the same on each target. Thus a state from an x64 build did not load into an arm64 build, and it gave no error. This project has targets with 32-bit pointers and targets with 64-bit pointers.
-- **The state held a copy of the BIOS.** A BIOS dump is not the property of this project. A state file must not carry one. `test_state_holds_no_bios_and_is_smaller_than_the_structure` loads a BIOS of one repeated byte, and it then searches the state for a run of that byte.
-- **Each new field changed the size, and an older build could not find that change.** The size test found only a state that became smaller. Thus an older build read a newer state as a truncated state of its own version, and each field after the new one was incorrect. A frontend had to track the layout of `psemu_t` with its own version number. `QUICKSAVE_VERSION` in the desktop frontend did that, and versions 2, 3, 4, and 6 exist only for that reason. The core owns this version now, and `psemu_load_state` returns `PSEMU_ERR_BAD_FORMAT` for a file that it cannot read.
-- **The state held data that no machine behavior needs.** The diagnostic trace ring of the CPU is 64KB, and only `psemu_write_crash_report` reads it. A load clears that ring, thus a report after a load covers only the steps after the load.
+- **It is portable across targets.** Each integer uses an explicit width and little-endian order. Structure padding and pointer width are not the same on each target, and this project has targets with 32-bit pointers and targets with 64-bit pointers.
+- **It holds no BIOS image.** A BIOS dump is not the property of this project. `test_state_holds_no_bios_and_is_smaller_than_the_structure` loads a BIOS of one repeated byte, and it then searches the state for a run of that byte.
+- **It carries its own version.** `psemu_load_state` returns `PSEMU_ERR_BAD_FORMAT` for a file that it cannot read. Thus a frontend does not track the layout of `psemu_t`. `QUICKSAVE_VERSION` in the desktop frontend now changes only for the parts of its file that the frontend owns.
+- **It holds only the state that machine behavior needs.** The diagnostic trace ring of the CPU is 64KB, and only `psemu_write_crash_report` reads it. A load clears that ring, thus a report after a load covers only the steps after the load.
 
-The result is 218.8KB, against 354.9KB for `sizeof(psemu_t)`.
+The size is 218.8KB, against 354.9KB for `sizeof(psemu_t)`.
 
-**The size is the same for each state of the machine.** A ring buffer writes its full capacity, and not only the entries that it holds now. The count travels with it. A format whose size follows the contents is not usable. The libretro interface calls `retro_serialize_size` one time and keeps the result. A first version of this file wrote only the live entries. A test then pushed two IR edges between the measure step and the write step, and the write failed. A frontend uses that same sequence.
+**The size is the same for each state of the machine.** A ring buffer writes its full capacity, and not only the entries that it holds now. The count travels with it. A fixed size is a requirement: the libretro interface calls `retro_serialize_size` one time and keeps the result, and a frontend measures the state, then changes the machine, and then writes into the buffer of that measurement.
 
 **`real_time_cycle_carry` is the only floating-point field.** The file stores it as a fixed-point fraction of 32 bits, and not as the raw bits of the double. `psemu_run` keeps the value between 0.0 and 1.0, thus 32 bits give more resolution than the reference clock can use.
 

@@ -89,7 +89,7 @@ static void test_transfer_shifts_the_held_byte_out(void) {
     psemu_t *ps = psemu_create();
     uint8_t out = 0x00;
 
-    /* This block is a shift register. The console receives the byte of exchange N during exchange
+    /* This block is a shift register. The PS1 receives the byte of exchange N during exchange
        N+1. A trace of a real BIOS confirms this behavior. The kernel writes FLAG while it processes
        0x81. A published command table gives the reply to 0x81 as "N/A". It gives the reply to 0x53
        as FLAG.
@@ -99,7 +99,7 @@ static void test_transfer_shifts_the_held_byte_out(void) {
     out = com_take_reply(&ps->com);
     assert(out == 0x5Au);
 
-    /* The byte from the console is available at COM_DATA. */
+    /* The byte from the PS1 is available at COM_DATA. */
     assert(psemu_bus_read32(&ps->bus, COM_DATA) == 0x81u);
 
     com_end_transfer(&ps->com, &ps->intc);
@@ -160,7 +160,7 @@ static void test_acknowledge_ends_the_exchange_without_a_data_read(void) {
 static void test_sel_release_sets_the_end_of_command_bit(void) {
     psemu_t *ps = psemu_create();
 
-    /* The /SEL line of the connector. A console holds it for one command, and it releases the line
+    /* The /SEL line of the connector. A PS1 holds it for one command, and it releases the line
        between commands. The kernel waits for that release after the last byte of a command, at
        0x040007B8 in the J110 revision. A test against a real dump confirms COM_STAT1 bit 1, and it
        rejects each of bits 2 to 7. Without this signal the kernel answers one command and then
@@ -188,9 +188,9 @@ static void test_stat1_bit0_follows_an_arrived_byte(void) {
     psemu_t *ps = psemu_create();
 
     /* The write path of the kernel polls COM_STAT1 in place of COM_STAT2, at 0x040015D6. Thus bit 0
-       must give the same condition as the Ready bit of COM_STAT2. A model that held the bit clear
-       stopped that path after one data byte. A model that held the bit always set made the kernel
-       read one byte many times, and Write Sector then failed with 0x4E. */
+       must give the same condition as the Ready bit of COM_STAT2. A bit that stays clear stops that
+       path after one data byte. A bit that stays set makes the kernel read one byte many times, and
+       Write Sector then answers 0x4E. */
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) == 0u);
 
     com_begin_transfer(&ps->com, &ps->intc, 0x5Au);
@@ -209,7 +209,7 @@ static void test_transfer_without_a_bios_reports_no_acknowledge(void) {
     psemu_t *ps = psemu_create();
     uint8_t out = 0x00;
 
-    /* No code answers without a BIOS. A caller must get the same result that a console gets for an
+    /* No code answers without a BIOS. A caller must get the same result that a PS1 gets for an
        empty slot. The caller must also not wait without a limit. */
     int ack = psemu_com_transfer(ps, 0x81u, &out, 4096u);
     assert(ack == 0);
