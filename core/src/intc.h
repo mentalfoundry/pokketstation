@@ -53,8 +53,13 @@
    live level against the level that it expects. It stops immediately if the two levels differ.
    While bit 12 was absent from this mask, STATUS bit 12 always read back as 0.
    Thus that comparison could never succeed, and no IR transfer could decode.
-   See apply_rx_level in core/src/ir.c, and docs/hardware-notes.md, "IR / IR Link". */
-#define INT_STATUS_MASK 0x0000121Fu
+   See apply_rx_level in core/src/ir.c, and docs/hardware-notes.md, "IR / IR Link".
+   INT_IOP (bit 11) is the docking sense, and it came last. A published register map names this bit
+   in INT_INPUT directly: "IRQ Docked (0=Undocked, 1=Docked to PSX)". That map also records a
+   necessary read of this live level during a communication transfer. That read finds an undock event
+   while the transfer is in progress. Only a level in STATUS can supply that reading.
+   See com_set_docked in core/src/com.c, and docs/hardware-notes.md, "Communication port". */
+#define INT_STATUS_MASK 0x00001A1Fu
 
 /* The sources whose STATUS bit is a continuous signal level, and not a latched request.
    An acknowledge write does NOT clear these bits.
@@ -73,8 +78,13 @@
    mask does not change it.
    A real app depends on the live level. pk_timing_bench holds Action to open its exit prompt, and
    counts 75000 sequential reads of STATUS to detect the hold. Only a level that continues after an
-   acknowledge can accumulate that count. */
-#define INT_LEVEL_MASK     (INT_IRDA | INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP)
+   acknowledge can accumulate that count.
+   INT_IOP is in this mask for the same reason. Docking is a continuous physical condition. It is not
+   an event. A device that stays in the connector stays docked. The kernel acknowledges the source at
+   the transition. It then reads the level again to find the new direction. An acknowledge that
+   clears the level makes each dock event read back as an undock event. */
+#define INT_LEVEL_MASK                                                                                             \
+    (INT_IRDA | INT_IOP | INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP)
 
 typedef struct intc {
     uint32_t hold;

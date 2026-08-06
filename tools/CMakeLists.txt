@@ -40,6 +40,13 @@ add_executable(button_timing_probe button_timing_probe.c)
 target_include_directories(button_timing_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(button_timing_probe PRIVATE psemu)
 
+# Links psemu_trace for the bus read/write trace hooks. Its "dock" mode reports the
+# PC of each COM register access, which is what identifies the COM routines of the
+# kernel for disassembly.
+add_executable(com_probe com_probe.c)
+target_include_directories(com_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(com_probe PRIVATE psemu_trace)
+
 add_executable(pk_exit_test pk_exit_test.c)
 target_include_directories(pk_exit_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(pk_exit_test PRIVATE psemu)

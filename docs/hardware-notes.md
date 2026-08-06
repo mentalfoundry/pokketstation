@@ -46,6 +46,7 @@ The CPU clock speed is variable, and `CLK_MODE` controls it. See "CLK_MODE" belo
 | `0x0A800000`+ | 0x30 | 3 timers, 0x10 bytes apart: period(+0x0), count(+0x4), control(+0x8, bits0-1 = clock divisor, bit2 = enable). |
 | `0x0B000000`+ | 0x8 | `CLK_MODE`(+0x0) - CPU/timer clock speed control. `CLK control`(+0x4) bit0 - stop/standby, halts the CPU and the timers until a button wakes them. A real-hardware test confirms this. Both words read back as `CLK_MODE`, thus `+0x4` has no readable stop status (see "CLK control" below). |
 | `0x0B800000` | 0x10 | RTC: mode(+0x0), control/adjust(+0x4), time(+0x8, R), date(+0xC, R). |
+| `0x0C000000`+ | 0x20 | Communication port to a PS1: `COM_MODE`(+0x0), `COM_STAT1`(+0x4), `COM_DATA`(+0x8), `COM_CTRL1`(+0x10), `COM_STAT2`(+0x14), `COM_CTRL2`(+0x18). See "Communication port". |
 | `0x0C800000`+ | 0x10 | IR: `IRDA_MODE`(+0x0, protocol/send-receive mode), `IRDA_DATA`(+0x4, beam on/off), `IRDA_MISC`(+0xC, unknown/reserved). See "IR / IR Link". |
 | `0x0D000000` | 0x8 | `LCD_MODE`: bit6 `DISON` (display on/off), bit7 `ROT` (rotate 180°). |
 | `0x0D000100` | 128B | LCD VRAM. |
@@ -263,6 +264,81 @@ Entries 2, 9, 12, and 15 never got to the sentinel in 20000 instructions. Thus t
 **This condition has the same shape as the volume setting, but it is less severe.** The volume byte (`0x290`) is also cleared at each boot that this emulator can produce. Real hardware must also keep that byte, because the battery keeps the SRAM powered. But the BIOS clears the volume byte one time, early, and it never writes the byte again. Thus a hold on the byte is sufficient (see "System sound volume setting"). For the date and the time, the BIOS adjusts the value to a target over many instructions. Thus there is no equivalent byte to hold. `psemu_reset` is equivalent to a new battery, and this emulator has no other boot path. Thus the January 1999 reset can be correct for that specific condition, and not a fault. This project has not established whether real hardware has a warm path at all, or what condition selects it.
 
 The result for persistence: a write to the registers before the boot cannot operate for the date and the time, because the BIOS writes over them after that. There are two options. The first is a full save-state load, which does not use the boot path at all, and which already operates. The second is a write of the necessary date after the boot, through the same `RTC_ADJUST` sequence that the BIOS uses.
+
+## Communication port
+
+The communication port is the link to a PS1. The link goes through the memory card connector. A PocketStation is a memory card in that connector. `core/src/com.c` and `com.h` hold this peripheral.
+
+### Registers
+
+The block is at `0x0C000000`, and it has a span of `0x20`.
+
+| Offset | Register | Contents |
+|---|---|---|
+| `+0x0` | `COM_MODE` | bit0 Data Output Enable. bit1 /ACK Output Level (1 = drive LOW). bit2 unknown. |
+| `+0x4` | `COM_STAT1` | bit1 Error flag (0 = Okay, 1 = Error). The other bits are unknown. |
+| `+0x8` | `COM_DATA` | bits 0 to 7. A read gets the byte from the PS1. A write sends a byte to the PS1. |
+| `+0x10` | `COM_CTRL1` | Unknown. The observed values are 0, 2, and 3. |
+| `+0x14` | `COM_STAT2` | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. |
+| `+0x18` | `COM_CTRL2` | Unknown. The observed values are 1 and 3. |
+
+The ranges at `+0x0C` and `+0x1C` have no known register. Both ranges read back as 0. A write to them has no effect. `IRDA_MISC` gets the same treatment.
+
+A published register map is the source of this layout. That map is community reverse engineering. It is not a manufacturer specification. The map marks the function of the `COM_CTRL1` bits and the `COM_CTRL2` bits as unknown. It gives only the values that it observed. A trace of a real BIOS confirms each of those values exactly. That trace also adds the two behaviors in "The handshake" below. No map records those two behaviors.
+
+`INT_COM` (bit 6) is the interrupt of this block. It is a FIQ source. `INT_IOP` (bit 11) is the separate docking sense. A value of 0 is undocked. A value of 1 is docked to a PS1. Real hardware probably senses the supply voltage on the connector.
+
+**`INT_IOP` must reach `STATUS`. An acknowledge must not clear it.** The register map names this bit in `INT_INPUT` directly. It records a necessary read of that live level during a transfer. That read finds an undock event while the transfer is in progress. Only a level in `STATUS` can supply that reading. Docking is also a continuous condition, and not an event. A device that stays in the connector stays docked. Thus `INT_IOP` is now in `INT_STATUS_MASK` and in `INT_LEVEL_MASK` (`core/src/intc.h`). Without the second mask, an acknowledge cleared the level. Each dock event then read back as an undock event. `INT_IRDA` and the buttons are in those masks for the same reasons.
+
+### The protocol is firmware, and not hardware
+
+**The kernel of the real BIOS holds the memory card protocol. This emulator implements no command.** A byte from the console raises `INT_COM`. The FIQ handler of the kernel then answers that byte. That handler holds the three memory card commands: `0x52` Read Sector, `0x53` Get ID, and `0x57` Write Sector. It also holds the PocketStation commands `0x50`, and `0x58` to `0x5F`.
+
+This division is necessary. The commands `0x5B` and `0x5C` execute a function number. The numbers `0x80` to `0xFF` resolve through a function table in the header of the app file. Only the app holds that code. Thus no protocol code outside this emulated machine can answer those commands.
+
+The kernel handles a full command inside one FIQ. IRQs and FIQs stay disabled for that time. The main program stops. Thus only the first byte of a command needs the interrupt. The kernel polls `COM_STAT2` for each byte after the first byte. That poll is at `0x04001592` in the `110` revision.
+
+This behavior has a real result on hardware. An audio generator that an interrupt drives stops during a command, and the sound distorts. This emulator gives the same result, because the behavior comes from the firmware. No model in this repository produces it.
+
+### The handshake
+
+`tools/com_probe.c` recovered this sequence from a real `J110` dump. Three kernel addresses are relevant. The COM initialization is at `0x0400073E` to `0x0400078C`. The FIQ entry is at `0x04001072`. The loop for each byte is at `0x04001574` to `0x0400159E`.
+
+The kernel does these steps for each byte:
+
+1. Write `COM_CTRL2 = 1`.
+2. Read `COM_STAT1` for the error flag.
+3. Poll `COM_STAT2` for the Ready bit.
+4. Read `COM_DATA`, but only if the command needs the incoming byte.
+5. Write the reply to `COM_DATA`.
+6. Write `COM_MODE = 1`. This step drives the data line.
+7. Write `COM_MODE = 3`. This step pulls /ACK LOW.
+
+**The block is a shift register.** One exchange moves the byte of the console in. The same exchange moves the held byte out. Thus the console receives the byte of exchange N during exchange N+1. The kernel writes `0xFF` into `COM_DATA` at initialization. That write gives the first exchange a byte to send.
+
+Two facts together give this conclusion. The kernel writes FLAG while it processes the `0x81` byte. It writes `0x5A` while it processes the `0x53` byte. The published command table gives the reply to `0x81` as "N/A". It gives the reply to `0x53` as FLAG. A model with immediate replies delivered each byte one position early.
+
+**The Ready bit of `COM_STAT2` clears at a read of `COM_DATA`. It also clears when the kernel drives /ACK LOW.** Both events are true. One event alone is not sufficient.
+
+No source records the acknowledge event. A trace found it. The data phase of a command sends bytes, and it receives only dummy bytes. Thus the kernel never reads `COM_DATA` during that phase. With only the data-read rule, the Ready bit kept the value from the byte before. The poll loop of the kernel then read a byte that never arrived. It ran through the remainder of the command inside one exchange. The recorded result was `0xFF`, FLAG, `0x5A`, and `0x5D`, and then a reply of `0x80` for each byte after those four. `0x80` is the *last* byte of the Get ID command.
+
+The data-read rule is still necessary for the first byte. There the trace shows two steps in order: the kernel acknowledges, and it then reads `COM_STAT2`. That read must give 0.
+
+### Verified exchanges
+
+`tools/com_probe.c` runs these exchanges against a real `J110` dump. Each reply below comes from the firmware. No code in this repository produces one of these values.
+
+- **Get ID (`0x53`)** returns `0xFF`, FLAG (`0x08`), `0x5A`, `0x5D`, `0x5C`, `0x5D`, `0x04`, `0x00`, `0x00`, and `0x80`. The last byte carries no acknowledge. A usual memory card gives the same values. It also gives no acknowledge for that last byte.
+- **Read Sector (`0x52`)** takes 140 exchanges. It returns FLAG, `0x5A`, `0x5D`, the address echo, `0x5C`, `0x5D`, the confirmed address, 128 data bytes, the checksum, and the `0x47` ("G", Good) terminator. The dummy bytes at the address positions are `0x00`. A usual card sends the previous byte at those positions. The register map records this difference. The trace confirms it.
+- **Command `0x5A` (Get Dir_index, ComFlags, F_SN, Date, and Time)** returns six items in order: the length `0x12`, the current dir index, four `ComFlags` bits, `F_SN` as `D3 00 00 41`, the BCD date, and the BCD time. That `F_SN` value is `0x410000D3`, which is `PSEMU_DEFAULT_HARDWARE_ID`. The date is 1999-01-01. The BIOS boot path always writes that date (see "RTC" above). A console game uses this command to find a PocketStation in place of a memory card.
+
+`ComFlags` is a word in kernel RAM at `0x0C0`. Bit 9 is "Communication Enabled And Docked". The kernel sets that bit one frame after `psemu_com_set_docked` asserts the docking level. No code answers a command while that bit is clear. `com_probe` reports the word before the transition and after it. The recorded values are `0x00070000` and then `0x0007020F`.
+
+### Known open questions
+
+- The function of the `COM_CTRL1` bits and the `COM_CTRL2` bits is still unknown. This emulator accepts the writes. It reads the values back. No observed behavior depends on those bits. Thus this treatment is sufficient for the exchanges above. A command that this project did not test can still depend on them.
+- `COM_STAT1` bit 1 is an error flag, and this emulator never sets it. This model has no error condition. A caller delivers a complete byte, or it delivers nothing. Real hardware can report three more conditions: a timeout, a parity error, or a /SEL line that went low during a transfer.
+- A transfer that arrives during a clock stop is untested. `INT_COM` is not in the wake sources of `psemu_run`. Such a transfer reports no acknowledge after its cycle budget expires. Real hardware probably wakes, because a console must reach a card in a device that sleeps.
 
 ## IR / IR Link
 

@@ -25,6 +25,12 @@
 #define PSEMU_CLK_BASE 0x0B000000u
 /* Confirmed against real hardware: the real-time clock (see rtc.h). */
 #define PSEMU_RTC_BASE 0x0B800000u
+/* The communication port to a PS1, through the memory card connector
+   (see com.h). COM_MODE (+0x0), COM_STAT1 (+0x4), COM_DATA (+0x8),
+   COM_CTRL1 (+0x10), COM_STAT2 (+0x14), COM_CTRL2 (+0x18). A published
+   register map is the source of this layout. That map marks the function
+   of several bits as unknown. */
+#define PSEMU_COM_BASE 0x0C000000u
 #define PSEMU_IR_BASE 0x0C800000u
 /* Confirmed against real hardware: LCD_MODE (+0x0, which holds DISON,
    ROT, and the draw mode) and LCD_CAL (+0x4). See lcd.h. */
@@ -40,6 +46,7 @@
 struct lcd;
 struct intc;
 struct flash;
+struct com;
 struct ir;
 struct timer;
 struct rtc;
@@ -53,6 +60,7 @@ typedef struct psemu_bus {
     struct lcd *lcd;
     struct intc *intc;
     struct flash *flash;
+    struct com *com;
     struct ir *ir;
     struct timer *timer;
     struct rtc *rtc;
@@ -87,8 +95,8 @@ typedef struct psemu_bus {
 } psemu_bus_t;
 
 void psemu_bus_init(
-    psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
-    struct rtc *rtc, struct dac *dac, struct clk *clk, struct iop *iop);
+    psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct com *com, struct ir *ir,
+    struct timer *timer, struct rtc *rtc, struct dac *dac, struct clk *clk, struct iop *iop);
 
 uint8_t psemu_bus_read8(psemu_bus_t *bus, uint32_t addr);
 uint16_t psemu_bus_read16(psemu_bus_t *bus, uint32_t addr);

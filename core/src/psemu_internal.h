@@ -2,6 +2,7 @@
 #define PSEMU_INTERNAL_H
 
 #include "clk.h"
+#include "com.h"
 #include "cpu.h"
 #include "dac.h"
 #include "flash.h"
@@ -20,6 +21,7 @@ struct psemu {
     lcd_t lcd;
     intc_t intc;
     flash_t flash;
+    com_t com;
     ir_t ir;
     psemu_timer_t timer;
     rtc_t rtc;

@@ -14,6 +14,7 @@ psemu_t *psemu_create(void) {
     lcd_init(&ps->lcd);
     intc_init(&ps->intc);
     flash_init(&ps->flash);
+    com_init(&ps->com);
     ir_init(&ps->ir);
     timer_init(&ps->timer);
     rtc_init(&ps->rtc);
@@ -21,7 +22,8 @@ psemu_t *psemu_create(void) {
     clk_init(&ps->clk);
     iop_init(&ps->iop);
     psemu_bus_init(
-        &ps->bus, &ps->lcd, &ps->intc, &ps->flash, &ps->ir, &ps->timer, &ps->rtc, &ps->dac, &ps->clk, &ps->iop);
+        &ps->bus, &ps->lcd, &ps->intc, &ps->flash, &ps->com, &ps->ir, &ps->timer, &ps->rtc, &ps->dac, &ps->clk,
+        &ps->iop);
     arm7tdmi_init(&ps->cpu, &ps->bus);
     ps->buttons = 0;
     ps->has_bios = 0;
@@ -66,6 +68,7 @@ void psemu_reset(psemu_t *ps) {
        screen already shows. */
     ps->lcd.dirty = 1;
     intc_init(&ps->intc);
+    com_init(&ps->com);
     ir_init(&ps->ir);
     timer_init(&ps->timer);
     rtc_init(&ps->rtc);
@@ -581,6 +584,57 @@ uint64_t psemu_ir_get_clock_us(const psemu_t *ps) {
     return (ir_get_clock_cycles(&ps->ir) * 1000000ull) / PSEMU_ASSUMED_CPU_HZ;
 }
 
+void psemu_com_set_docked(psemu_t *ps, int docked) {
+    com_set_docked(&ps->com, &ps->intc, docked);
+}
+
+int psemu_com_get_docked(const psemu_t *ps) {
+    return ps->com.docked;
+}
+
+/* The execution step size of psemu_com_transfer. That function runs the machine in steps of this
+   size. It tests the acknowledge line between steps.
+   A small value stops the machine near the answer of the kernel. It costs one more psemu_run call
+   for each step. A large value runs past the answer. The machine then executes instructions that the
+   console did not wait for. That condition is not a fault, because real hardware also executes
+   between bytes. It costs only host time.
+   The kernel answers from a FIQ handler. Entry and dispatch of that handler cost approximately 98
+   raw cycles on real hardware (see docs/hardware-notes.md, "Timing measurements on real hardware").
+   Thus this value is near the cost of one answer. */
+#define COM_POLL_CHUNK_CYCLES 64u
+
+int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles) {
+    uint32_t ran = 0;
+    int acked;
+
+    com_begin_transfer(&ps->com, &ps->intc, data_in);
+
+    while (ran < timeout_cycles && !com_transfer_acked(&ps->com)) {
+        uint32_t remaining = timeout_cycles - ran;
+        uint32_t chunk = (remaining < COM_POLL_CHUNK_CYCLES) ? remaining : COM_POLL_CHUNK_CYCLES;
+        uint32_t did;
+        if (psemu_cpu_faulted(ps)) {
+            /* The register state and the memory state have no more meaning after this fault. Execute
+               no more instructions. Report no acknowledge. See psemu_cpu_faulted. */
+            break;
+        }
+        did = psemu_run(ps, chunk);
+        if (did == 0u) {
+            /* psemu_run advanced no cycles. This condition must not occur. A loop with no exit is
+               worse than a transfer that reports no acknowledge. */
+            break;
+        }
+        ran += did;
+    }
+
+    acked = com_transfer_acked(&ps->com);
+    if (data_out) {
+        *data_out = com_take_reply(&ps->com);
+    }
+    com_end_transfer(&ps->com, &ps->intc);
+    return acked;
+}
+
 int psemu_cpu_faulted(const psemu_t *ps) {
     return ps->cpu.unimplemented;
 }
@@ -765,6 +819,7 @@ psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
     ps->bus.lcd = &ps->lcd;
     ps->bus.intc = &ps->intc;
     ps->bus.flash = &ps->flash;
+    ps->bus.com = &ps->com;
     ps->bus.ir = &ps->ir;
     ps->bus.timer = &ps->timer;
     ps->bus.rtc = &ps->rtc;

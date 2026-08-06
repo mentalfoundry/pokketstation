@@ -422,6 +422,61 @@ void psemu_ir_push_rx_edge(psemu_t *ps, uint64_t local_timestamp_us, int level);
    It is useful only as one half of a timestamp conversion. See psemu_ir_push_rx_edge. */
 uint64_t psemu_ir_get_clock_us(const psemu_t *ps);
 
+/* Communication port. These functions connect this emulator to an emulated PS1. The connection goes
+   through the memory card connector. A PocketStation is a memory card in that connector.
+
+   THE PROTOCOL IS NOT HERE. The BIOS of the emulated machine holds the protocol. A byte from the
+   console raises the COM interrupt. The FIQ handler of the kernel then answers that byte. That
+   handler holds the three memory card commands: 0x52 Read Sector, 0x53 Get ID, and 0x57 Write
+   Sector. It also holds the PocketStation commands 0x50, and 0x58 to 0x5F. Thus a caller supplies
+   bytes and receives bytes. A caller must not implement a command.
+
+   This division is necessary. The commands 0x5B and 0x5C execute a function number. The numbers 0x80
+   to 0xFF resolve through a function table in the header of the app file. Only the app holds that
+   code. Thus no protocol code outside this emulator can answer those commands.
+
+   A caller needs a loaded BIOS. Without a BIOS, no code answers a transfer. Each transfer then
+   reports no acknowledge.
+
+   Usual use, from the memory card transfer path of a console emulator:
+   - Call psemu_com_set_docked(ps, 1) one time. Do this when the user puts the device in the slot.
+     Then run the machine for several frames. The kernel enables communication in response to the
+     docking signal. A stopped machine cannot do this.
+   - Call psemu_com_transfer for each byte of a transfer. Supply the byte from the console. Send the
+     reply back to the console.
+   - Call psemu_com_set_docked(ps, 0) when the user removes the device. */
+
+/* Sets the docking sense. `docked` is 0 for undocked. A nonzero value is docked.
+   Real hardware senses the supply voltage on the connector. The kernel enables communication only
+   while it senses the docked condition. It disables communication again at removal. The kernel also
+   uses this signal for three more operations: it powers down the audio DAC, it powers down the
+   infrared transceiver, and it rotates the screen. ComFlags bits 16 to 18 select those operations. */
+void psemu_com_set_docked(psemu_t *ps, int docked);
+
+/* Returns the last value that psemu_com_set_docked received. */
+int psemu_com_get_docked(const psemu_t *ps);
+
+/* Exchanges one byte with the console.
+   `data_in` is the byte from the console. This function writes the reply of the device to
+   *data_out.
+
+   This function RUNS THE CPU. An interrupt handler on real hardware answers a byte. Thus the
+   emulated machine must execute before the reply exists. This function executes a maximum of
+   `timeout_cycles` cycles. It stops when the kernel drives the acknowledge line.
+
+   It returns a nonzero value after the device acknowledges the byte. It returns 0 if the device does
+   not answer inside the budget. A console gives a missing acknowledge one of two meanings: the
+   device is absent, or the command is complete. A caller gives a 0 return the same two meanings. The
+   acknowledge of a memory card carries the same meaning.
+
+   *data_out gets 0xFF if the device supplies no reply byte. An idle data line on this bus is high.
+
+   PSEMU_COM_DEFAULT_TIMEOUT_CYCLES is a sufficient budget for `timeout_cycles`. The kernel answers a
+   byte from its FIQ handler. Thus a usual reply costs much less than this value. The budget stops a
+   caller that waits for a device that never answers. */
+#define PSEMU_COM_DEFAULT_TIMEOUT_CYCLES 20000u
+int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles);
+
 /* Returns a nonzero value if the CPU executed an opcode that this emulator does not
    recognize.
    This flag is sticky: it stays set after it is set one time.

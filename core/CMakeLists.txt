@@ -1,6 +1,7 @@
 set(PSEMU_SOURCES
     src/arm_exec.c
     src/clk.c
+    src/com.c
     src/cpu.c
     src/dac.c
     src/flash.c

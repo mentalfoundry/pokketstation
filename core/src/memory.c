@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "clk.h"
+#include "com.h"
 #include "cpu.h"
 #include "dac.h"
 #include "flash.h"
@@ -65,13 +66,14 @@ void (*psemu_bus_write_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc) = NU
 #endif
 
 void psemu_bus_init(
-    psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct ir *ir, struct timer *timer,
-    struct rtc *rtc, struct dac *dac, struct clk *clk, struct iop *iop) {
+    psemu_bus_t *bus, struct lcd *lcd, struct intc *intc, struct flash *flash, struct com *com, struct ir *ir,
+    struct timer *timer, struct rtc *rtc, struct dac *dac, struct clk *clk, struct iop *iop) {
     memset(bus->ram, 0, sizeof(bus->ram));
     memset(bus->bios, 0, sizeof(bus->bios));
     bus->lcd = lcd;
     bus->intc = intc;
     bus->flash = flash;
+    bus->com = com;
     bus->ir = ir;
     bus->timer = timer;
     bus->rtc = rtc;
@@ -200,6 +202,9 @@ static uint8_t bus_read8_untraced(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_INTC_BASE && addr < PSEMU_INTC_BASE + INTC_REG_SPAN) {
         return intc_read8(bus->intc, addr - PSEMU_INTC_BASE);
     }
+    if (addr >= PSEMU_COM_BASE && addr < PSEMU_COM_BASE + COM_REG_SPAN) {
+        return (uint8_t)com_read(bus->com, bus->intc, addr - PSEMU_COM_BASE);
+    }
     if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + IR_REG_SPAN) {
         return (uint8_t)ir_read(bus->ir, addr - PSEMU_IR_BASE);
     }
@@ -284,6 +289,10 @@ static void bus_write8_raw(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
     }
     if (addr >= PSEMU_INTC_BASE && addr < PSEMU_INTC_BASE + INTC_REG_SPAN) {
         intc_write8(bus->intc, addr - PSEMU_INTC_BASE, value);
+        return;
+    }
+    if (addr >= PSEMU_COM_BASE && addr < PSEMU_COM_BASE + COM_REG_SPAN) {
+        com_write(bus->com, bus->intc, addr - PSEMU_COM_BASE, value);
         return;
     }
     if (addr >= PSEMU_IR_BASE && addr < PSEMU_IR_BASE + IR_REG_SPAN) {
