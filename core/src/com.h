@@ -85,6 +85,23 @@ typedef struct com {
     int rx_ready;     /* COM_STAT2 bit 0. A byte arrived. The kernel did not read the byte yet. */
     int ack_asserted; /* The kernel drove /ACK LOW through COM_MODE bit 1. */
 
+    /* The /SEL line of the connector. The console holds this line for the full duration of one
+       command. It releases the line between commands.
+
+       selected is the level of that line. sel_drop_latch records a release since the last read of
+       COM_STAT1. That latch is COM_STAT1 bit 1.
+
+       THE KERNEL NEEDS THIS SIGNAL TO END A COMMAND. After the last byte, the kernel waits at
+       0x040007B8 in the J110 revision. It polls COM_STAT1 there. Nothing else releases that wait. A
+       test against a real dump confirms bit 1, and it rejects each of bits 2 to 7. See
+       tools/com_probe.c, the selbit mode.
+
+       The published register map names bit 1 "Error flag". It gives one candidate meaning for the
+       flag: "/SEL disabled during transfer". That candidate is the correct one. The release of /SEL
+       is not a fault. It is the usual end of each command. */
+    int selected;
+    int sel_drop_latch;
+
     int docked; /* The last value that com_set_docked received. */
 } com_t;
 
@@ -110,6 +127,12 @@ void com_write(com_t *com, struct intc *intc, uint32_t offset, uint32_t value);
    The kernel enables communication only while it senses the docked condition. Thus a caller must set
    this signal before it starts a transfer. */
 void com_set_docked(com_t *com, struct intc *intc, int docked);
+
+/* Sets the /SEL line. `selected` is 0 for released. A nonzero value is held.
+   A console holds this line for one command, and it releases the line between commands.
+   A release sets COM_STAT1 bit 1, and that bit ends the wait of the kernel. See selected in the
+   structure above. */
+void com_set_selected(com_t *com, int selected);
 
 /* Starts one byte exchange. `data_in` is the byte from the PS1.
    This function puts the byte at COM_DATA. It sets the Ready bit of COM_STAT2. It then asserts

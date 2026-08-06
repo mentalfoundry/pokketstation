@@ -276,7 +276,7 @@ The block is at `0x0C000000`, and it has a span of `0x20`.
 | Offset | Register | Contents |
 |---|---|---|
 | `+0x0` | `COM_MODE` | bit0 Data Output Enable. bit1 /ACK Output Level (1 = drive LOW). bit2 unknown. |
-| `+0x4` | `COM_STAT1` | bit1 Error flag (0 = Okay, 1 = Error). The other bits are unknown. |
+| `+0x4` | `COM_STAT1` | bit0 a byte arrived. bit1 the console released /SEL. See "The /SEL line". |
 | `+0x8` | `COM_DATA` | bits 0 to 7. A read gets the byte from the PS1. A write sends a byte to the PS1. |
 | `+0x10` | `COM_CTRL1` | Unknown. The observed values are 0, 2, and 3. |
 | `+0x14` | `COM_STAT2` | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. |
@@ -324,6 +324,20 @@ No source records the acknowledge event. A trace found it. The data phase of a c
 
 The data-read rule is still necessary for the first byte. There the trace shows two steps in order: the kernel acknowledges, and it then reads `COM_STAT2`. That read must give 0.
 
+### The /SEL line
+
+**A console holds the /SEL line of the connector for the full duration of one command. It releases the line between commands. `COM_STAT1` bit 1 reports that release, and the kernel needs the signal to end a command.**
+
+The kernel waits at `0x040007B8` after the last byte. It polls `COM_STAT1` there. Nothing else releases that wait. Without the signal, the kernel answers the first command after docking and then answers nothing. The `selbit` mode of `tools/com_probe.c` sets one candidate bit at a time and then sends a second command. Bit 1 is the only bit that lets that second command run. Bits 2 to 7 all fail.
+
+The published register map names bit 1 "Error flag", and it gives four candidate meanings. One candidate is "/SEL disabled during transfer". That candidate is the correct one. A release of /SEL is not a fault. It is the usual end of each command.
+
+A read of `COM_STAT1` clears this latch. The same map records a dummy read of the register by the kernel at the end of each transfer, and it gives a hardware clear at a read as one candidate reason for that read.
+
+**`COM_STAT1` bit 0 reports an arrived byte.** It gives the same condition as the Ready bit of `COM_STAT2`. The write path of the kernel polls `COM_STAT1` in place of `COM_STAT2`, at `0x040015D6`. A model that held bit 0 clear stopped that path after one data byte. A model that held bit 0 always set made the kernel read one byte many times, and Write Sector then failed with `0x4E` ("N", bad checksum). Only a bit that follows the arrival of a byte gives a correct write.
+
+**The kernel programs flash only after the command ends.** No store reaches the flash regions during the byte exchanges of a Write Sector command. The stores follow the release of /SEL. A first investigation read that delay as a block on flash writes, and looked for a status bit that enabled them. That reading was incorrect. The cause was the missing /SEL release alone.
+
 ### Verified exchanges
 
 `tools/com_probe.c` runs these exchanges against a real `J110` dump. Each reply below comes from the firmware. No code in this repository produces one of these values.
@@ -331,6 +345,9 @@ The data-read rule is still necessary for the first byte. There the trace shows 
 - **Get ID (`0x53`)** returns `0xFF`, FLAG (`0x08`), `0x5A`, `0x5D`, `0x5C`, `0x5D`, `0x04`, `0x00`, `0x00`, and `0x80`. The last byte carries no acknowledge. A usual memory card gives the same values. It also gives no acknowledge for that last byte.
 - **Read Sector (`0x52`)** takes 140 exchanges. It returns FLAG, `0x5A`, `0x5D`, the address echo, `0x5C`, `0x5D`, the confirmed address, 128 data bytes, the checksum, and the `0x47` ("G", Good) terminator. The dummy bytes at the address positions are `0x00`. A usual card sends the previous byte at those positions. The register map records this difference. The trace confirms it.
 - **Command `0x5A` (Get Dir_index, ComFlags, F_SN, Date, and Time)** returns six items in order: the length `0x12`, the current dir index, four `ComFlags` bits, `F_SN` as `D3 00 00 41`, the BCD date, and the BCD time. That `F_SN` value is `0x410000D3`, which is `PSEMU_DEFAULT_HARDWARE_ID`. The date is 1999-01-01. The BIOS boot path always writes that date (see "RTC" above). A console game uses this command to find a PocketStation in place of a memory card.
+- **Write Sector (`0x57`)** takes 139 exchanges against a real card. It returns FLAG, `0x5A`, `0x5D`, the address echo, `0x5C`, `0x5D`, and the `0x47` ("G", Good) terminator. The `write` mode of `com_probe` then reads the frame back out of flash. The frame holds the sent data exactly, and no other frame of the card changes. A run with a deliberately incorrect checksum returns `0x4E` ("N", bad checksum), and no frame changes.
+- The flash-write counts agree with the documented write sequence exactly. One Write Sector command makes 134 stores into `FLASH2` from `0x0400122C`, and 8 stores into `FLASH_CTRL` from `0x04001278`. The 134 stores are 128 data bytes and the three halfword unlock keys. The 8 stores are `F_WAIT2 = 0x21` and then `F_WAIT2 = 0x00`.
+- **Command `0x5F` (Get-and-Send ComFlags.bit0)** operates, and it changes the word from `0x0007020F` to `0x0007020E`. This command is NOT necessary before a write on this revision. An official kernel specification gives bit 0 as a flash-write enable, and a published register map records that the two layouts of this word come from different BIOS revisions. The J110 revision follows the reverse-engineered layout, where bits 0 to 3 have no recorded meaning.
 
 `ComFlags` is a word in kernel RAM at `0x0C0`. Bit 9 is "Communication Enabled And Docked". The kernel sets that bit one frame after `psemu_com_set_docked` asserts the docking level. No code answers a command while that bit is clear. `com_probe` reports the word before the transition and after it. The recorded values are `0x00070000` and then `0x0007020F`.
 

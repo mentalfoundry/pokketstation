@@ -603,10 +603,18 @@ int psemu_com_get_docked(const psemu_t *ps) {
    Thus this value is near the cost of one answer. */
 #define COM_POLL_CHUNK_CYCLES 64u
 
+void psemu_com_set_selected(psemu_t *ps, int selected) {
+    com_set_selected(&ps->com, selected);
+}
+
 int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles) {
     uint32_t ran = 0;
     int acked;
 
+    /* A byte can only arrive while the console holds the /SEL line. A caller that never sets the
+       line still gets a working transfer, because this call holds it. The caller keeps the duty to
+       release the line at the end of a command. See psemu_com_set_selected. */
+    com_set_selected(&ps->com, 1);
     com_begin_transfer(&ps->com, &ps->intc, data_in);
 
     while (ran < timeout_cycles && !com_transfer_acked(&ps->com)) {

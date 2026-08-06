@@ -154,6 +154,54 @@ static void test_acknowledge_ends_the_exchange_without_a_data_read(void) {
     printf("test_acknowledge_ends_the_exchange_without_a_data_read OK\n");
 }
 
+static void test_sel_release_sets_the_end_of_command_bit(void) {
+    psemu_t *ps = psemu_create();
+
+    /* The /SEL line of the connector. A console holds it for one command, and it releases the line
+       between commands. The kernel waits for that release after the last byte of a command, at
+       0x040007B8 in the J110 revision. A test against a real dump confirms COM_STAT1 bit 1, and it
+       rejects each of bits 2 to 7. Without this signal the kernel answers one command and then
+       answers nothing. See tools/com_probe.c, the selbit mode. */
+    psemu_com_set_selected(ps, 1);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) == 0u);
+
+    psemu_com_set_selected(ps, 0);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) != 0u);
+
+    /* A read of the register clears the latch. The published register map records a dummy read of
+       this register by the kernel at the end of each transfer, and it gives a hardware clear at a
+       read as one candidate reason. */
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) == 0u);
+
+    /* A release with no hold before it sets nothing. */
+    psemu_com_set_selected(ps, 0);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) == 0u);
+
+    psemu_destroy(ps);
+    printf("test_sel_release_sets_the_end_of_command_bit OK\n");
+}
+
+static void test_stat1_bit0_follows_an_arrived_byte(void) {
+    psemu_t *ps = psemu_create();
+
+    /* The write path of the kernel polls COM_STAT1 in place of COM_STAT2, at 0x040015D6. Thus bit 0
+       must give the same condition as the Ready bit of COM_STAT2. A model that held the bit clear
+       stopped that path after one data byte. A model that held the bit always set made the kernel
+       read one byte many times, and Write Sector then failed with 0x4E. */
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) == 0u);
+
+    com_begin_transfer(&ps->com, &ps->intc, 0x5Au);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) != 0u);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT2) & COM_STAT2_READY) != 0u);
+
+    (void)psemu_bus_read32(&ps->bus, COM_DATA);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) == 0u);
+
+    com_end_transfer(&ps->com, &ps->intc);
+    psemu_destroy(ps);
+    printf("test_stat1_bit0_follows_an_arrived_byte OK\n");
+}
+
 static void test_transfer_without_a_bios_reports_no_acknowledge(void) {
     psemu_t *ps = psemu_create();
     uint8_t out = 0x00;
@@ -172,6 +220,7 @@ static void test_reset_clears_the_port(void) {
     psemu_t *ps = psemu_create();
 
     psemu_com_set_docked(ps, 1);
+    psemu_com_set_selected(ps, 1);
     psemu_bus_write32(&ps->bus, COM_MODE, 0x06u);
     psemu_bus_write32(&ps->bus, COM_CTRL1, 0x02u);
     com_begin_transfer(&ps->com, &ps->intc, 0x81u);
@@ -183,6 +232,8 @@ static void test_reset_clears_the_port(void) {
     assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0u);
     assert(psemu_com_get_docked(ps) == 0);
     assert(com_transfer_acked(&ps->com) == 0);
+    assert(ps->com.selected == 0);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) == 0u);
 
     psemu_destroy(ps);
     printf("test_reset_clears_the_port OK\n");
@@ -195,6 +246,8 @@ int main(void) {
     test_transfer_shifts_the_held_byte_out();
     test_ready_bit_reports_an_arrived_byte();
     test_acknowledge_ends_the_exchange_without_a_data_read();
+    test_sel_release_sets_the_end_of_command_bit();
+    test_stat1_bit0_follows_an_arrived_byte();
     test_transfer_without_a_bios_reports_no_acknowledge();
     test_reset_clears_the_port();
     printf("All COM tests passed.\n");

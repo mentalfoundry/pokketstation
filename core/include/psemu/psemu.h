@@ -456,6 +456,20 @@ void psemu_com_set_docked(psemu_t *ps, int docked);
 /* Returns the last value that psemu_com_set_docked received. */
 int psemu_com_get_docked(const psemu_t *ps);
 
+/* Sets the /SEL line of the connector. `selected` is 0 for released. A nonzero value is held.
+   A console holds this line for the full duration of one command. It releases the line between
+   commands. On a console emulator this line is the select bit of the controller port.
+
+   A CALLER MUST RELEASE THIS LINE AFTER EACH COMMAND. The kernel waits for the release, and that
+   wait is how it learns that a command ended. Without the release, the kernel answers the first
+   command and then answers nothing. psemu_com_transfer holds the line for each byte that it sends,
+   thus a caller only has to release it.
+
+   The usual sequence for one command is a call to psemu_com_transfer for each byte, and then a call
+   to psemu_com_set_selected(ps, 0). Run the machine for a short time after the release, so the
+   kernel can leave its wait and make its command state ready again. */
+void psemu_com_set_selected(psemu_t *ps, int selected);
+
 /* Exchanges one byte with the console.
    `data_in` is the byte from the console. This function writes the reply of the device to
    *data_out.
@@ -471,10 +485,28 @@ int psemu_com_get_docked(const psemu_t *ps);
 
    *data_out gets 0xFF if the device supplies no reply byte. An idle data line on this bus is high.
 
-   PSEMU_COM_DEFAULT_TIMEOUT_CYCLES is a sufficient budget for `timeout_cycles`. The kernel answers a
-   byte from its FIQ handler. Thus a usual reply costs much less than this value. The budget stops a
-   caller that waits for a device that never answers. */
-#define PSEMU_COM_DEFAULT_TIMEOUT_CYCLES 20000u
+   PSEMU_COM_DEFAULT_TIMEOUT_CYCLES is a sufficient budget for `timeout_cycles` in the docked
+   condition. A caller can supply a larger value.
+
+   The `wait` mode of tools/com_probe.c measured the cost of one answer against a real J110 dump. The
+   first byte of a command costs 177 reference cycles, because the kernel must take the FIQ. Each
+   byte after the first byte costs 52 to 112 cycles, because the kernel already polls COM_STAT2
+   inside that same FIQ. Thus 177 cycles is the worst measured answer.
+
+   THIS COST SCALES WITH CLK_MODE. That measurement used CLK_MODE 7 (3,997,696Hz), and the kernel
+   selects that mode when it enables communication in the docked condition. The budget here is in
+   PSEMU_ASSUMED_CPU_HZ reference cycles (1,056,000Hz). Thus a slower clock makes the same work cost
+   more reference cycles. The measured 177 cycles is approximately 670 CPU cycles. That work costs
+   approximately 5600 reference cycles at CLK_MODE 2, and approximately 21600 at CLK_MODE 0.
+
+   This value covers CLK_MODE 2 and each faster mode. It is approximately 46 times the worst measured
+   answer at the docked clock. An app that slows the clock below CLK_MODE 2 while it is docked needs
+   a larger budget from the caller.
+
+   Do not make this value very large. A command gives no acknowledge for its last byte, because the
+   command is complete at that point. Thus every command reaches this budget one time, and the
+   machine executes for the full budget before this function returns. */
+#define PSEMU_COM_DEFAULT_TIMEOUT_CYCLES 8192u
 int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles);
 
 /* Returns a nonzero value if the CPU executed an opcode that this emulator does not

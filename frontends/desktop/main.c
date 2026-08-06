@@ -136,8 +136,14 @@ static const char *save_slot_label(int slot) {
    change. But the hash of a version-4 file never agrees with the hash of a
    version-5 file. A message that says "this state does not belong to this
    card" is worse than a message that says "this state is from an older
-   build". */
-#define QUICKSAVE_VERSION 5u
+   build".
+   6: psemu_t received com_t, the communication port to a PS1 (see
+   core/src/com.h). That field is between flash_t and ir_t. Thus the size
+   changed, and the offset of each field after flash_t also changed. A build
+   before this version reads a version-6 state as a version-5 state, because
+   the size test finds only a state that became smaller. Each field after
+   flash_t is then incorrect. This version number refuses that load. */
+#define QUICKSAVE_VERSION 6u
 
 /* app_size and app_hash prevent a load of a state that a different app or card
    made. The file name for each app already makes such a load improbable. This

@@ -42,9 +42,26 @@ void com_init(com_t *com) {
     com->tx_shifted = COM_REPLY_IDLE;
     com->rx_ready = 0;
     com->ack_asserted = 0;
+    com->selected = 0;
+    com->sel_drop_latch = 0;
     com->docked = 0;
 }
 
+/* A SIDE EFFECT OF A READ MUST OCCUR ON ONE BYTE LANE ONLY, AND THAT LANE MUST BE THE LANE THAT
+   CARRIES THE BITS. Two registers here clear state at a read: COM_DATA takes the arrived byte, and
+   COM_STAT1 clears the /SEL latch. Each of those values is in the low byte, thus each clear happens
+   only for shift == 0.
+
+   This rule is necessary, and it is not a simplification. psemu_bus_read32 (core/src/memory.c) makes
+   four calls to this function, one for each byte lane, and it combines the four results with the |
+   operator. C does not sequence the operands of that operator. Thus a compiler can call the lanes in
+   any order.
+
+   A clear on every lane made the result depend on that order. A build that called lane 3 first got
+   the value, discarded it through the shift, and cleared the latch. Lane 0 then read a latch that
+   was already clear, and the assembled word lost the bit. A Debug build called lane 0 first and gave
+   the correct result. A Release build reordered the calls and gave 0. See
+   test_sel_release_sets_the_end_of_command_bit in tests/com_test.c. */
 uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
     uint32_t word_index = (offset / 4u) % 8u;
     uint32_t shift = (offset % 4u) * 8u;
@@ -55,15 +72,28 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
         value = com->mode;
         break;
     case 1:
-        /* COM_STAT1 bit 1 is an error flag. This emulator has no error condition to report. The
-           caller of com_begin_transfer delivers a complete byte, or it delivers nothing. Thus this
-           register always reports "no error".
-           The published register map records a dummy read of this register by the kernel at the end
-           of each transfer. The map gives two possible reasons for that read. The first reason is an
-           acknowledge of an unknown condition. The second reason is a hardware clear of the error
-           bit at a read. This emulator never sets the bit. Thus neither reason changes the behavior
-           here. */
-        value = com->stat1;
+        /* COM_STAT1 carries two flags that the kernel needs.
+
+           BIT 1 REPORTS A RELEASE OF THE /SEL LINE. That release is the end of one command. The
+           kernel waits for this bit after the last byte, at 0x040007B8 in the J110 revision. See
+           selected in com.h for the test that confirms the bit.
+
+           BIT 0 REPORTS AN ARRIVED BYTE. This bit gives the same condition as the Ready bit of
+           COM_STAT2. The write path of the kernel polls this register in place of COM_STAT2, at
+           0x040015D6. A model that held bit 0 clear stopped that path after one data byte. A model
+           that held bit 0 always set made the kernel read the same byte many times, and the Write
+           Sector command then failed with 0x4E ("N", bad checksum). Only a bit that follows the
+           arrival of a byte gives a correct write.
+
+           A READ OF THIS REGISTER CLEARS THE /SEL LATCH. The published register map records a dummy
+           read of this register by the kernel at the end of each transfer. It gives a hardware clear
+           at a read as one candidate reason. This model uses that candidate.
+
+           ONLY THE LOW BYTE LANE CLEARS THE LATCH. See the note on side effects below. */
+        value = com->stat1 | (com->rx_ready ? 1u : 0u) | (com->sel_drop_latch ? COM_STAT1_ERROR : 0u);
+        if (shift == 0u) {
+            com->sel_drop_latch = 0;
+        }
         break;
     case 2:
         /* A read of COM_DATA takes the byte that the PS1 sent.
@@ -79,10 +109,14 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
            A test recorded that result directly. The first four bytes were correct: 0xFF, FLAG, 0x5A,
            and 0x5D. The reply then stayed at 0x80 for each byte after those four. 0x80 is the LAST
            byte of that command, thus the handler ran to the end of the command.
-           With this clear, one exchange gives one answer. */
+           With this clear, one exchange gives one answer.
+
+           ONLY THE LOW BYTE LANE TAKES THE BYTE. See the note on side effects below. */
         value = com->rx_data;
-        com->rx_ready = 0;
-        intc_set_line(intc, INT_COM, 0);
+        if (shift == 0u) {
+            com->rx_ready = 0;
+            intc_set_line(intc, INT_COM, 0);
+        }
         break;
     case 4:
         value = com->ctrl1;
@@ -188,6 +222,15 @@ void com_set_docked(com_t *com, struct intc *intc, int docked) {
        transition and for the undock transition. The kernel also reads the level during a transfer.
        That read finds an undock event while the transfer is in progress. See intc.h. */
     intc_set_line(intc, INT_IOP, com->docked);
+}
+
+void com_set_selected(com_t *com, int selected) {
+    int now = selected ? 1 : 0;
+    if (com->selected && !now) {
+        /* The console released the line. This is the end of one command. */
+        com->sel_drop_latch = 1;
+    }
+    com->selected = now;
 }
 
 void com_begin_transfer(com_t *com, struct intc *intc, uint8_t data_in) {
