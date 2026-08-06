@@ -159,6 +159,10 @@ void intc_clear_hold_only(intc_t *intc, uint32_t line) {
     intc->hold &= ~line;
 }
 
+void intc_clear_status_only(intc_t *intc, uint32_t line) {
+    intc->status &= ~line;
+}
+
 void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level) {
     if (line == 0) {
         return;

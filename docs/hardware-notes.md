@@ -381,6 +381,19 @@ No available data separates offset `+0x8` from `IRDA_MISC`. Thus this emulator g
 
 A disassembly of the receive handler of a real app gives that polarity. The handler arms itself for level 0 before a carrier arrives, and it measures the sync burst as the interval that ends when the line returns to 1. No real-hardware measurement confirms the polarity directly.
 
+### The INT_IRDA level is 0 during a transmission and in standby
+
+**The `INT_IRDA` level in the INTC `STATUS` register is 0 during a transmission and in standby.** The receive path of a half-duplex transceiver gives a signal only while `IFMODE` selects receive and `STDBY` is clear. `ir_tick` in `core/src/ir.c` holds this rule. It uses `intc_clear_status_only`, which clears only the level. A latched request in `HOLD` stays, and only an acknowledge from software clears it.
+
+Two properties of the level make this rule necessary:
+
+- **The level from the last edge of a receive period stays after that period ends.** `apply_rx_level` writes the level only on an edge, and only while receive mode is active. Thus that value stays for the full life of the instance, and the next receive period starts with it.
+- **The value at reset is 0, and a real app needs that same value at the start of each receive period.** The trading-card app trades from a level of 0 and rejects a level of 1.
+
+A two-instance measurement gives the difference. A trade that completes relays 13400 edges in one direction and 408 in the other, and it writes 65 bytes to block 1 of both cards. A trade that starts from a level of 1 relays 13060 and 398 edges, and it writes nothing.
+
+This rule changes nothing for a first transfer after a reset, because the level is already 0 there. A single-transfer `ir_probe` run gives the same edge counts, the same quantization percentages, and the same 65 changed bytes with the rule and without it.
+
 ### Sources for the register layout
 
 A disassembly by this project is the source. A secondary register map for this range agrees with that layout independently. That map is community reverse engineering, and not a manufacturer specification. It marks several IR details as uncertain.

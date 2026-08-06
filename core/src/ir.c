@@ -266,17 +266,23 @@ void ir_write(ir_t *ir, uint32_t offset, uint32_t value) {
     }
 }
 
+/* Receive mode is active while IFMODE selects receive and STDBY is clear.
+   The receive path gives a signal only in that condition. */
+static int rx_listen_active(const ir_t *ir) {
+    return (ir->mode & IR_MODE_IFMODE) == 0u && (ir->mode & IR_MODE_STDBY) == 0u;
+}
+
 /* Writes a level that passed the debounce filter to rx_level.
    It asserts INT_IRDA if receive mode is active (IFMODE = 0, STDBY = 0).
-   It discards an edge that arrives while this code does not listen, that is, during a transmission or in
-   standby. A real half-duplex transceiver also does not see that edge. */
+   It discards an edge that arrives during a transmission or in standby. A real half-duplex transceiver
+   operates the same way. */
 static void apply_rx_level(ir_t *ir, struct intc *intc, int level) {
     int listening;
     if (level == ir->rx_level) {
         return;
     }
     ir->rx_level = level;
-    listening = (ir->mode & IR_MODE_IFMODE) == 0u && (ir->mode & IR_MODE_STDBY) == 0u;
+    listening = rx_listen_active(ir);
     if (psemu_ir_trace_enabled) {
         printf("[ir trace] t=%llu RX edge level=%d %s (mode=0x%08X)\n", (unsigned long long)ir->clock_cycles, level,
             listening ? "-> INT_IRDA asserted" : "DROPPED (not listening)", ir->mode);
@@ -325,6 +331,19 @@ static void resolve_pending(ir_t *ir, struct intc *intc) {
 
 void ir_tick(ir_t *ir, struct intc *intc, uint32_t cycles) {
     ir->clock_cycles += cycles;
+
+    /* The receive path gives a signal only while receive mode is active. Thus the INT_IRDA level in
+       STATUS is 0 during a transmission and in standby.
+       This code clears only that level. A latched request in HOLD stays, and only an acknowledge from
+       software clears it. See intc_clear_status_only.
+
+       apply_rx_level writes that level only on an edge, and only while receive mode is active. Thus the
+       level from the last edge of a receive period stays after that period ends. The receive routine of
+       a real app needs the value at reset at the start of each receive period. That value is 0.
+       See docs/hardware-notes.md, "The INT_IRDA level is 0 during a transmission and in standby". */
+    if (!rx_listen_active(ir)) {
+        intc_clear_status_only(intc, INT_IRDA);
+    }
 
     for (;;) {
         const ir_edge_t *front = queue_peek(&ir->rx_queue);

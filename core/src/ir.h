@@ -157,8 +157,11 @@ void ir_write(ir_t *ir, uint32_t offset, uint32_t value);
    For each edge it applies the BFLT debounce and writes rx_level.
    It asserts INT_IRDA for each edge that passes the filter while receive mode is active (IFMODE = 0,
    STDBY = 0).
-   It discards an edge that becomes due outside that mode. A real half-duplex transceiver also does
-   not listen for that edge. */
+   It discards an edge that becomes due outside that mode. A real half-duplex transceiver operates the
+   same way.
+   Outside that mode it also holds the INT_IRDA level in STATUS at 0. The receive path gives a signal
+   only while receive mode is active. A level from an earlier transfer must not stay for the next
+   transfer. */
 void ir_tick(ir_t *ir, struct intc *intc, uint32_t cycles);
 
 /* Gets the next TX edge that this instance made.

@@ -139,6 +139,13 @@ void intc_clear_hold_only(intc_t *intc, uint32_t line);
    A call to intc_set_line with state = 0 clears HOLD and does not cause the interrupt. */
 void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level);
 
+/* Clears `line` from STATUS only. It does not change HOLD.
+   intc_clear_hold_only does the inverse.
+   Use it for a source whose signal goes away before software sends an acknowledge for its latched
+   request. The level must go, and the request must stay.
+   See ir_tick in ir.c for the source that needs this function. */
+void intc_clear_status_only(intc_t *intc, uint32_t line);
+
 int intc_irq_asserted(intc_t *intc);
 int intc_fiq_asserted(intc_t *intc);
 

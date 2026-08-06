@@ -378,6 +378,49 @@ static void test_rx_queue_holds_a_full_message_without_dropping(void) {
     printf("test_rx_queue_holds_a_full_message_without_dropping OK\n");
 }
 
+static void test_rx_status_level_goes_away_when_the_receiver_stops_listening(void) {
+    /* The INT_IRDA level in STATUS goes away with the receive period that wrote it, because the
+       receive path gives no signal during a transmission or in standby.
+       A real app reads that level, and it needs the same condition at the start of each transfer.
+       This test uses the value at reset as the reference. That value is 0.
+       See ir_tick in core/src/ir.c. */
+    psemu_t *ps = make_ps();
+
+    assert((ps->intc.status & INT_IRDA) == 0u); /* the reference condition, before any IR traffic */
+
+    psemu_bus_write32(&ps->bus, IRDA_MODE, RX_ACTIVE_MODE | IR_MODE_BFLT); /* receive, filter disabled */
+    ir_push_rx_edge(&ps->ir, ir_get_clock_cycles(&ps->ir), 1); /* the carrier arrives: the level goes to 0 */
+    ir_tick(&ps->ir, &ps->intc, 1u);
+    assert((ps->intc.status & INT_IRDA) == 0u);
+
+    ir_push_rx_edge(&ps->ir, ir_get_clock_cycles(&ps->ir), 0); /* the carrier goes: the idle level is 1 */
+    ir_tick(&ps->ir, &ps->intc, 1u);
+    assert((ps->intc.status & INT_IRDA) != 0u);
+
+    /* The app replies. The receive path gives no signal during a transmission. */
+    psemu_bus_write32(&ps->bus, IRDA_MODE, TX_ACTIVE_MODE);
+    ir_tick(&ps->ir, &ps->intc, 1u);
+    assert((ps->intc.status & INT_IRDA) == 0u);
+    assert((ps->intc.hold & INT_IRDA) != 0u); /* the latched request from the edges above stays */
+
+    /* The next transfer starts in the same condition as the first transfer after a reset. */
+    psemu_bus_write32(&ps->bus, IRDA_MODE, RX_ACTIVE_MODE | IR_MODE_BFLT);
+    ir_tick(&ps->ir, &ps->intc, 1u);
+    assert((ps->intc.status & INT_IRDA) == 0u);
+
+    /* Standby ends the receive period the same way. */
+    ir_push_rx_edge(&ps->ir, ir_get_clock_cycles(&ps->ir), 1);
+    ir_push_rx_edge(&ps->ir, ir_get_clock_cycles(&ps->ir), 0);
+    ir_tick(&ps->ir, &ps->intc, 1u);
+    assert((ps->intc.status & INT_IRDA) != 0u);
+    psemu_bus_write32(&ps->bus, IRDA_MODE, IR_MODE_STDBY | IR_MODE_BFLT);
+    ir_tick(&ps->ir, &ps->intc, 1u);
+    assert((ps->intc.status & INT_IRDA) == 0u);
+
+    psemu_destroy(ps);
+    printf("test_rx_status_level_goes_away_when_the_receiver_stops_listening OK\n");
+}
+
 int main(void) {
     test_tx_write_with_carrier_enabled_enqueues_edges();
     test_tx_write_while_not_driving_produces_no_edge();
@@ -394,6 +437,7 @@ int main(void) {
     test_tx_short_pulse_keeps_edges_in_order();
     test_tx_narrow_pulse_stretch_never_eats_the_following_gap();
     test_rx_queue_holds_a_full_message_without_dropping();
+    test_rx_status_level_goes_away_when_the_receiver_stops_listening();
     printf("All IR tests passed.\n");
     return 0;
 }
