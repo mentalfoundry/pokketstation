@@ -6,6 +6,9 @@
 #include <stdio.h>
 
 #include "psemu_internal.h"
+#include "state.h"
+
+#include <stdlib.h>
 
 /* These tests cover the register model of the communication port (core/src/com.h). They do not cover
    the memory card protocol, because this repository does not contain the protocol. The BIOS of the
@@ -169,8 +172,8 @@ static void test_sel_release_sets_the_end_of_command_bit(void) {
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) != 0u);
 
     /* A read of the register clears the latch. The published register map records a dummy read of
-       this register by the kernel at the end of each transfer, and it gives a hardware clear at a
-       read as one candidate reason. */
+       this register by the kernel at the end of each transfer. It gives a hardware clear at a read
+       as one candidate reason for that dummy read. */
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) == 0u);
 
     /* A release with no hold before it sets nothing. */
@@ -239,6 +242,156 @@ static void test_reset_clears_the_port(void) {
     printf("test_reset_clears_the_port OK\n");
 }
 
+/* The save-state format. These tests are here because com_test already reaches the internal
+   structure of the machine. See core/src/state.c for the format. */
+
+static void test_state_round_trip_keeps_the_machine(void) {
+    psemu_t *a = psemu_create();
+    psemu_t *b = psemu_create();
+    size_t size = psemu_state_size(a);
+    uint8_t *buf = (uint8_t *)malloc(size);
+    unsigned i;
+
+    assert(buf != NULL);
+
+    /* Put a value into each region that the format covers. A round trip must return each one. */
+    a->cpu.r[3] = 0xDEADBEEFu;
+    a->cpu.r13_bank[2] = 0x11112222u;
+    a->cpu.r8_12_bank[1][4] = 0x33334444u;
+    a->cpu.total_steps = 1234567890123ull;
+    a->bus.ram[0x123] = 0x5Au;
+    a->lcd.vram[7] = 0xA5u;
+    a->intc.enable = 0x00001234u;
+    psemu_flash_data(a)[0x4321] = 0x77u;
+    a->flash.f_sn_lo = 0xBEEFu;
+    psemu_com_set_docked(a, 1);
+    psemu_com_set_selected(a, 1);
+    a->com.tx_data = 0x5Cu;
+    a->ir.clock_cycles = 999999ull;
+    ir_push_rx_edge(&a->ir, 4242ull, 1);
+    ir_push_rx_edge(&a->ir, 4343ull, 0);
+    a->timer.timers[2].period = 0x0353u;
+    a->rtc.date = 0x20260806u;
+    a->dac.current_sample = -1234;
+    a->clk.mode = 7u;
+    a->iop.data = 0x20u;
+    a->buttons = PSEMU_BUTTON_FIRE;
+    a->app_running = 1;
+    a->real_time_cycle_carry = 0.5;
+
+    assert(psemu_save_state(a, buf, size) == PSEMU_OK);
+    assert(psemu_load_state(b, buf, size) == PSEMU_OK);
+
+    assert(b->cpu.r[3] == 0xDEADBEEFu);
+    assert(b->cpu.r13_bank[2] == 0x11112222u);
+    assert(b->cpu.r8_12_bank[1][4] == 0x33334444u);
+    assert(b->cpu.total_steps == 1234567890123ull);
+    assert(b->bus.ram[0x123] == 0x5Au);
+    assert(b->lcd.vram[7] == 0xA5u);
+    assert(b->intc.enable == 0x00001234u);
+    assert(psemu_flash_data(b)[0x4321] == 0x77u);
+    assert(b->flash.f_sn_lo == 0xBEEFu);
+    assert(psemu_com_get_docked(b) == 1);
+    assert(b->com.selected == 1);
+    assert(b->com.tx_data == 0x5Cu);
+    assert(b->ir.clock_cycles == 999999ull);
+    assert(b->ir.rx_queue.count == 2);
+    assert(b->ir.rx_queue.entries[0].timestamp_cycles == 4242ull);
+    assert(b->ir.rx_queue.entries[0].level == 1);
+    assert(b->ir.rx_queue.entries[1].timestamp_cycles == 4343ull);
+    assert(b->ir.rx_queue.entries[1].level == 0);
+    assert(b->timer.timers[2].period == 0x0353u);
+    assert(b->rtc.date == 0x20260806u);
+    assert(b->dac.current_sample == -1234);
+    assert(b->clk.mode == 7u);
+    assert(b->iop.data == 0x20u);
+    assert(b->buttons == PSEMU_BUTTON_FIRE);
+    assert(b->app_running == 1);
+    assert(b->real_time_cycle_carry > 0.49 && b->real_time_cycle_carry < 0.51);
+
+    /* The bus pointers of the loaded instance must address that instance, and not the instance that
+       supplied the state. */
+    assert(b->bus.flash == &b->flash);
+    assert(b->bus.com == &b->com);
+    assert(b->cpu.bus == &b->bus);
+
+    /* A write through the loaded instance must not reach the instance that supplied the state. */
+    for (i = 0; i < 8u; i++) {
+        psemu_bus_write8(&b->bus, 0x200u + i, (uint8_t)(0xC0u + i));
+    }
+    assert(a->bus.ram[0x200] != 0xC0u);
+
+    free(buf);
+    psemu_destroy(a);
+    psemu_destroy(b);
+    printf("test_state_round_trip_keeps_the_machine OK\n");
+}
+
+static void test_state_refuses_a_bad_header(void) {
+    psemu_t *ps = psemu_create();
+    size_t size = psemu_state_size(ps);
+    uint8_t *buf = (uint8_t *)malloc(size);
+
+    assert(buf != NULL);
+    assert(psemu_save_state(ps, buf, size) == PSEMU_OK);
+
+    /* A file that carries a different magic number. */
+    buf[0] = 'X';
+    assert(psemu_load_state(ps, buf, size) == PSEMU_ERR_BAD_FORMAT);
+    buf[0] = 'P';
+
+    /* A file that carries a different version. The core refuses it, thus a frontend does not have to
+       track the layout of psemu_t. */
+    buf[4] = (uint8_t)(PSEMU_STATE_VERSION + 1u);
+    assert(psemu_load_state(ps, buf, size) == PSEMU_ERR_BAD_FORMAT);
+    buf[4] = (uint8_t)PSEMU_STATE_VERSION;
+
+    /* A file that is too short. */
+    assert(psemu_load_state(ps, buf, size - 1u) == PSEMU_ERR_BAD_SIZE);
+    assert(psemu_save_state(ps, buf, size - 1u) == PSEMU_ERR_BAD_SIZE);
+
+    /* The correct file still loads after each refusal above. */
+    assert(psemu_load_state(ps, buf, size) == PSEMU_OK);
+
+    free(buf);
+    psemu_destroy(ps);
+    printf("test_state_refuses_a_bad_header OK\n");
+}
+
+static void test_state_holds_no_bios_and_is_smaller_than_the_structure(void) {
+    psemu_t *ps = psemu_create();
+    size_t size = psemu_state_size(ps);
+    uint8_t *buf = (uint8_t *)malloc(size);
+    uint8_t bios[PSEMU_BIOS_SIZE];
+    size_t i;
+    size_t run = 0;
+    size_t longest = 0;
+
+    assert(buf != NULL);
+    /* A BIOS of one repeated byte. A search of the state for a long run of that byte then finds a
+       copy of the BIOS, if the format holds one. */
+    memset(bios, 0x6Du, sizeof(bios));
+    assert(psemu_load_bios(ps, bios, sizeof(bios)) == PSEMU_OK);
+    assert(psemu_save_state(ps, buf, size) == PSEMU_OK);
+
+    for (i = 0; i < size; i++) {
+        run = (buf[i] == 0x6Du) ? run + 1 : 0;
+        if (run > longest) {
+            longest = run;
+        }
+    }
+    /* A state that holds the BIOS has a run of PSEMU_BIOS_SIZE bytes. This format holds none. */
+    assert(longest < PSEMU_BIOS_SIZE);
+
+    /* The format is also much smaller than the structure. The structure carries the BIOS, the
+       diagnostic trace ring of the CPU, and both IR queues at their full capacity. */
+    assert(size < sizeof(psemu_t));
+
+    free(buf);
+    psemu_destroy(ps);
+    printf("test_state_holds_no_bios_and_is_smaller_than_the_structure OK\n");
+}
+
 int main(void) {
     test_registers_read_back();
     test_unknown_offsets_are_reserved_stubs();
@@ -250,6 +403,9 @@ int main(void) {
     test_stat1_bit0_follows_an_arrived_byte();
     test_transfer_without_a_bios_reports_no_acknowledge();
     test_reset_clears_the_port();
+    test_state_round_trip_keeps_the_machine();
+    test_state_refuses_a_bad_header();
+    test_state_holds_no_bios_and_is_smaller_than_the_structure();
     printf("All COM tests passed.\n");
     return 0;
 }

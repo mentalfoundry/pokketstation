@@ -802,42 +802,6 @@ int psemu_settings_offsets_known(const psemu_t *ps) {
     return 0;
 }
 
-size_t psemu_state_size(const psemu_t *ps) {
-    (void)ps;
-    return sizeof(psemu_t);
-}
-
-psemu_status psemu_save_state(const psemu_t *ps, void *buf, size_t size) {
-    if (size < sizeof(psemu_t)) {
-        return PSEMU_ERR_BAD_SIZE;
-    }
-    memcpy(buf, ps, sizeof(psemu_t));
-    return PSEMU_OK;
-}
-
-psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
-    if (size < sizeof(psemu_t)) {
-        return PSEMU_ERR_BAD_SIZE;
-    }
-    memcpy(ps, buf, sizeof(psemu_t));
-    /* bus and cpu hold pointers into this same structure.
-       The raw copy above brings in old addresses from the psemu_t that supplied the
-       state.
-       This code must connect these pointers to this instance again. */
-    ps->bus.lcd = &ps->lcd;
-    ps->bus.intc = &ps->intc;
-    ps->bus.flash = &ps->flash;
-    ps->bus.com = &ps->com;
-    ps->bus.ir = &ps->ir;
-    ps->bus.timer = &ps->timer;
-    ps->bus.rtc = &ps->rtc;
-    ps->bus.dac = &ps->dac;
-    ps->bus.clk = &ps->clk;
-    ps->bus.iop = &ps->iop;
-    ps->cpu.bus = &ps->bus;
-    return PSEMU_OK;
-}
-
 uint32_t psemu_get_audio_samples(psemu_t *ps, int16_t *buf, uint32_t max_samples) {
     return dac_read_samples(&ps->dac, buf, max_samples);
 }

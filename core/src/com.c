@@ -80,10 +80,10 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
 
            BIT 0 REPORTS AN ARRIVED BYTE. This bit gives the same condition as the Ready bit of
            COM_STAT2. The write path of the kernel polls this register in place of COM_STAT2, at
-           0x040015D6. A model that held bit 0 clear stopped that path after one data byte. A model
-           that held bit 0 always set made the kernel read the same byte many times, and the Write
-           Sector command then failed with 0x4E ("N", bad checksum). Only a bit that follows the
-           arrival of a byte gives a correct write.
+           0x040015D6. Two other models of this bit both failed. A model that held bit 0 clear
+           stopped that path after one data byte. A model that held bit 0 always set made the kernel
+           read the same byte many times. The Write Sector command then answered 0x4E ("N", bad
+           checksum). Only a bit that follows the arrival of a byte gives a correct write.
 
            A READ OF THIS REGISTER CLEARS THE /SEL LATCH. The published register map records a dummy
            read of this register by the kernel at the end of each transfer. It gives a hardware clear

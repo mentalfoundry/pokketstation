@@ -446,7 +446,7 @@ uint64_t psemu_ir_get_clock_us(const psemu_t *ps);
      reply back to the console.
    - Call psemu_com_set_docked(ps, 0) when the user removes the device. */
 
-/* Sets the docking sense. `docked` is 0 for undocked. A nonzero value is docked.
+/* Sets the docking sense. `docked` is 0 for undocked. A nonzero value is the docked condition.
    Real hardware senses the supply voltage on the connector. The kernel enables communication only
    while it senses the docked condition. It disables communication again at removal. The kernel also
    uses this signal for three more operations: it powers down the audio DAC, it powers down the
@@ -456,7 +456,7 @@ void psemu_com_set_docked(psemu_t *ps, int docked);
 /* Returns the last value that psemu_com_set_docked received. */
 int psemu_com_get_docked(const psemu_t *ps);
 
-/* Sets the /SEL line of the connector. `selected` is 0 for released. A nonzero value is held.
+/* Sets the /SEL line of the connector. `selected` is 0 for released. A nonzero value holds the line.
    A console holds this line for the full duration of one command. It releases the line between
    commands. On a console emulator this line is the select bit of the controller port.
 

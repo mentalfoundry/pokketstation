@@ -142,8 +142,18 @@ static const char *save_slot_label(int slot) {
    changed, and the offset of each field after flash_t also changed. A build
    before this version reads a version-6 state as a version-5 state, because
    the size test finds only a state that became smaller. Each field after
-   flash_t is then incorrect. This version number refuses that load. */
-#define QUICKSAVE_VERSION 6u
+   flash_t is then incorrect. This version number refuses that load.
+   7: the core replaced the raw copy of psemu_t with a field-by-field format
+   (see core/src/state.c). The state data is different, thus this file version
+   changes one time for that.
+
+   THIS VERSION NUMBER NO LONGER TRACKS THE LAYOUT OF psemu_t. The core owns
+   the version of its own state data now, in PSEMU_STATE_VERSION, and
+   psemu_load_state returns PSEMU_ERR_BAD_FORMAT for a file that it cannot
+   read. Thus a new field in psemu_t no longer needs a change here. Change
+   this number only for a change to the parts of the file that this app owns:
+   the header, the app size, and the app hash. */
+#define QUICKSAVE_VERSION 7u
 
 /* app_size and app_hash prevent a load of a state that a different app or card
    made. The file name for each app already makes such a load improbable. This

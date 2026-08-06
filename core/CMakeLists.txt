@@ -12,6 +12,7 @@ set(PSEMU_SOURCES
     src/memory.c
     src/psemu.c
     src/rtc.c
+    src/state.c
     src/thumb_exec.c
     src/timer.c
 )

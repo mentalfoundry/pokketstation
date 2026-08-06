@@ -16,7 +16,7 @@ struct intc;
    | Offset | Register  | Contents |
    |---|---|---|
    | +0x00 | COM_MODE  | bit0 Data Output Enable. bit1 /ACK Output Level (1 = drive LOW). bit2 unknown. |
-   | +0x04 | COM_STAT1 | bit1 Error flag (0 = Okay, 1 = Error). The other bits are unknown. |
+   | +0x04 | COM_STAT1 | bit0 a byte arrived. bit1 the console released /SEL. See selected below. |
    | +0x08 | COM_DATA  | bits 0 to 7. A read gets the byte from the PS1. A write sends a byte to the PS1. |
    | +0x10 | COM_CTRL1 | bit0 and bit1 unknown. The observed values are 0, 2, and 3. |
    | +0x14 | COM_STAT2 | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. |
@@ -26,6 +26,9 @@ struct intc;
    It is not a manufacturer specification. The map marks the function of the CTRL1 bits and the CTRL2
    bits as unknown. It gives only the values that it observed. This file uses the same order of trust
    as each other peripheral of this emulator. See docs/hardware-notes.md.
+
+   The two COM_STAT1 bits above do not come from that map. The map names bit 1 "Error flag", and it
+   marks bit 0 as unknown. A trace of a real BIOS gives both meanings. See tools/com_probe.c.
 
    THE PROTOCOL IS NOT IN THIS FILE. The kernel of the real BIOS holds the protocol. A COM interrupt
    is FIQ source bit 6 (INT_COM, see intc.h). The FIQ handler of the kernel processes that source. It
@@ -122,13 +125,13 @@ void com_init(com_t *com);
 uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset);
 void com_write(com_t *com, struct intc *intc, uint32_t offset, uint32_t value);
 
-/* Sets the docking sense. `docked` is 0 for undocked. A nonzero value is docked.
+/* Sets the docking sense. `docked` is 0 for undocked. A nonzero value is the docked condition.
    This function drives INT_IOP. It does not change a register in this block.
    The kernel enables communication only while it senses the docked condition. Thus a caller must set
    this signal before it starts a transfer. */
 void com_set_docked(com_t *com, struct intc *intc, int docked);
 
-/* Sets the /SEL line. `selected` is 0 for released. A nonzero value is held.
+/* Sets the /SEL line. `selected` is 0 for released. A nonzero value holds the line.
    A console holds this line for one command, and it releases the line between commands.
    A release sets COM_STAT1 bit 1, and that bit ends the wait of the kernel. See selected in the
    structure above. */

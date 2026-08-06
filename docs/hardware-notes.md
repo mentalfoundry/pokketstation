@@ -332,7 +332,7 @@ The kernel waits at `0x040007B8` after the last byte. It polls `COM_STAT1` there
 
 The published register map names bit 1 "Error flag", and it gives four candidate meanings. One candidate is "/SEL disabled during transfer". That candidate is the correct one. A release of /SEL is not a fault. It is the usual end of each command.
 
-A read of `COM_STAT1` clears this latch. The same map records a dummy read of the register by the kernel at the end of each transfer, and it gives a hardware clear at a read as one candidate reason for that read.
+A read of `COM_STAT1` clears this latch. The same map records a dummy read of the register by the kernel at the end of each transfer. It gives a hardware clear at a read as one candidate reason for that dummy read.
 
 **`COM_STAT1` bit 0 reports an arrived byte.** It gives the same condition as the Ready bit of `COM_STAT2`. The write path of the kernel polls `COM_STAT1` in place of `COM_STAT2`, at `0x040015D6`. A model that held bit 0 clear stopped that path after one data byte. A model that held bit 0 always set made the kernel read one byte many times, and Write Sector then failed with `0x4E` ("N", bad checksum). Only a bit that follows the arrival of a byte gives a correct write.
 
@@ -347,7 +347,7 @@ A read of `COM_STAT1` clears this latch. The same map records a dummy read of th
 - **Command `0x5A` (Get Dir_index, ComFlags, F_SN, Date, and Time)** returns six items in order: the length `0x12`, the current dir index, four `ComFlags` bits, `F_SN` as `D3 00 00 41`, the BCD date, and the BCD time. That `F_SN` value is `0x410000D3`, which is `PSEMU_DEFAULT_HARDWARE_ID`. The date is 1999-01-01. The BIOS boot path always writes that date (see "RTC" above). A console game uses this command to find a PocketStation in place of a memory card.
 - **Write Sector (`0x57`)** takes 139 exchanges against a real card. It returns FLAG, `0x5A`, `0x5D`, the address echo, `0x5C`, `0x5D`, and the `0x47` ("G", Good) terminator. The `write` mode of `com_probe` then reads the frame back out of flash. The frame holds the sent data exactly, and no other frame of the card changes. A run with a deliberately incorrect checksum returns `0x4E` ("N", bad checksum), and no frame changes.
 - The flash-write counts agree with the documented write sequence exactly. One Write Sector command makes 134 stores into `FLASH2` from `0x0400122C`, and 8 stores into `FLASH_CTRL` from `0x04001278`. The 134 stores are 128 data bytes and the three halfword unlock keys. The 8 stores are `F_WAIT2 = 0x21` and then `F_WAIT2 = 0x00`.
-- **Command `0x5F` (Get-and-Send ComFlags.bit0)** operates, and it changes the word from `0x0007020F` to `0x0007020E`. This command is NOT necessary before a write on this revision. An official kernel specification gives bit 0 as a flash-write enable, and a published register map records that the two layouts of this word come from different BIOS revisions. The J110 revision follows the reverse-engineered layout, where bits 0 to 3 have no recorded meaning.
+- **Command `0x5F` (Get-and-Send ComFlags.bit0)** operates, and it changes the word from `0x0007020F` to `0x0007020E`. This command is NOT necessary before a write on this revision. An official kernel specification gives bit 0 as a flash-write enable. A published register map records that the two layouts of this word come from different BIOS revisions. The J110 revision follows the reverse-engineered layout, where bits 0 to 3 have no recorded meaning.
 
 `ComFlags` is a word in kernel RAM at `0x0C0`. Bit 9 is "Communication Enabled And Docked". The kernel sets that bit one frame after `psemu_com_set_docked` asserts the docking level. No code answers a command while that bit is clear. `com_probe` reports the word before the transition and after it. The recorded values are `0x00070000` and then `0x0007020F`.
 
@@ -667,6 +667,25 @@ A save state keeps the override, with each other value, because `psemu_save_stat
 `tools/volume_probe.c` found this byte by experiment. A write sweep across the full RAM, over the boot sound, isolated `0x290`. That sweep repeated the sequence from a save state for each candidate byte. `0x290` is the only address that scales the amplitude and leaves the timing and the write count of the sound unchanged. A desktop quicksave on the sound-setting screen then confirmed the three real values. `psemu_bus_read_trace_cb` (`core/src/memory.c`) gave the read addresses. That diagnostic hook reports each bus read with its real PC. A snapshot comparison probe cannot see a read, and the sweep alone was not sufficient to find this data. That hook is compiled in only for the `psemu_trace` library target, and the diagnostic tools link that target in place of `psemu`. The hook is on the busiest path in the emulator, and a measurement showed approximately 20% more time on a fixed workload of 6.5 million instructions, even with the callback set to NULL. Frontends link the usual `psemu` library, and this hook has no effect on them.
 
 Note that `0x290` is in the region that the memory map above calls user RAM (`0x200` to `0x7FF`). The BIOS keeps much of its own state in that region: `0x230`, `0x254`, `0x264`, `0x280` to `0x2A7`, `0x300` to `0x31F`, `0x3F0`, and `0x410`. Thus the kernel and user division does not give the end of the BIOS-owned state. See "Known open questions" for the result of this fact, for an app that writes over the setting.
+
+## Save states
+
+`core/src/state.c` holds the format. `PSEMU_STATE_VERSION` (`core/src/state.h`) is its version.
+
+**One visitor serves the three operations.** `state_visit` walks the machine one field at a time. The mode of the cursor selects measure, write, or read. Thus a write and a read cannot become different from each other. That divergence is the usual fault of a format with two separate functions. It also gives no error at the time of the write.
+
+**The format replaced a raw copy of `psemu_t`.** The earlier `psemu_save_state` did `memcpy` of `sizeof(psemu_t)`. That method had four faults:
+
+- **The layout followed the compiler.** Structure padding and pointer width are not the same on each target. Thus a state from an x64 build did not load into an arm64 build, and it gave no error. This project has targets with 32-bit pointers and targets with 64-bit pointers.
+- **The state held a copy of the BIOS.** A BIOS dump is not the property of this project. A state file must not carry one. `test_state_holds_no_bios_and_is_smaller_than_the_structure` loads a BIOS of one repeated byte, and it then searches the state for a run of that byte.
+- **Each new field changed the size, and an older build could not find that change.** The size test found only a state that became smaller. Thus an older build read a newer state as a truncated state of its own version, and each field after the new one was incorrect. A frontend had to track the layout of `psemu_t` with its own version number. `QUICKSAVE_VERSION` in the desktop frontend did that, and versions 2, 3, 4, and 6 exist only for that reason. The core owns this version now, and `psemu_load_state` returns `PSEMU_ERR_BAD_FORMAT` for a file that it cannot read.
+- **The state held data that no machine behavior needs.** The diagnostic trace ring of the CPU is 64KB, and only `psemu_write_crash_report` reads it. A load clears that ring, thus a report after a load covers only the steps after the load.
+
+The result is 218.8KB, against 354.9KB for `sizeof(psemu_t)`.
+
+**The size is the same for each state of the machine.** A ring buffer writes its full capacity, and not only the entries that it holds now. The count travels with it. A format whose size follows the contents is not usable. The libretro interface calls `retro_serialize_size` one time and keeps the result. A first version of this file wrote only the live entries. A test then pushed two IR edges between the measure step and the write step, and the write failed. A frontend uses that same sequence.
+
+**`real_time_cycle_carry` is the only floating-point field.** The file stores it as a fixed-point fraction of 32 bits, and not as the raw bits of the double. `psemu_run` keeps the value between 0.0 and 1.0, thus 32 bits give more resolution than the reference clock can use.
 
 ## Diagnostics
 

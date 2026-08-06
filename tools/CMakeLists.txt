@@ -50,3 +50,4 @@ target_link_libraries(com_probe PRIVATE psemu_trace)
 add_executable(pk_exit_test pk_exit_test.c)
 target_include_directories(pk_exit_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(pk_exit_test PRIVATE psemu)
+
