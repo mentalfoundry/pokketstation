@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Darien Liu (mentalfoundry)
+# SPDX-License-Identifier: MIT
+
 add_executable(psemu_smoke_test smoke_test.c)
 target_link_libraries(psemu_smoke_test PRIVATE psemu)
 add_test(NAME smoke_test COMMAND psemu_smoke_test)

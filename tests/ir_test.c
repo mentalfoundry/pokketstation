@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 Darien Liu (mentalfoundry)
+   SPDX-License-Identifier: MIT */
+
 /* See the comment at the top of cpu_test.c. NDEBUG in a Release build removes each assert() call, thus
    this test suite must keep them. This code must come before <assert.h>. */
 #undef NDEBUG

@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 Darien Liu (mentalfoundry)
+   SPDX-License-Identifier: MIT */
+
 /* Each test in this file is an assert() call. A Release build defines NDEBUG, and NDEBUG makes each
    assert() call do nothing. Thus this full test suite executed as a few hundred empty operations, and
    one printf call for each test, in each Release configuration. It reported "all cpu tests passed",

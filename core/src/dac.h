@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 Darien Liu (mentalfoundry)
+   SPDX-License-Identifier: MIT */
+
 #ifndef PSEMU_DAC_H
 #define PSEMU_DAC_H
 

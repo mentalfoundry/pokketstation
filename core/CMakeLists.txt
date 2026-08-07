@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 Darien Liu (mentalfoundry)
+# SPDX-License-Identifier: MIT
+
 set(PSEMU_SOURCES
     src/arm_exec.c
     src/clk.c

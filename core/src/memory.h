@@ -1,3 +1,6 @@
+/* SPDX-FileCopyrightText: Copyright (c) 2026 Darien Liu (mentalfoundry)
+   SPDX-License-Identifier: MIT */
+
 #ifndef PSEMU_MEMORY_H
 #define PSEMU_MEMORY_H
 

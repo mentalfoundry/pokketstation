@@ -10,15 +10,11 @@ IR now operates locally. First, set the receive side into receive mode in your a
 
 Do not depend on save-state compatibility between versions yet. The internal registries need more changes.
 
-The cycle timing of each instruction follows the recorded memory-access-time table, and the standard ARM7TDMI instruction-class formulas. It does not use an approximation of 1 cycle for each instruction. Tests on real hardware, with the `pk_timing_bench` app of this project, confirm the two values that the documentation left unclear. See "Memory access timing" in `docs/hardware-notes.md`.
-
-See [docs/hardware-notes.md](docs/hardware-notes.md) for the technical data.
-
 **Known gaps:**
 - The IR communication timing is unverified. I have only 1 PocketStation device, thus this is the best result that is possible without a second device. The core has hardware-tested behavior, and the desktop emulator does most of the work. I will try to get a second device when I have the opportunity.
 - This emulator makes a few edge cases simpler than the real hardware: low-battery detection, `F_BANK_VAL` entries that map more than one physical block to the same virtual slot, and the pre-remap boot phase of the BIOS.
 
-See the "Known open questions and unconfirmed behavior" list at the end of `docs/hardware-notes.md` for the details.
+See [docs/hardware-notes.md](docs/hardware-notes.md) for the technical data.
 
 If the emulator stops, or if it stops with an unrecognized-opcode fault, please [open an issue](https://github.com/mentalfoundry/pokketstation/issues). Include a [diagnostic report](docs/desktop_readme.md#diagnostic-reports-for-bug-reports) if you can. A report makes the fault much easier to find.
 
@@ -72,4 +68,14 @@ The [build guide of the desktop frontend](docs/desktop_readme.md#building) gives
 
 ## License
 
-The license is GPLv3. See [LICENSE](LICENSE). [docs/hardware-notes.md](docs/hardware-notes.md) has a licensing note about the prior art that is safe to reference.
+The emulation core in [core/](core/) and its test suite in [tests/](tests/) are MIT. See
+[core/LICENSE](core/LICENSE) and [tests/LICENSE](tests/LICENSE). Each file in those two
+directories gives its own `SPDX-License-Identifier`.
+
+All other parts of this project are GPLv3. See [LICENSE](LICENSE). This applies to the
+frontends and the tools.
+
+A project with different terms can thus use the core. The MIT license needs only that the
+copyright notice stays with the code.
+
+[docs/hardware-notes.md](docs/hardware-notes.md) has a licensing note about the prior art that is safe to reference.
