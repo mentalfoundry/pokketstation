@@ -6,24 +6,18 @@
 #include <string.h>
 
 #include "mock_ps1.h"
-#include "psemu_internal.h"
 
-/* The per-frame cycle budget of a frontend, at the 32Hz refresh rate of the LCD.
-   See PSEMU_ASSUMED_CPU_HZ in core/src/dac.h. */
-#define FRAME_CYCLES (PSEMU_ASSUMED_CPU_HZ / 32u)
+/* THIS MODULE USES THE PUBLIC HEADER ONLY. A PS1 emulator gets the same header and no more, thus a
+   private include here would hide a gap in that header.
+
+   The per-frame cycle budget of a frontend, at the 32Hz refresh rate of the LCD. */
+#define FRAME_CYCLES (PSEMU_REFERENCE_CLOCK_HZ / 32u)
 
 /* The frames that a boot needs before the kernel gets to its shell. */
 #define BOOT_FRAMES 200u
 
 /* The frames that a dock operation can need before the kernel enables communication. */
 #define DOCK_FRAMES 60u
-
-/* The ComFlags word in kernel RAM. A published register map gives this address. Bit 9 is
-   "Communication Enabled And Docked". No code answers a command while that bit is clear.
-   This module reads the address directly, because it must observe the word without a call into the
-   machine. tools/com_probe.c uses the same address. */
-#define COMFLAGS_ADDR 0x0C0u
-#define COMFLAGS_DOCKED_AND_ENABLED (1u << 9)
 
 static uint8_t *read_file(const char *path, size_t *out_size) {
     FILE *f = fopen(path, "rb");
@@ -49,11 +43,6 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
     fclose(f);
     *out_size = (size_t)size;
     return buf;
-}
-
-static uint32_t read_comflags(const psemu_t *ps) {
-    return (uint32_t)ps->bus.ram[COMFLAGS_ADDR] | ((uint32_t)ps->bus.ram[COMFLAGS_ADDR + 1] << 8) |
-        ((uint32_t)ps->bus.ram[COMFLAGS_ADDR + 2] << 16) | ((uint32_t)ps->bus.ram[COMFLAGS_ADDR + 3] << 24);
 }
 
 mock_ps1_t *mock_ps1_open(const char *bios_path, const char *card_path) {
@@ -106,7 +95,7 @@ mock_ps1_t *mock_ps1_open(const char *bios_path, const char *card_path) {
     psemu_com_set_docked(ps, 1);
     for (i = 0; i < DOCK_FRAMES; i++) {
         psemu_run(ps, FRAME_CYCLES);
-        if (read_comflags(ps) & COMFLAGS_DOCKED_AND_ENABLED) {
+        if (psemu_com_is_enabled(ps)) {
             enabled = 1;
             break;
         }

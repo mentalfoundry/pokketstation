@@ -471,6 +471,19 @@ void psemu_com_set_docked(psemu_t *ps, int docked);
 /* Returns the last value that psemu_com_set_docked received. */
 int psemu_com_get_docked(const psemu_t *ps);
 
+/* Returns a nonzero value while the kernel accepts a command.
+
+   A HOST MUST WAIT FOR THIS CONDITION AFTER IT DOCKS THE DEVICE. psemu_com_set_docked only asserts
+   the docking level. The kernel senses that level in an interrupt handler, and it then enables
+   communication. That handler waits before it reads the level again, because a real connector has a
+   switch-bounce period. Thus the condition arrives one frame or more after the call, and a transfer
+   before it gets no answer.
+
+   The usual sequence is a call to psemu_com_set_docked(ps, 1), and then psemu_run for one frame at a
+   time until this function returns a nonzero value. A host that gives up must report the device as
+   absent, because no command can succeed. */
+int psemu_com_is_enabled(const psemu_t *ps);
+
 /* Sets the /SEL line of the connector. `selected` is 0 for released. A nonzero value holds the line.
    A PS1 holds this line for the full duration of one command. It releases the line between
    commands. On a PS1 emulator this line is the select bit of the controller port.

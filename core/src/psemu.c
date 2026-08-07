@@ -595,6 +595,20 @@ int psemu_com_get_docked(const psemu_t *ps) {
     return ps->com.docked;
 }
 
+/* The ComFlags word in kernel RAM. A published register map gives this address, and it gives SWI 06h
+   (GetPtrToComFlags) as the supported method to find it. This function reads the address directly,
+   because a host must observe the word without a call into the machine.
+   Bit 9 is "Communication Enabled And Docked". No code answers a command while that bit is clear.
+   tools/com_probe.c reads the same address. */
+#define COMFLAGS_ADDR 0x0C0u
+#define COMFLAGS_ENABLED (1u << 9)
+
+int psemu_com_is_enabled(const psemu_t *ps) {
+    uint32_t flags = (uint32_t)ps->bus.ram[COMFLAGS_ADDR] | ((uint32_t)ps->bus.ram[COMFLAGS_ADDR + 1] << 8) |
+        ((uint32_t)ps->bus.ram[COMFLAGS_ADDR + 2] << 16) | ((uint32_t)ps->bus.ram[COMFLAGS_ADDR + 3] << 24);
+    return (flags & COMFLAGS_ENABLED) ? 1 : 0;
+}
+
 /* The execution step size of psemu_com_transfer. That function runs the machine in steps of this
    size. It tests the acknowledge line between steps.
    A small value stops the machine near the answer of the kernel. It costs one more psemu_run call
