@@ -1,0 +1,72 @@
+name: Tests
+
+# Builds the core, the tests, the tools, and the libretro core, and then runs
+# ctest. This is the workflow that guards each change. The two release
+# workflows are manual and they publish artifacts; neither one runs on a push,
+# thus neither one guards anything.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same ref makes the earlier run pointless. Stop it and keep
+# the runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} ${{ matrix.build_type }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform that fails must not hide the result of the others.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # No SDL2 and no vcpkg here. The desktop frontend is the only part that
+      # needs SDL2, and CMake skips that frontend with a warning when SDL2 is
+      # absent. This workflow stays fast and needs no package step.
+      #
+      # ONE TEST DOES NOT RUN HERE. content_writeback_selftest belongs to the
+      # desktop frontend, thus a build without SDL2 does not register it. This
+      # workflow runs 5 tests, and a build with SDL2 registers 6. The Windows
+      # release workflow builds with SDL2 and runs the full set.
+      #
+      # The core, the tests, the tools, and the libretro core need no
+      # dependency. The libretro core does fetch the libretro-common headers at
+      # the configure step, thus this step needs network access.
+      #
+      # --no-warn-unused-cli keeps the log clean. A multi-config generator does
+      # not use CMAKE_BUILD_TYPE, and it reports that variable as unused.
+      - name: Configure
+        run: cmake -B build -S . --no-warn-unused-cli -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      # CMAKE_BUILD_TYPE above and --config here cover both generator kinds.
+      # The Visual Studio generator on Windows is multi-config: it ignores
+      # CMAKE_BUILD_TYPE and it needs --config. The Makefile generator on Linux
+      # and macOS is single-config: it needs CMAKE_BUILD_TYPE and it ignores
+      # --config. Thus one command operates on each platform.
+      - name: Build
+        run: cmake --build build --config ${{ matrix.build_type }}
+
+      - name: List registered tests
+        run: ctest --test-dir build -C ${{ matrix.build_type }} -N
+
+      # bu_test needs a BIOS dump, and .gitignore excludes each dump. That
+      # suite reports exit code 77 when it finds no dump, and CMake gives it
+      # SKIP_RETURN_CODE 77. Thus ctest reports it as skipped, and the run
+      # stays green. See the comment at the top of tests/bu_test.c.
+      #
+      # Release builds matter here. Each test suite calls #undef NDEBUG before
+      # <assert.h>, because NDEBUG removes every assert() call. This matrix is
+      # the check that the suites still test something in a Release build.
+      - name: Test
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
