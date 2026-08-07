@@ -174,14 +174,26 @@ static void test_sel_release_sets_the_end_of_command_bit(void) {
     psemu_com_set_selected(ps, 0);
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) != 0u);
 
-    /* A read of the register clears the latch. The published register map records a dummy read of
-       this register by the kernel at the end of each transfer. It gives a hardware clear at a read
-       as one candidate reason for that dummy read. */
+    /* A READ DOES NOT CLEAR THE BIT. The bit is a level. It stays set for the full time that the PS1
+       holds the line released, thus each poll of the kernel finds it.
+       A bit that clears at a read stops the kernel in its end-of-command wait after a complete
+       command. The kernel then answers one command, and every second command after it. See
+       test_a_second_command_answers in bu_test.c.
+       The published register map records a dummy read of this register by the kernel at the end of
+       each transfer. A hardware clear at a read is one candidate reason for that dummy read. The map
+       does not state it as a fact. */
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) != 0u);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) != 0u);
+
+    /* The next hold clears the bit. This is the start of the next command. */
+    psemu_com_set_selected(ps, 1);
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) == 0u);
 
-    /* A release with no hold before it sets nothing. */
+    /* A second release changes nothing. The bit follows the level of the line, thus a caller that
+       reports the same level again holds the same state. */
     psemu_com_set_selected(ps, 0);
-    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) == 0u);
+    psemu_com_set_selected(ps, 0);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & COM_STAT1_ERROR) != 0u);
 
     psemu_destroy(ps);
     printf("test_sel_release_sets_the_end_of_command_bit OK\n");

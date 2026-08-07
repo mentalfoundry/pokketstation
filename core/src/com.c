@@ -51,16 +51,13 @@ void com_init(com_t *com) {
 }
 
 /* A SIDE EFFECT OF A READ MUST OCCUR ON ONE BYTE LANE ONLY, AND THAT LANE MUST BE THE LANE THAT
-   HOLDS THE BITS. Two registers here clear state at a read: COM_DATA takes the arrived byte, and
-   COM_STAT1 clears the /SEL latch. Each of those values is in the low byte, thus each clear occurs
-   only for shift == 0.
+   HOLDS THE BITS. One register here clears state at a read: COM_DATA takes the arrived byte. That
+   value is in the low byte, thus the clear occurs only for shift == 0.
 
    This rule is necessary. psemu_bus_read32 (core/src/memory.c) makes four calls to this function,
    one for each byte lane, and it combines the four results with the | operator. C does not sequence
    the operands of that operator, thus a compiler can call the lanes in any order. A clear on every
-   lane makes the result depend on that order, and the assembled word then loses the bit.
-
-   See test_sel_release_sets_the_end_of_command_bit in tests/com_test.c. */
+   lane makes the result depend on that order, and the assembled word then loses the bit. */
 uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
     uint32_t word_index = (offset / 4u) % 8u;
     uint32_t shift = (offset % 4u) * 8u;
@@ -79,12 +76,10 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
            BIT 0 REPORTS AN ARRIVED BYTE. It gives the same condition as the Ready bit of COM_STAT2.
            The write path of the kernel polls this register in place of COM_STAT2, at 0x040015D6.
 
-           A READ OF THIS REGISTER CLEARS THE /SEL LATCH. Only the low byte lane clears it. See the
-           note on side effects above. */
+           A READ OF THIS REGISTER DOES NOT CLEAR BIT 1. The bit stays set for the full time that the
+           PS1 holds the line released. com_set_selected clears it at the next hold. See
+           test_a_second_command_answers in tests/bu_test.c for the evidence. */
         value = com->stat1 | (com->rx_ready ? 1u : 0u) | (com->sel_drop_latch ? COM_STAT1_ERROR : 0u);
-        if (shift == 0u) {
-            com->sel_drop_latch = 0;
-        }
         break;
     case 2:
         /* A read of COM_DATA takes the byte that the PS1 sent.
@@ -202,6 +197,9 @@ void com_set_selected(com_t *com, int selected) {
     if (com->selected && !now) {
         /* The PS1 released the line. This is the end of one command. */
         com->sel_drop_latch = 1;
+    } else if (!com->selected && now) {
+        /* The PS1 holds the line again. This is the start of the next command. */
+        com->sel_drop_latch = 0;
     }
     com->selected = now;
 }

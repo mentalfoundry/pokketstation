@@ -276,7 +276,7 @@ The block is at `0x0C000000`, and it has a span of `0x20`.
 | Offset | Register | Contents |
 |---|---|---|
 | `+0x0` | `COM_MODE` | bit0 Data Output Enable. bit1 /ACK Output Level (1 = drive LOW). bit2 unknown. |
-| `+0x4` | `COM_STAT1` | bit0 a byte arrived. bit1 the console released /SEL. See "The /SEL line". |
+| `+0x4` | `COM_STAT1` | bit0 a byte arrived. bit1 the PS1 released /SEL. See "The /SEL line". |
 | `+0x8` | `COM_DATA` | bits 0 to 7. A read gets the byte from the PS1. A write sends a byte to the PS1. |
 | `+0x10` | `COM_CTRL1` | Unknown. The observed values are 0, 2, and 3. |
 | `+0x14` | `COM_STAT2` | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. |
@@ -292,7 +292,7 @@ A published register map is the source of this layout. That map is community rev
 
 ### The protocol is firmware, and not hardware
 
-**The kernel of the real BIOS holds the memory card protocol. This emulator implements no command.** A byte from the console raises `INT_COM`. The FIQ handler of the kernel then answers that byte. That handler holds the three memory card commands: `0x52` Read Sector, `0x53` Get ID, and `0x57` Write Sector. It also holds the PocketStation commands `0x50`, and `0x58` to `0x5F`.
+**The kernel of the real BIOS holds the memory card protocol. This emulator implements no command.** A byte from the PS1 raises `INT_COM`. The FIQ handler of the kernel then answers that byte. That handler holds the three memory card commands: `0x52` Read Sector, `0x53` Get ID, and `0x57` Write Sector. It also holds the PocketStation commands `0x50`, and `0x58` to `0x5F`.
 
 This division is necessary. The commands `0x5B` and `0x5C` execute a function number. The numbers `0x80` to `0xFF` resolve through a function table in the header of the app file. Only the app holds that code. Thus no protocol code outside this emulated machine can answer those commands.
 
@@ -314,7 +314,7 @@ The kernel does these steps for each byte:
 6. Write `COM_MODE = 1`. This step drives the data line.
 7. Write `COM_MODE = 3`. This step pulls /ACK LOW.
 
-**The block is a shift register.** One exchange moves the byte of the console in. The same exchange moves the held byte out. Thus the console receives the byte of exchange N during exchange N+1. The kernel writes `0xFF` into `COM_DATA` at initialization. That write gives the first exchange a byte to send.
+**The block is a shift register.** One exchange moves the byte of the PS1 in. The same exchange moves the held byte out. Thus the PS1 receives the byte of exchange N during exchange N+1. The kernel writes `0xFF` into `COM_DATA` at initialization. That write gives the first exchange a byte to send.
 
 Two facts together give this conclusion. The kernel writes FLAG while it processes the `0x81` byte. It writes `0x5A` while it processes the `0x53` byte. The published command table gives the reply to `0x81` as "N/A". It gives the reply to `0x53` as FLAG. A model with immediate replies delivered each byte one position early.
 
@@ -328,13 +328,21 @@ The acknowledge rule alone is not sufficient either. At the first byte the kerne
 
 ### The /SEL line
 
-**A console holds the /SEL line of the connector for the full duration of one command. It releases the line between commands. `COM_STAT1` bit 1 reports that release, and the kernel needs the signal to end a command.**
+**A PS1 holds the /SEL line of the connector for the full duration of one command. It releases the line between commands. `COM_STAT1` bit 1 reports that release, and the kernel needs the signal to end a command.**
 
 The kernel waits at `0x040007B8` after the last byte. It polls `COM_STAT1` there. Nothing else releases that wait. Without the signal, the kernel answers the first command after docking and then answers nothing. The `selbit` mode of `tools/com_probe.c` sets one candidate bit at a time and then sends a second command. Bit 1 is the only bit that lets that second command run. Bits 2 to 7 all fail.
 
 The published register map names bit 1 "Error flag", and it gives four candidate meanings. One candidate is "/SEL disabled during transfer". That candidate is the correct one. A release of /SEL is not a fault. It is the usual end of each command.
 
-A read of `COM_STAT1` clears this latch. The same map records a dummy read of the register by the kernel at the end of each transfer. It gives a hardware clear at a read as one candidate reason for that dummy read.
+**Bit 1 is a level. A read of `COM_STAT1` does not clear it.** The bit stays set for the full time that the PS1 holds the line released. The next hold clears the bit, and that hold is the start of the next command.
+
+A bit that clears at a read stops the kernel in its wait at `0x040007B8`. The first poll after a release reads `0x02`. That read takes the bit, thus each later poll reads `0x00`. The kernel stays in the wait, and it answers one command and every second command after it.
+
+`tests/bu_test.c` gives the evidence for the level. That suite sends complete commands through `psemu_com_transfer`, thus it covers the transition from one command to the next.
+
+The `selbit` mode of `com_probe` establishes which bit carries the signal. It gives no evidence about the lifetime of the bit. That mode writes `com.stat1` directly, and no read clears that field. Thus it holds bit 1 as a level for four frames.
+
+The published register map records a dummy read of this register by the kernel at the end of each transfer. A hardware clear at a read is one candidate reason for that dummy read. The map does not state it as a fact.
 
 **`COM_STAT1` bit 0 reports an arrived byte.** It gives the same condition as the Ready bit of `COM_STAT2`. The write path of the kernel polls `COM_STAT1` in place of `COM_STAT2`, at `0x040015D6`. The bit must follow the arrival of a byte exactly. A bit that stays clear stops that path after one data byte. A bit that stays set makes the kernel read one byte many times, and Write Sector then answers `0x4E` ("N", bad checksum).
 
@@ -346,21 +354,23 @@ A read of `COM_STAT1` clears this latch. The same map records a dummy read of th
 
 - **Get ID (`0x53`)** returns `0xFF`, FLAG (`0x08`), `0x5A`, `0x5D`, `0x5C`, `0x5D`, `0x04`, `0x00`, `0x00`, and `0x80`. The last byte carries no acknowledge. A usual memory card gives the same values. It also gives no acknowledge for that last byte.
 - **Read Sector (`0x52`)** takes 140 exchanges. It returns FLAG, `0x5A`, `0x5D`, the address echo, `0x5C`, `0x5D`, the confirmed address, 128 data bytes, the checksum, and the `0x47` ("G", Good) terminator. The dummy bytes at the address positions are `0x00`. A usual card sends the previous byte at those positions. The register map records this difference. The trace confirms it.
-- **Command `0x5A` (Get Dir_index, ComFlags, F_SN, Date, and Time)** returns six items in order: the length `0x12`, the current dir index, four `ComFlags` bits, `F_SN` as `D3 00 00 41`, the BCD date, and the BCD time. That `F_SN` value is `0x410000D3`, which is `PSEMU_DEFAULT_HARDWARE_ID`. The date is 1999-01-01. The BIOS boot path always writes that date (see "RTC" above). A console game uses this command to find a PocketStation in place of a memory card.
+- **Command `0x5A` (Get Dir_index, ComFlags, F_SN, Date, and Time)** returns six items in order: the length `0x12`, the current dir index, four `ComFlags` bits, `F_SN` as `D3 00 00 41`, the BCD date, and the BCD time. That `F_SN` value is `0x410000D3`, which is `PSEMU_DEFAULT_HARDWARE_ID`. The date is 1999-01-01. The BIOS boot path always writes that date (see "RTC" above). A PS1 game uses this command to find a PocketStation in place of a memory card.
 - **Write Sector (`0x57`)** takes 139 exchanges against a real card. It returns FLAG, `0x5A`, `0x5D`, the address echo, `0x5C`, `0x5D`, and the `0x47` ("G", Good) terminator. The `write` mode of `com_probe` then reads the frame back out of flash. The frame holds the sent data exactly, and no other frame of the card changes. A run with a deliberately incorrect checksum returns `0x4E` ("N", bad checksum), and no frame changes.
 - The flash-write counts agree with the documented write sequence exactly. One Write Sector command makes 134 stores into `FLASH2` from `0x0400122C`, and 8 stores into `FLASH_CTRL` from `0x04001278`. The 134 stores are 128 data bytes and the three halfword unlock keys. The 8 stores are `F_WAIT2 = 0x21` and then `F_WAIT2 = 0x00`.
-- **Command `0x5B` (Execute Function and transfer data to the console)** operates with the two kernel functions that need no app. `FUNC 00h` returns the marker `0xFF`, `LEN1 = 0x00`, `LEN2 = 0x08`, the BCD date and time, and the `0xFF` terminator. `FUNC 01h` reads memory: it returns `LEN1 = 0x05`, it accepts a 32-bit address and a length, and it then returns that number of bytes. A read of 16 bytes at `0x04000000` returns the first 16 bytes of BIOS ROM, and each byte agrees with the loaded image. The `func` mode of `com_probe` makes that comparison.
+- **Command `0x5B` (Execute Function and transfer data to the PS1)** operates with the two kernel functions that need no app. `FUNC 00h` returns the marker `0xFF`, `LEN1 = 0x00`, `LEN2 = 0x08`, the BCD date and time, and the `0xFF` terminator. `FUNC 01h` reads memory: it returns `LEN1 = 0x05`, it accepts a 32-bit address and a length, and it then returns that number of bytes. A read of 16 bytes at `0x04000000` returns the first 16 bytes of BIOS ROM, and each byte agrees with the loaded image. The `func` mode of `com_probe` makes that comparison.
 
-  **This command carries the whole reason to model the hardware and not the protocol.** The function numbers `0x80` to `0xFF` resolve through a function table in the header of the app file. Only the app holds that code. The transport above is the same transport that those app functions use, and only the table lookup is different. Thus a working `0x5B` is the evidence that an app-supplied function can answer a console.
+  **This command carries the whole reason to model the hardware and not the protocol.** The function numbers `0x80` to `0xFF` resolve through a function table in the header of the app file. Only the app holds that code. The transport above is the same transport that those app functions use, and only the table lookup is different. Thus a working `0x5B` is the evidence that an app-supplied function can answer a PS1.
 - **Command `0x5F` (Get-and-Send ComFlags.bit0)** operates, and it changes the word from `0x0007020F` to `0x0007020E`. This command is NOT necessary before a write on this revision. An official kernel specification gives bit 0 as a flash-write enable. A published register map records that the two layouts of this word come from different BIOS revisions. The J110 revision follows the reverse-engineered layout, where bits 0 to 3 have no recorded meaning.
 
 `ComFlags` is a word in kernel RAM at `0x0C0`. Bit 9 is "Communication Enabled And Docked". The kernel sets that bit one frame after `psemu_com_set_docked` asserts the docking level. No code answers a command while that bit is clear. `com_probe` reports the word before the transition and after it. The recorded values are `0x00070000` and then `0x0007020F`.
 
 ### Known open questions
 
+- The purpose of the dummy read of `COM_STAT1` at the end of each transfer is unknown. The published register map records that read. It gives a hardware clear at a read as one candidate reason. Bit 1 is a level (see "The /SEL line"), thus the read has a different purpose. No source in this repository gives that purpose.
+- A bit that clears at a read releases the kernel from `0x040007B8` after a command of one byte. The same bit does not release the kernel after a complete command. This project has no model for that difference.
 - The function of the `COM_CTRL1` bits and the `COM_CTRL2` bits is still unknown. This emulator accepts the writes. It reads the values back. No observed behavior depends on those bits. Thus this treatment is sufficient for the exchanges above. A command that this project did not test can still depend on them.
 - `COM_STAT1` bit 1 is an error flag, and this emulator never sets it. This model has no error condition. A caller delivers a complete byte, or it delivers nothing. Real hardware can report three more conditions: a timeout, a parity error, or a /SEL line that went low during a transfer.
-- A transfer that arrives during a clock stop is untested. `INT_COM` is not in the wake sources of `psemu_run`. Such a transfer reports no acknowledge after its cycle budget expires. Real hardware probably wakes, because a console must reach a card in a device that sleeps.
+- A transfer that arrives during a clock stop is untested. `INT_COM` is not in the wake sources of `psemu_run`. Such a transfer reports no acknowledge after its cycle budget expires. Real hardware probably wakes, because a PS1 must reach a card in a device that sleeps.
 
 ## IR / IR Link
 
@@ -800,6 +810,12 @@ A real homebrew ID editor never calls `SWI 0Fh` in its code. A full scan of its 
 
 ## A note about licensing
 
-The license of this project is GPLv3 ([LICENSE](../LICENSE)). A GPLv3 project can reference BSD-3 code, or use BSD-3 code with attribution. That direction is compatible.
+The emulation core in `core/` and its test suite in `tests/` are MIT ([core/LICENSE](../core/LICENSE), [tests/LICENSE](../tests/LICENSE)). All other parts of this project are GPLv3 ([LICENSE](../LICENSE)): the frontends and the tools. Each file in `core/` and `tests/` gives its own `SPDX-License-Identifier`.
+
+Do not put GPLv3 code into `core/` or `tests/`. Those two directories must stay MIT, thus each new file there needs the same two SPDX lines. A GPLv3 frontend can use MIT core code, but the opposite direction is not permitted.
+
+A test in `tests/` must link only `psemu`, and it must read no file from `testdata/`. Those two limits keep the suite portable to a project with different terms. The tests presently follow both limits.
+
+A GPLv3 project can reference BSD-3 code, or use BSD-3 code with attribution. That direction is compatible.
 
 Do not copy code from another open-source implementation that has no license. Do not use other closed-source documentation for more than documentation-level facts. No other implementation makes its code available.

@@ -33,6 +33,12 @@ struct intc;
    The two COM_STAT1 bits above do not come from that map. The map names bit 1 "Error flag", and it
    marks bit 0 as unknown. A trace of a real BIOS gives both meanings. See tools/com_probe.c.
 
+   BIT 1 IS A LEVEL. It stays set for the full time that the PS1 holds the /SEL line released. A read
+   of COM_STAT1 does not clear it, and com_set_selected clears it at the next hold. A bit that clears
+   at a read stops the kernel in its end-of-command wait. The kernel then answers one command, and
+   every second command after it. See test_a_second_command_answers in tests/bu_test.c, and "The /SEL
+   line" in docs/hardware-notes.md.
+
    THE PROTOCOL IS NOT IN THIS FILE. The kernel of the real BIOS holds the protocol. A COM interrupt
    is FIQ source bit 6 (INT_COM, see intc.h). The FIQ handler of the kernel processes that source. It
    does this before it calls the FIQ callback of an app. That handler reads the incoming byte. It
