@@ -5,8 +5,10 @@ name: Tests
 # workflows are manual and they publish artifacts; neither one runs on a push,
 # thus neither one guards anything.
 #
-# Windows only. This project develops on Windows, and the libretro buildbot in
-# .gitlab-ci.yml compiles the core for each other platform.
+# The test job is Windows only. This project develops on Windows, and the
+# libretro buildbot in .gitlab-ci.yml compiles the core for each other
+# platform. The sanitizers job below is the one exception, and it runs on Linux
+# because it needs clang.
 on:
   push:
     branches: [main]
@@ -67,3 +69,48 @@ jobs:
       # is the check that the suites still test something in a Release build.
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+  sanitizers:
+    name: clang address and undefined
+    runs-on: ubuntu-latest
+
+    # THIS JOB FINDS WHAT THE WINDOWS JOB CANNOT. MSVC has no equivalent of
+    # these two sanitizers. cpu_test holds the ARM and Thumb assertions, and
+    # this job is the only place that executes them under a second compiler.
+    # An unaligned access, a signed overflow, and a read outside an array all
+    # report here and nowhere else.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -fno-sanitize-recover=all IS THE IMPORTANT FLAG. Without it the
+      # undefined-behavior sanitizer prints a report and then continues, the
+      # test still gives exit code 0, and this job stays green while it holds
+      # a defect. With it, the first report stops the program and ctest reports
+      # a failure.
+      #
+      # The libretro core and the desktop frontend are off. The core, the
+      # tools, and the tests are the code that this job examines. The libretro
+      # core also fetches headers at the configure step, and this job needs no
+      # network access without it.
+      #
+      # The Makefile generator on Linux is single-config, thus CMAKE_BUILD_TYPE
+      # selects the config here. Debug keeps the optimizer away from the stack
+      # traces.
+      - name: Configure
+        run: >
+          cmake -B build -S .
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_C_COMPILER=clang
+          -DPSEMU_BUILD_LIBRETRO=OFF
+          -DPSEMU_BUILD_DESKTOP=OFF
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure
