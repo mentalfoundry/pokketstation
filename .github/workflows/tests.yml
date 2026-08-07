@@ -4,6 +4,9 @@ name: Tests
 # ctest. This is the workflow that guards each change. The two release
 # workflows are manual and they publish artifacts; neither one runs on a push,
 # thus neither one guards anything.
+#
+# Windows only. This project develops on Windows, and the libretro buildbot in
+# .gitlab-ci.yml compiles the core for each other platform.
 on:
   push:
     branches: [main]
@@ -18,13 +21,12 @@ concurrency:
 
 jobs:
   test:
-    name: ${{ matrix.os }} ${{ matrix.build_type }}
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.build_type }}
+    runs-on: windows-latest
     strategy:
-      # One platform that fails must not hide the result of the others.
+      # A failure in one configuration must not hide the result of the other.
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
         build_type: [Debug, Release]
 
     steps:
@@ -43,17 +45,12 @@ jobs:
       # The core, the tests, the tools, and the libretro core need no
       # dependency. The libretro core does fetch the libretro-common headers at
       # the configure step, thus this step needs network access.
-      #
-      # --no-warn-unused-cli keeps the log clean. A multi-config generator does
-      # not use CMAKE_BUILD_TYPE, and it reports that variable as unused.
       - name: Configure
-        run: cmake -B build -S . --no-warn-unused-cli -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        run: cmake -B build -S .
 
-      # CMAKE_BUILD_TYPE above and --config here cover both generator kinds.
-      # The Visual Studio generator on Windows is multi-config: it ignores
-      # CMAKE_BUILD_TYPE and it needs --config. The Makefile generator on Linux
-      # and macOS is single-config: it needs CMAKE_BUILD_TYPE and it ignores
-      # --config. Thus one command operates on each platform.
+      # The Visual Studio generator is multi-config. Thus the configure step
+      # takes no build type, and one configured directory serves each config.
+      # --config below selects the config, and -C does the same for ctest.
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }}
 
@@ -65,8 +62,8 @@ jobs:
       # SKIP_RETURN_CODE 77. Thus ctest reports it as skipped, and the run
       # stays green. See the comment at the top of tests/bu_test.c.
       #
-      # Release builds matter here. Each test suite calls #undef NDEBUG before
-      # <assert.h>, because NDEBUG removes every assert() call. This matrix is
-      # the check that the suites still test something in a Release build.
+      # The Release job matters here. Each test suite calls #undef NDEBUG
+      # before <assert.h>, because NDEBUG removes every assert() call. That job
+      # is the check that the suites still test something in a Release build.
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
