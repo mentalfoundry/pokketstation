@@ -599,7 +599,7 @@ int psemu_com_get_docked(const psemu_t *ps) {
    size. It tests the acknowledge line between steps.
    A small value stops the machine near the answer of the kernel. It costs one more psemu_run call
    for each step. A large value runs past the answer. The machine then executes instructions that the
-   console did not wait for. That condition is not a fault, because real hardware also executes
+   PS1 did not wait for. That condition is not a fault, because real hardware also executes
    between bytes. It costs only host time.
    The kernel answers from a FIQ handler. Entry and dispatch of that handler cost approximately 98
    raw cycles on real hardware (see docs/hardware-notes.md, "Timing measurements on real hardware").
@@ -614,7 +614,7 @@ int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t
     uint32_t ran = 0;
     int acked;
 
-    /* A byte can only arrive while the console holds the /SEL line. A caller that never sets the
+    /* A byte can only arrive while the PS1 holds the /SEL line. A caller that never sets the
        line still gets a working transfer, because this call holds it. The caller keeps the duty to
        release the line at the end of a command. See psemu_com_set_selected. */
     com_set_selected(&ps->com, 1);

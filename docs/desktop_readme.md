@@ -26,7 +26,7 @@ pokketstation.exe .\bios.bin .\samplememcard.mcr
 - **View > Colors** changes the appearance of the LCD: **Classic** (the default, which is a muted LCD ink-on-sage appearance), **Light** (black on white), **Dark** (white on black), or **Advanced Colors...** for each other appearance. A scheme is three colors: the active pixel, the background, and the sprite shadow. Each item above sets all three colors.
 - **Advanced Colors...** asks for one color, the screen color (the background). It then calculates the other two colors: they use the same hue, with sufficient contrast for legibility. A live preview shows the three colors together. This dialog also has the **sprite shadows** control. That control adds a small one-row "ghosting" trail, which approximates the slow pixel response of a real passive-matrix LCD. Open **Custom Colors** in that dialog to set all three colors manually, or select **Match to Screen Color** to return to calculated colors. No control in the Custom Colors group calculates a color by itself. Only **Choose Screen Color...** and **Match to Screen Color** write over a color that you set manually.
 - Press **F12** at any time to write a diagnostic report to a log file. See [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
-- The hardware ID of the PocketStation is `F_SN`. It sets the rank in the companion app of one console game. This app gives it the best-rank value by default. You can see it and change it from **Tools > Edit Hardware ID...**; see [hardware-notes.md](hardware-notes.md) for the format. This app keeps this setting, and each other setting above, in `settings.cfg` next to the executable. Those settings are the last BIOS path, the hardware ID, the color scheme, the sprite-shadow state, the key bindings, and the `--console` or `--no-console` preference. The app writes each setting at the moment that it changes.
+- The hardware ID of the PocketStation is `F_SN`. It sets the rank in the companion app of one PS1 game. This app gives it the best-rank value by default. You can see it and change it from **Tools > Edit Hardware ID...**; see [hardware-notes.md](hardware-notes.md) for the format. This app keeps this setting, and each other setting above, in `settings.cfg` next to the executable. Those settings are the last BIOS path, the hardware ID, the color scheme, the sprite-shadow state, the key bindings, and the `--console` or `--no-console` preference. The app writes each setting at the moment that it changes.
 - **Tools > Sound** has two separate items: **Volume**, which sets the output level, and **Speaker**, which sets the character of the sound.
 - **Tools > Sound > Volume** sets the output volume of this emulator, from **Mute**, through steps of 10%, to **Full** (the default). It is a usual application volume: it scales the data that this window sends to your sound device, and the emulated PocketStation cannot read it. Thus it operates on each BIOS, it takes effect immediately, and the app keeps it in `settings.cfg`. It is separate from the sound setting of the PocketStation, and the two values multiply. A device that is mute in its own system menu stays silent, at each value of this setting. Only the system menu of the emulated machine sets the volume of that machine, the same as on the real device. This app no longer has a control to hold that value.
 
@@ -50,7 +50,7 @@ pokketstation.exe .\bios.bin .\samplememcard.mcr
   An override of the date and time also means that the emulated clock continues to advance while the app is closed. That behavior is nearer to a real PocketStation, whose clock operates from the battery at each time.
 - **Help > About pokketstation...** shows the version and a link to this repository.
 - **IR Link** connects two copies of this app over IR. This is the same as two physical PocketStation units that a user holds together for local multiplayer. See [IR Link](#ir-link) below.
-- **Save write-back** keeps the file that you opened in agreement with the changes that an app makes. Thus the progress of an app continues after you close the window. An edit that an app makes to the PS1 save of the console game also continues. The app keeps a backup of the original file. See [Save write-back](#save-write-back) below.
+- **Save write-back** keeps the file that you opened in agreement with the changes that an app makes. Thus the progress of an app continues after you close the window. An edit that an app makes to the save of the PS1 game also continues. The app keeps a backup of the original file. See [Save write-back](#save-write-back) below.
 
 A single-app load (`.pss` or `.mcs`) boots through the real BIOS menu, the same way as a full memory card. See [How to reach a single loaded app](../README.md#how-to-reach-a-single-loaded-app) in the main README for the button sequence.
 
@@ -78,7 +78,7 @@ Two separate copies of `pokketstation.exe`, **on the same Windows machine**, can
 *Each* change is applicable, and not one kind only:
 
 - an app that saves **its own progress** into its own blocks, which is what most apps do; and
-- an app that edits the **PS1 save of the console game** in a different block of the same memory card. One trading-card app sends cards over the IR link directly into the save of its own game.
+- an app that edits the **save of the PS1 game** in a different block of the same memory card. One trading-card app sends cards over the IR link directly into the save of its own game.
 
 Both kinds go to the same storage, thus this app writes both back. Without this function, a completed trade, or several hours of app progress, is lost when you close the window.
 
@@ -90,7 +90,7 @@ Both kinds go to the same storage, thus this app writes both back. Without this 
 
 **Save states continue to operate after an app saves.** A state records its source card or app, and it refuses a load onto a different one. That test deliberately uses the *identity* of the card: the file names in its directory, and the title and icon of an app. It does not use the contents of the file. Thus a set of states from before a card trade still loads after the trade, even though the card on disk changed. This app still separates two different cards, and a card that gained or lost a save, and it still refuses those loads.
 
-**For a `.mcs` or `.pss` file, this app saves only the data of the app.** An app that you load alone operates inside a memory card that this emulator builds around it. No other part of that card is in your file. In practice, an app writes only its own data. If an app must reach the PS1 save of a console game, load a full `.mcr` card that contains both files.
+**For a `.mcs` or `.pss` file, this app saves only the data of the app.** An app that you load alone operates inside a memory card that this emulator builds around it. No other part of that card is in your file. In practice, an app writes only its own data. If an app must reach the save of a PS1 game, load a full `.mcr` card that contains both files.
 
 ## Building
 

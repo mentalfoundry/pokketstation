@@ -1319,7 +1319,7 @@ int main(int argc, char **argv) {
 
     /* Which physical card blocks each side actually rewrote during the run.
        A PocketStation app runs out of FLASH1, a banked window holding only its own blocks, but the whole
-       card stays visible unwindowed through FLASH2 - including the PS1 save belonging to the console game.
+       card stays visible unwindowed through FLASH2 - including the save belonging to the PS1 game.
        That is the only route between the two, so a transfer that is supposed to land in the game's save has
        to show up here as a write to a block the app does not own. Reported per block, so "the app rewrote
        its own state" and "the app rewrote the game's save" stay distinguishable.

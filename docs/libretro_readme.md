@@ -37,7 +37,7 @@ The content browser of RetroArch shows `.mcr`, `.mcs`, and `.pss` files for this
 
 This core saves automatically. RetroArch keeps the emulated memory card in a `.srm` file. That file has the name of the loaded content, and it is in the **Saves** directory of RetroArch (Settings → Directory → Savefiles). RetroArch writes the file at exit, and at its own autosave interval. You do not have to enable a setting.
 
-**That `.srm` file is a memory-card image. It is a `.mcr` file, byte for byte.** It is the full 128KB card, in exactly the layout that a `.mcr` file uses. Thus you can give it a new name, load it back into this emulator, or open it in an external PS1 memory-card tool. This is the method to get the work of an app out of the emulator. The real output of a PocketStation app is often an edit to the PS1 save of the console game in a different block of the same card. One trading-card app sends cards into the save of its own game in this manner. That edit stays with the card.
+**That `.srm` file is a memory-card image. It is a `.mcr` file, byte for byte.** It is the full 128KB card, in exactly the layout that a `.mcr` file uses. Thus you can give it a new name, load it back into this emulator, or open it in an external PS1 memory-card tool. This is the method to get the work of an app out of the emulator. The real output of a PocketStation app is often an edit to the save of the PS1 game in a different block of the same card. One trading-card app sends cards into the save of its own game in this manner. That edit stays with the card.
 
 This is true for all three content types. A `.mcs` or `.pss` file operates inside a full card that this emulator synthesizes around it. Thus its `.srm` file is a valid card with one app. A memory-card tool opens that file, and it can export the save as a `.mcs` file.
 
@@ -51,7 +51,7 @@ The cheat search of RetroArch (Cheats → Start or Continue Cheat Search) and it
 
 The controls use the standard RetroPad map of RetroArch: the D-pad gives Up, Down, Left, and Right, and the **A** button gives Fire (Action). You can change these controls in the input settings of RetroArch, the same as for each other core.
 
-The hardware ID of the PocketStation is `F_SN`. It sets the rank in the companion app of one console game. This core gives it the best-rank value by default, the same as the desktop app. Thus you do not have to configure a value for the one app that reads it. This value is a hardware register, and not card data. It is outside the 128KB card image, and it is not part of the `.srm` file. This core has no configuration file. Thus an edit during a session, for example with a homebrew ID-editor app, continues only until you unload the content. A save state does keep the value.
+The hardware ID of the PocketStation is `F_SN`. It sets the rank in the companion app of one PS1 game. This core gives it the best-rank value by default, the same as the desktop app. Thus you do not have to configure a value for the one app that reads it. This value is a hardware register, and not card data. It is outside the 128KB card image, and it is not part of the `.srm` file. This core has no configuration file. Thus an edit during a session, for example with a homebrew ID-editor app, continues only until you unload the content. A save state does keep the value.
 
 A single-app load (`.pss` or `.mcs`) boots through the real BIOS menu, the same way as a full memory card. See [How to reach a single loaded app](../README.md#how-to-reach-a-single-loaded-app) in the main README for the button sequence.
 

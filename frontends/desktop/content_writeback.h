@@ -12,7 +12,7 @@
    this method, and both are important:
 
    - an app that saves ITS OWN progress into its own blocks, which is what most apps do; and
-   - an app that edits the PS1 save of the CONSOLE GAME, in a different block of the same card. One
+   - an app that edits the save of the PS1 GAME, in a different block of the same card. One
      trading-card app sends cards into the save of its own game in this manner (see
      docs/app-notes.md).
 

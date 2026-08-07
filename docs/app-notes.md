@@ -79,7 +79,7 @@ If you write an app, wait for the release of `Action` before you exit. The windo
 
 ## The method that an app uses to reach the PS1 save on the same card
 
-**Many PocketStation apps have no use alone: their function is an exchange of data with the PS1 save of the console game, in a different block of the same memory card.** One trading-card app is an example. This section gives the mechanism, from reverse engineering of the Japanese release of that app (`testdata/`, which .gitignore excludes). The English release has the same code at the same offsets, byte for byte.
+**Many PocketStation apps have no use alone: their function is an exchange of data with the save of the PS1 game, in a different block of the same memory card.** One trading-card app is an example. This section gives the mechanism, from reverse engineering of the Japanese release of that app (`testdata/`, which .gitignore excludes). The English release has the same code at the same offsets, byte for byte.
 
 The mechanism depends fully on the **`FLASH1` and `FLASH2` division** in "App selection and dispatch" above:
 
@@ -136,7 +136,7 @@ This emulator models this full path correctly. `test_flash_frame_write_lands_in_
 
 ### A completed IR trade does write to the PS1 save, on both sides
 
-**The trading-card app writes the PS1 save of the console game at the end of a successful card trade, and this emulator sends that write to the card.** A measurement with `tools/ir_probe.c` gives this result, with two instances that operate against each other over the IR relay:
+**The trading-card app writes the save of the PS1 game at the end of a successful card trade, and this emulator sends that write to the card.** A measurement with `tools/ir_probe.c` gives this result, with two instances that operate against each other over the IR relay:
 
 - 7 `SWI 0x10` calls on each side, at `0x0200291A` in the app, through `0x02002960` and then `0x020028FE`.
 - 1876 attempted FLASH2 byte writes for each run, and **65 changed bytes in physical block 1 on each card**. Block 1 is `BASLUS-01411-YUGIOH`, which is the PS1 save of the game, and not a block of the app.
@@ -170,7 +170,7 @@ Two incorrect conclusions are recorded here, thus nobody repeats them:
 - **A comparison of the loaded file against flash is not a write test.** `psemu_load_mcs` synthesizes a directory of 16 frames, and it moves the data of the save to block 1. `psemu_load_state` then writes over flash again. Both operations occur before the first instruction. Thus a file-against-flash comparison reported thousands of "written" bytes across each block, for an app from a `.mcs` file that wrote nothing. The reference must be flash in the condition after the setup.
 - **Not each FLASH_CTRL access during a transfer is a flash write.** Both apps write to `F_WAIT1` (`+0x0C`) and `F_WAIT2` (`+0x10`), from BIOS addresses `0x040017C6` and `0x040017C8`. That routine, whose entry is `0x040017B6`, is different from `FlashReadSerial` at `0x040017A5`. It sets the flash waitstates, then programs `CLK_MODE`, and then polls for the change. Thus it is the **clock-speed change routine**. It executes because both apps change CLK_MODE for the duration of a transfer. The measured change is from 507904Hz to 1998848Hz. A real flash-write routine also polls `F_WAIT2`, thus this region is useful to monitor. But these particular writes are not a save.
 
-**The two apps are not equivalent here, and that difference is important.** The transfers of the serial-carrying app move its own app state, which is in its own blocks. That app still attempts no flash write during a fully verified bidirectional exchange. The trading-card app is the app that writes the PS1 save of the console game. Thus use that app for a test of this path, and monitor for a `SWI 0x10` call that reaches FLASH2 block 1.
+**The two apps are not equivalent here, and that difference is important.** The transfers of the serial-carrying app move its own app state, which is in its own blocks. That app still attempts no flash write during a fully verified bidirectional exchange. The trading-card app is the app that writes the save of the PS1 game. Thus use that app for a test of this path, and monitor for a `SWI 0x10` call that reaches FLASH2 block 1.
 
 ### How to get the edited card out of the emulator
 
@@ -208,7 +208,7 @@ A live trace confirms this layout. The BIOS addresses below are for the `110`-re
 
 **The standard PS1 title-text field, at Title Sector offset `0x04` to `0x4F`, holds 2-byte Shift-JIS text. The browse screen of the PocketStation appears to make no use of that field.** A correctly SJIS-encoded custom title in that field never appeared on the browse screen, in each tested configuration. A decode of the title of a real app, by the same method, gave a real, readable string. Thus the encoding was correct.
 
-A replacement of only the 32 by 32 bitmap immediately after the standard icon, with no change to the `0x04` title field, gave a fully correct result. The current theory: the standalone LCD browse interface of the PocketStation reads only the icon bitmaps of the device, and a real app draws its own logo or text into those pixels. The standard title field is probably for a memory-card browser on the PS1 console. This project has not examined that browser.
+A replacement of only the 32 by 32 bitmap immediately after the standard icon, with no change to the `0x04` title field, gave a fully correct result. The current theory: the standalone LCD browse interface of the PocketStation reads only the icon bitmaps of the device, and a real app draws its own logo or text into those pixels. The standard title field is probably for a memory-card browser on the PS1. This project has not examined that browser.
 
 ### How to build a custom icon
 

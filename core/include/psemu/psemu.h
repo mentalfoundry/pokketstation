@@ -87,9 +87,9 @@ psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t siz
    Thus you can write the result back over the card image that supplied it.
 
    This function is necessary because the real output of an app is frequently not the
-   state of the app. The output is often a change to the PS1 save of the console game in
+   state of the app. The output is often a change to the save of the PS1 game in
    a different block of the same card. One trading-card app sends cards into the save of
-   its console game in this manner. See docs/app-notes.md, "How an app reaches the PS1
+   its PS1 game in this manner. See docs/app-notes.md, "How an app reaches the PS1
    save on the same card". Without a method to get flash out again, that change stays in
    one emulator session and is then lost.
 
@@ -223,7 +223,7 @@ void psemu_set_buttons(psemu_t *ps, uint32_t buttons);
 
 /* F_SN is the hardware serial number of the PocketStation.
    Apps read F_SN with SWI 0Ah (FlashReadSerial).
-   The companion app of one console game reads F_SN when the user makes a new save.
+   The companion app of one PS1 game reads F_SN when the user makes a new save.
    That app removes the high byte of F_SN.
    It then uses the last 3 decimal digits of the remaining value as an "ID" statistic.
    This "ID" statistic alone sets the rank: the maximum HP, the weapon value, and the
@@ -441,7 +441,7 @@ uint64_t psemu_ir_get_clock_us(const psemu_t *ps);
    through the memory card connector. A PocketStation is a memory card in that connector.
 
    THE PROTOCOL IS NOT HERE. The BIOS of the emulated machine holds the protocol. A byte from the
-   console raises the COM interrupt. The FIQ handler of the kernel then answers that byte. That
+   PS1 raises the COM interrupt. The FIQ handler of the kernel then answers that byte. That
    handler holds the three memory card commands: 0x52 Read Sector, 0x53 Get ID, and 0x57 Write
    Sector. It also holds the PocketStation commands 0x50, and 0x58 to 0x5F. Thus a caller supplies
    bytes and receives bytes. A caller must not implement a command.
@@ -453,12 +453,12 @@ uint64_t psemu_ir_get_clock_us(const psemu_t *ps);
    A caller needs a loaded BIOS. Without a BIOS, no code answers a transfer. Each transfer then
    reports no acknowledge.
 
-   Usual use, from the memory card transfer path of a console emulator:
+   Usual use, from the memory card transfer path of a PS1 emulator:
    - Call psemu_com_set_docked(ps, 1) one time. Do this when the user puts the device in the slot.
      Then run the machine for several frames. The kernel enables communication in response to the
      docking signal. A stopped machine cannot do this.
-   - Call psemu_com_transfer for each byte of a transfer. Supply the byte from the console. Send the
-     reply back to the console.
+   - Call psemu_com_transfer for each byte of a transfer. Supply the byte from the PS1. Send the
+     reply back to the PS1.
    - Call psemu_com_set_docked(ps, 0) when the user removes the device. */
 
 /* Sets the docking sense. `docked` is 0 for undocked. A nonzero value is the docked condition.
@@ -472,8 +472,8 @@ void psemu_com_set_docked(psemu_t *ps, int docked);
 int psemu_com_get_docked(const psemu_t *ps);
 
 /* Sets the /SEL line of the connector. `selected` is 0 for released. A nonzero value holds the line.
-   A console holds this line for the full duration of one command. It releases the line between
-   commands. On a console emulator this line is the select bit of the controller port.
+   A PS1 holds this line for the full duration of one command. It releases the line between
+   commands. On a PS1 emulator this line is the select bit of the controller port.
 
    A CALLER MUST RELEASE THIS LINE AFTER EACH COMMAND. The kernel waits for the release, and that
    wait is how it learns that a command ended. Without the release, the kernel answers the first
@@ -485,8 +485,8 @@ int psemu_com_get_docked(const psemu_t *ps);
    kernel can leave its wait and make its command state ready again. */
 void psemu_com_set_selected(psemu_t *ps, int selected);
 
-/* Exchanges one byte with the console.
-   `data_in` is the byte from the console. This function writes the reply of the device to
+/* Exchanges one byte with the PS1.
+   `data_in` is the byte from the PS1. This function writes the reply of the device to
    *data_out.
 
    This function RUNS THE CPU. An interrupt handler on real hardware answers a byte. Thus the
@@ -494,7 +494,7 @@ void psemu_com_set_selected(psemu_t *ps, int selected);
    `timeout_cycles` cycles. It stops when the kernel drives the acknowledge line.
 
    It returns a nonzero value after the device acknowledges the byte. It returns 0 if the device does
-   not answer inside the budget. A console gives a missing acknowledge one of two meanings: the
+   not answer inside the budget. A PS1 gives a missing acknowledge one of two meanings: the
    device is absent, or the command is complete. A caller gives a 0 return the same two meanings. The
    acknowledge of a memory card carries the same meaning.
 

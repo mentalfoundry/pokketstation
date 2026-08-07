@@ -295,7 +295,7 @@ int main(int argc, char **argv) {
             }
             psemu_set_buttons(ps, buttons);
         } else if (button_sim == 6) {
-            /* A diagnostic mode. It reproduces a report that one console
+            /* A diagnostic mode. It reproduces a report that one PS1
                game's companion app stops "upon getting into an event"
                during real interactive use. Real use includes movement on
                the overworld map for a variable, human quantity of time,

@@ -43,7 +43,7 @@ This directory already holds a prebuilt `pk_timing_bench.mcs`. The toolchain is 
 This app has two independent icons. Two different things read them:
 
 - **The browse-screen icon of the PocketStation.** This is a direct 32 by 32 1bpp bitmap, at Title Sector body offset `0x100`. The LCD of the device shows this icon at a browse operation to this file, before the launch. See [`src/icon.s`](src/icon.s). See the "Browse-screen icon/graphic" section in `docs/app-notes.md` for the method that gave this format.
-- **The standard PS1 memory-card icon.** This icon has a 16-color BGR555 palette at body offset `0x60`, and then a 16 by 16 4bpp bitmap at offset `0x80`. The memory-card manager of a real PS1 console draws this icon. A PC-side memory-card management tool also draws it. The PocketStation never reads this icon.
+- **The standard PS1 memory-card icon.** This icon has a 16-color BGR555 palette at body offset `0x60`, and then a 16 by 16 4bpp bitmap at offset `0x80`. The memory-card manager of a real PS1 draws this icon. A PC-side memory-card management tool also draws it. The PocketStation never reads this icon.
 
   A byte-for-byte comparison gave this format. That comparison put the output of a real icon-embedding tool against the build of this project. Only 27 bytes were different, and each one is in the range `0x60` to `0xFF`. That result confirmed the format. The icon-frame-count byte of this project, at body offset `0x02`, was already `0x11`, which means "1 frame, no animation". That byte is also the standard field that this icon format uses as a gate.
 

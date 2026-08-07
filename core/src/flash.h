@@ -59,7 +59,7 @@
 
 /* The default hardware ID (F_SN).
  *
- * The companion app of one console game reads the serial number of the
+ * The companion app of one PS1 game reads the serial number of the
  * PocketStation with SWI 0Ah, when the player makes a new save. A
  * disassembly of a real copy of that app confirms this (see
  * docs/hardware-notes.md, "Hardware ID (F_SN)"). The app masks F_SN down

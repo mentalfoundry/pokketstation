@@ -1321,7 +1321,7 @@ static void test_flash_ctrl_busy_wait_bits(void) {
 static void test_flash_serial_number_default_and_override(void) {
     /* F_SN (see docs/hardware-notes.md, "Hardware ID (F_SN)") has a default
        of 0x410000D3, which is "410000D3" in hex form. Its low 24 bits are
-       211. The companion app of one console game removes the high byte, reads
+       211. The companion app of one PS1 game removes the high byte, reads
        the remainder with SWI 0Ah, and uses the last 3 decimal digits as an
        "ID" statistic. That statistic alone sets the rank, and public research
        gives 211 as the best rank. The high byte ('A') is the ASCII letter
@@ -1756,7 +1756,7 @@ static void test_flash_header_write_via_unlock_sequence(void) {
     printf("test_flash_header_write_via_unlock_sequence OK\n");
 }
 
-/* The path that a PocketStation app uses to write the PS1 save of the console game on the same card.
+/* The path that a PocketStation app uses to write the save of the PS1 game on the same card.
 
    An app can read that save directly, because FLASH2 is the full card in memory with no window. But
    an app cannot write the save that way. Writes use kernel SWI 0x10, one frame of 128 bytes at a

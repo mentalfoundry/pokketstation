@@ -6,7 +6,7 @@
  *
  * This icon is separate from the PocketStation browse-screen icon at Title
  * Sector body offset 0x100 (see icon.s). This icon is at body offset 0x60
- * (the palette) and 0x80 (the bitmap). A real PS1 console memory card
+ * (the palette) and 0x80 (the bitmap). A real PS1 memory card
  * manager, or a memory-card tool on a computer, shows this icon during a
  * browse operation. This project found the format by a comparison of the
  * output of a real save-icon tool against its own build. See README.md.
