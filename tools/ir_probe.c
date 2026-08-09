@@ -76,8 +76,8 @@
                              reaches each one over the whole run. See watch_pcs.
 
    Output: both sides' final screens, the per-block card diff against flash as it stood at setup, and -
-   for any side whose card changed - that side's whole card written to ir_probe_A_card.mcr /
-   ir_probe_B_card.mcr, in the same raw layout a .mcr already uses. */
+   for any side whose card changed - that side's whole card written to ir_probe_A_card.mcd /
+   ir_probe_B_card.mcd, in the same raw layout a .mcd already uses. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1327,7 +1327,7 @@ int main(int argc, char **argv) {
 
        The baseline is flash as it stood once the run was fully set up, captured in flash_baseline_a/b, not
        the input file. Those two are not the same thing and using the file gives nonsense for anything but a
-       whole-card .mcr: psemu_load_mcs synthesizes a 16-frame directory and relocates the save's data to
+       whole-card .mcd: psemu_load_mcs synthesizes a 16-frame directory and relocates the save's data to
        block 1, so a file-vs-flash diff reports that relocation as thousands of "written" bytes in every
        block before a single instruction runs. psemu_load_state then overwrites flash again with whatever
        the save state captured. Both happen before the first frame, and neither is a write by the app. */
@@ -1356,13 +1356,13 @@ int main(int argc, char **argv) {
             }
             printf("%s\n", any ? "" : "none");
             /* The run's real output: each side's card exactly as it stands afterwards, in the same raw
-               128KB layout a .mcr already uses. A block count says a write landed; only the card itself
+               128KB layout a .mcd already uses. A block count says a write landed; only the card itself
                shows what landed, and it can be diffed against the input card or loaded straight back into
                either frontend. */
             if (any) {
                 char path[64];
                 FILE *out;
-                sprintf(path, "ir_probe_%s_card.mcr", side ? "B" : "A");
+                sprintf(path, "ir_probe_%s_card.mcd", side ? "B" : "A");
                 out = fopen(path, "wb");
                 if (out) {
                     fwrite(now, 1, PSEMU_FLASH_SIZE, out);

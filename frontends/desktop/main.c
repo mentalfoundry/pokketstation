@@ -1043,7 +1043,7 @@ static void prompt_open_app(menu_context_t *ctx) {
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = ctx->hwnd;
     ofn.lpstrFilter =
-        "App or memory-card image (*.pss;*.mcs;*.mcr)\0*.pss;*.mcs;*.mcr\0All files (*.*)\0*.*\0";
+        "App or memory-card image (*.pss;*.mcs;*.mcr;*.mcd)\0*.pss;*.mcs;*.mcr;*.mcd\0All files (*.*)\0*.*\0";
     ofn.lpstrFile = path;
     ofn.nMaxFile = sizeof(path);
     ofn.lpstrTitle = "Open app or memory card";
@@ -2448,9 +2448,9 @@ int main(int argc, char **argv) {
         } else {
             join_path(bios_path, sizeof(bios_path), exe_dir, "bios.bin");
         }
-        join_path(app_path, sizeof(app_path), exe_dir, "memcard.mcr");
+        join_path(app_path, sizeof(app_path), exe_dir, "memcard.mcd");
     } else {
-        fprintf(stderr, "usage: %s [--console|--no-console] <bios.bin> <app.pss | app.mcs | memory-card.mcr>\n",
+        fprintf(stderr, "usage: %s [--console|--no-console] <bios.bin> <app.pss | app.mcs | memory-card.mcd>\n",
             argv[0]);
         fprintf(
             stderr,

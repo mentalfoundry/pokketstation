@@ -154,10 +154,10 @@ Both resulting cards stay structurally valid: the `"MC"` header is unchanged, th
 To reproduce this result:
 
 ```
-ir_probe J110.bin card2.mcr "sender.sav,receiver.sav" 33000 300 "fire@20-21" "fire@10-11" flashwatch
+ir_probe J110.bin card2.mcd "sender.sav,receiver.sav" 33000 300 "fire@20-21" "fire@10-11" flashwatch
 ```
 
-Here, `sender.sav` is a state on the send screen of the app, and `receiver.sav` is a state on its receive screen. Each state is one Action press from its start. The run reports the block comparison, and it writes the resulting card of each side to `ir_probe_A_card.mcr` and `ir_probe_B_card.mcr`.
+Here, `sender.sav` is a state on the send screen of the app, and `receiver.sav` is a state on its receive screen. Each state is one Action press from its start. The run reports the block comparison, and it writes the resulting card of each side to `ir_probe_A_card.mcd` and `ir_probe_B_card.mcd`.
 
 Three diagnostics answer three different questions here. A person who uses the incorrect diagnostic loses real time:
 
@@ -176,7 +176,7 @@ Two incorrect conclusions are recorded here, thus nobody repeats them:
 
 An edit that stays in the emulator has little use. Three public functions get content out, and all three are in `core/include/psemu/psemu.h`:
 
-- **`psemu_save_flash_image`** copies flash out, in the same raw layout that a `.mcr` file uses. It is the inverse of `psemu_load_flash_image`.
+- **`psemu_save_flash_image`** copies flash out, in the same raw layout that a `.mcd` file uses. It is the inverse of `psemu_load_flash_image`.
 - **`psemu_save_app_image`** copies only the body of the loaded app out. It is the inverse of `psemu_load_app`, and of the part of `psemu_load_mcs` that comes after the directory frame. The body is contiguous at physical block 1, where the final `memcpy` of `flash_load_app` put it. Thus the inverse is a simple copy.
 - **`psemu_identify_content`** gives the result that `psemu_load_content` would give for a buffer, and it loads nothing. `psemu_load_content` calls this function. Thus a caller cannot become different from the dispatch logic, which can occur with a separate size check or extension check.
 - **`psemu_content_identity_hash`** hashes the identity of a buffer: which app or card the buffer *is*. For a card, it uses the directory file names. For an app, it uses the title-sector metadata. It does not hash the data that the buffer holds. The write-back function makes this necessary, and not only convenient: a frontend that identifies a save state with a hash of the full file finds that each state stops agreeing at the moment that the app saves, because the file is the data that changed. A measurement against the real condition confirms this: a card trade does not change the identity hash of either card, and the two cards still give different hashes.
@@ -187,7 +187,7 @@ The desktop frontend writes all three kinds back automatically. See `frontends/d
 - **For a `.mcs` or `.pss` file, only the blocks of the app are in the file.** An app can write anywhere in the synthesized card through `FLASH2`, and the file has no space for those bytes. Also compare only the region that the code will write. If you compare a larger region, a single write to the synthesized directory marks the file as changed permanently, and the code writes the file again in a loop.
 - **A reset and a save-state load replace all of flash**, with no app write. Those operations are not edits to keep. Use them as a new reference instead. If you do not, a state load writes the card of the state over the file.
 
-`frontends/desktop/content_writeback_selftest.c` covers all three kinds. It also accepts an optional file argument, for a manual round-trip of real content from `testdata/`. Six real files, which are four `.mcs` files of up to 13 blocks and two `.mcr` files, rebuild byte for byte when nothing changes them.
+`frontends/desktop/content_writeback_selftest.c` covers all three kinds. It also accepts an optional file argument, for a manual round-trip of real content from `testdata/`. Six real files, which are four `.mcs` files of up to 13 blocks and two `.mcd` files, rebuild byte for byte when nothing changes them.
 
 ## The browse-screen icon and graphic
 

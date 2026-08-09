@@ -1628,7 +1628,7 @@ static void test_psemu_load_mcs_validates_and_unwraps(void) {
 }
 
 static void test_psemu_load_content_dispatches_by_size(void) {
-    /* psemu_load_content holds the .mcr, .mcs, and .pss priority dispatch in
+    /* psemu_load_content holds the .mcd, .mcs, and .pss priority dispatch in
        one location. Both frontends contained a copy of that logic before, and
        the two copies became different one time, at a change to the priority
        order. This test protects all four results: a full card, a .mcs file, a

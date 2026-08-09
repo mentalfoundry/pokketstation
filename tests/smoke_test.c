@@ -65,7 +65,7 @@ int main(void) {
     assert(psemu_flash_data(ps) == flash_ptr);
     assert(psemu_ram_data(ps) == ram_ptr);
 
-    /* A dump of this region by a host is a .mcr file. This is a contract that users depend on: the
+    /* A dump of this region by a host is a .mcd file. This is a contract that users depend on: the
        saves section of docs/libretro_readme.md tells them to open the save file in external
        memory-card tools. A smaller region, or an added header, makes each file from an older build
        invalid. Thus this test protects the property that makes the contract true. */

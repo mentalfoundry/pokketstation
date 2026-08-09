@@ -25,19 +25,19 @@ yourself, see [Building](#building) below.
 3. In RetroArch, select **Load Core** → **pokketstation** → **Load Content** → your app file.
 
 This core loads the same three content types as the desktop app, and it selects the type the same way: from the content, and not from the file extension.
-- A full memory-card image (`.mcr`), if the size of the file is exactly the real flash size.
+- A full memory-card image (`.mcd`), if the size of the file is exactly the real flash size.
 - If not, a single-save `.mcs` file.
 - If not, a raw PSX Title Sector dump (`.pss`).
 
 A `.gme` full-card dump does not load directly. That format holds the same 128KB of card data in a container with its own header. Remove that header first, to give the raw 128KB.
 
-The content browser of RetroArch shows `.mcr`, `.mcs`, and `.pss` files for this core by default. But this core does not test the extension at load time.
+The content browser of RetroArch shows `.mcd`, `.mcs`, and `.pss` files for this core by default. But this core does not test the extension at load time.
 
 ## Saves
 
 This core saves automatically. RetroArch keeps the emulated memory card in a `.srm` file. That file has the name of the loaded content, and it is in the **Saves** directory of RetroArch (Settings → Directory → Savefiles). RetroArch writes the file at exit, and at its own autosave interval. You do not have to enable a setting.
 
-**That `.srm` file is a memory-card image. It is a `.mcr` file, byte for byte.** It is the full 128KB card, in exactly the layout that a `.mcr` file uses. Thus you can give it a new name, load it back into this emulator, or open it in an external PS1 memory-card tool. This is the method to get the work of an app out of the emulator. The real output of a PocketStation app is often an edit to the save of the PS1 game in a different block of the same card. One trading-card app sends cards into the save of its own game in this manner. That edit stays with the card.
+**That `.srm` file is a memory-card image. It is a `.mcd` file, byte for byte.** It is the full 128KB card, in exactly the layout that a `.mcd` file uses. Thus you can give it a new name, load it back into this emulator, or open it in an external PS1 memory-card tool. This is the method to get the work of an app out of the emulator. The real output of a PocketStation app is often an edit to the save of the PS1 game in a different block of the same card. One trading-card app sends cards into the save of its own game in this manner. That edit stays with the card.
 
 This is true for all three content types. A `.mcs` or `.pss` file operates inside a full card that this emulator synthesizes around it. Thus its `.srm` file is a valid card with one app. A memory-card tool opens that file, and it can export the save as a `.mcs` file.
 

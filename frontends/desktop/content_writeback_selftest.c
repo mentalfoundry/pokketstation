@@ -108,7 +108,7 @@ static void remove_all(const char *path) {
     DeleteFileA(side);
 }
 
-/* ---- whole-card .mcr ---------------------------------------------------------------------------- */
+/* ---- whole-card .mcd ---------------------------------------------------------------------------- */
 
 static void test_card(const char *dir) {
     static uint8_t card[PSEMU_FLASH_SIZE];
@@ -121,7 +121,7 @@ static void test_card(const char *dir) {
     unsigned long frame;
     size_t n;
 
-    snprintf(path, sizeof(path), "%scontent_writeback_selftest.mcr", dir);
+    snprintf(path, sizeof(path), "%scontent_writeback_selftest.mcd", dir);
     snprintf(bak_path, sizeof(bak_path), "%s.bak", path);
     snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
     remove_all(path);
@@ -341,7 +341,7 @@ static void test_real_file(const char *path) {
     char dir[MAX_PATH];
     psemu_t *ps;
     size_t size, n;
-    const char *kind_name[] = { "unrecognised", "card (.mcr)", "single save (.mcs)", "bare app (.pss)" };
+    const char *kind_name[] = { "unrecognised", "card (.mcd)", "single save (.mcs)", "bare app (.pss)" };
 
     size = read_file(path, original, sizeof(original));
     if (size == (size_t)-1) {

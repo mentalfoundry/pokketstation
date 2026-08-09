@@ -40,7 +40,7 @@
      4 frames (125ms) the exit is correct at 1 of 64 offsets.
      5 frames (156ms) the exit is correct at 1 of 64 offsets.
 
-   usage: button_timing_probe <bios.bin> <card.mcr> <state.sav|boot> [button|thresh] [hold_frames]
+   usage: button_timing_probe <bios.bin> <card.mcd> <state.sav|boot> [button|thresh] [hold_frames]
                               [trigger_pc_hex]
           button:         fire (default) | up | down | left | right | none | thresh
           hold_frames:    the number of frames that the button stays asserted to the core (default 2)
@@ -173,7 +173,7 @@ int main(int argc, char **argv) {
     int dumped_trigger = 0;
 
     if (argc < 4) {
-        fprintf(stderr, "usage: %s <bios.bin> <card.mcr> <state.sav> [button] [hold_frames] [trigger_pc_hex]\n",
+        fprintf(stderr, "usage: %s <bios.bin> <card.mcd> <state.sav> [button] [hold_frames] [trigger_pc_hex]\n",
             argv[0]);
         return 1;
     }

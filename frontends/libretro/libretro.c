@@ -50,7 +50,7 @@ void retro_get_system_info(struct retro_system_info *info) {
     memset(info, 0, sizeof(*info));
     info->library_name = "pokketstation";
     info->library_version = "0.1";
-    info->valid_extensions = "mcr|mcs|pss";
+    info->valid_extensions = "mcr|mcs|pss|mcd";
     info->need_fullpath = false;
     info->block_extract = false;
 }
@@ -262,7 +262,7 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code) {
    state of the app itself (see docs/app-notes.md). Thus a smaller region discards the exact edits
    that users need.
 
-   THE SAVE FILE THAT THIS PRODUCES IS A .mcr FILE, BYTE FOR BYTE. This behavior is deliberate, and it
+   THE SAVE FILE THAT THIS PRODUCES IS A .mcd FILE, BYTE FOR BYTE. This behavior is deliberate, and it
    depends on this region staying a flat PSEMU_FLASH_SIZE region. See the contract of
    psemu_flash_data, and the saves section of docs/libretro_readme.md. That section tells users to
    open the save file directly in external memory-card tools.

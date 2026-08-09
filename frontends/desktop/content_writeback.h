@@ -22,7 +22,7 @@
 
    ALL THREE CONTENT KINDS ROUND-TRIP. Each one goes back into the shape of its source file:
 
-   - A .mcr file for a full card goes back as a full card.
+   - A .mcr or .mcd file for a full card goes back as a full card.
    - A .mcs file is built again: its own directory frame of 0x80 bytes, unchanged from the file, and
      then the body of the app from flash. The frame gives the properties of the file, and not its
      contents, and an app cannot reach the frame. Thus the loaded copy is still correct.

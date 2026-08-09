@@ -30,7 +30,7 @@
 
    usage: datetime_probe <bios.bin> boot [max_instr]
           datetime_probe <bios.bin> reads <pc_lo_hex> <pc_hi_hex> [max_instr]
-          datetime_probe <bios.bin> browse <card.mcr> [max_instr] [noseed]
+          datetime_probe <bios.bin> browse <card.mcd> [max_instr] [noseed]
           datetime_probe <bios.bin> dump [max_instr] */
 
 #include <stdio.h>
@@ -832,7 +832,7 @@ int main(int argc, char **argv) {
             stderr,
             "usage: %s <bios.bin> boot [max_instr]\n"
             "       %s <bios.bin> reads <pc_lo_hex> <pc_hi_hex> [max_instr]\n"
-            "       %s <bios.bin> browse <card.mcr> [frames]\n"
+            "       %s <bios.bin> browse <card.mcd> [frames]\n"
             "       %s <bios.bin> dump [max_instr]\n",
             argv[0], argv[0], argv[0], argv[0]);
         return 1;

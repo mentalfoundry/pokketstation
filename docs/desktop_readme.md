@@ -10,19 +10,19 @@ pokketstation.exe [--console|--no-console] <bios.bin> <app-or-card-file>
 ```
 The example below uses a real BIOS dump and a memory-card image. Use your own paths; neither file is part of this project. **This project supplies no PocketStation BIOS.** The BIOS is copyrighted Sony firmware. You must supply your own dump, from real hardware:
 ```
-pokketstation.exe .\bios.bin .\samplememcard.mcr
+pokketstation.exe .\bios.bin .\samplememcard.mcd
 ```
 - **The extension of the second file has no effect.** This app selects the loader from the content:
-  - If the size of the file is exactly the real flash size, the app loads it as a full memory-card image (`.mcr`). Use the keyboard to move through its real BIOS menu, the same as on real hardware.
+  - If the size of the file is exactly the real flash size, the app loads it as a full memory-card image (`.mcd`). Use the keyboard to move through its real BIOS menu, the same as on real hardware.
   - If not, the app first tries the file as a single-save file with a real PS1 directory frame in front of it (`.mcs`). Most PS1 save managers use this format to export one save, and it is the more frequent of the two formats.
   - If that attempt fails, the app tries the file as a raw PSX Title Sector app dump (`.pss`).
 
-  Tests confirm that both `.mcr` card images and single-app loads operate correctly, against a real BIOS and real app dumps. See [hardware-notes.md](hardware-notes.md).
-- **If you start the .exe with a double click**, and give no command line, the app uses the last BIOS path from an earlier run, if one exists (see `settings.cfg` below). If no such path exists, the app uses `bios.bin` next to the executable. For the app or card, the app always looks for `memcard.mcr` next to the executable. The app never keeps that path.
+  Tests confirm that both `.mcd` card images and single-app loads operate correctly, against a real BIOS and real app dumps. See [hardware-notes.md](hardware-notes.md).
+- **If you start the .exe with a double click**, and give no command line, the app uses the last BIOS path from an earlier run, if one exists (see `settings.cfg` below). If no such path exists, the app uses `bios.bin` next to the executable. For the app or card, the app always looks for `memcard.mcd` next to the executable. The app never keeps that path.
 - A start with no BIOS, no app, no card, or an invalid file does not stop the app. The window opens. Use **File > Load BIOS...** or **File > Open App/Card...** to select a file.
 - By default, this app operates with no console window. Thus its diagnostic `stderr` output goes to no visible location. Supply `--console` to get a console window, or `--no-console` to prevent one. The app keeps either flag in `settings.cfg` for later starts.
 - **Controls:** the arrow keys give Up, Down, Left, and Right. **Z** gives the Fire (Action) button by default. **F12** writes a diagnostic report. You can change each of these keys, and also **Reset** (F8), **Save State** (F5), and **Load State** (F9), from **Tools > Remap Controls...**. If you select a key that a different row uses, that row loses the key; two actions cannot share one key. A row with no key shows "(unbound)", and it does nothing until you give it a key. You can change the window size freely. **View > Native Size (1x)** and **Double Size (2x)** return the window to a known size.
-- **Save states:** **File > Save State** and **File > Load State** each give three slots. The keyboard operates the **Quick Slot** only: **F5** saves, and **F9** loads. You can change both keys. Only the menu can reach **Slot 1** and **Slot 2**. Thus an incorrect hotkey cannot write over a state in one of those slots. Each slot is a separate file next to the executable, with the name of the loaded app or card. For a card with the name `mycard.mcr`, the files are `mycard.mcr.sav` for the quick slot, and `mycard.mcr_1.sav` and `mycard.mcr_2.sav` for slots 1 and 2. A state records its source app or card, and it refuses a load onto a different one. That test continues to operate after an app saves to the card; see [Save write-back](#save-write-back). Save states are also **not portable between versions of this emulator**; see the note at the top of the [main README](../README.md).
+- **Save states:** **File > Save State** and **File > Load State** each give three slots. The keyboard operates the **Quick Slot** only: **F5** saves, and **F9** loads. You can change both keys. Only the menu can reach **Slot 1** and **Slot 2**. Thus an incorrect hotkey cannot write over a state in one of those slots. Each slot is a separate file next to the executable, with the name of the loaded app or card. For a card with the name `mycard.mcd`, the files are `mycard.mcd.sav` for the quick slot, and `mycard.mcd_1.sav` and `mycard.mcd_2.sav` for slots 1 and 2. A state records its source app or card, and it refuses a load onto a different one. That test continues to operate after an app saves to the card; see [Save write-back](#save-write-back). Save states are also **not portable between versions of this emulator**; see the note at the top of the [main README](../README.md).
 - **View > Colors** changes the appearance of the LCD: **Classic** (the default, which is a muted LCD ink-on-sage appearance), **Light** (black on white), **Dark** (white on black), or **Advanced Colors...** for each other appearance. A scheme is three colors: the active pixel, the background, and the sprite shadow. Each item above sets all three colors.
 - **Advanced Colors...** asks for one color, the screen color (the background). It then calculates the other two colors: they use the same hue, with sufficient contrast for legibility. A live preview shows the three colors together. This dialog also has the **sprite shadows** control. That control adds a small one-row "ghosting" trail, which approximates the slow pixel response of a real passive-matrix LCD. Open **Custom Colors** in that dialog to set all three colors manually, or select **Match to Screen Color** to return to calculated colors. No control in the Custom Colors group calculates a color by itself. Only **Choose Screen Color...** and **Match to Screen Color** write over a color that you set manually.
 - Press **F12** at any time to write a diagnostic report to a log file. See [Diagnostic reports](#diagnostic-reports-for-bug-reports) below.
@@ -73,7 +73,7 @@ Two separate copies of `pokketstation.exe`, **on the same Windows machine**, can
 
 ## Save write-back
 
-**When an app saves, this app updates the file that you opened.** This function operates for each kind of file that this app loads: a full card (`.mcr`), one save (`.mcs`), or an app (`.pss`). This app writes each kind back in its own format, which is the format that you opened.
+**When an app saves, this app updates the file that you opened.** This function operates for each kind of file that this app loads: a full card (`.mcd`), one save (`.mcs`), or an app (`.pss`). This app writes each kind back in its own format, which is the format that you opened.
 
 *Each* change is applicable, and not one kind only:
 
@@ -82,7 +82,7 @@ Two separate copies of `pokketstation.exe`, **on the same Windows machine**, can
 
 Both kinds go to the same storage, thus this app writes both back. Without this function, a completed trade, or several hours of app progress, is lost when you close the window.
 
-- **Before the first change to your file, this app copies the original file next to it, as `<yourfile>.bak`.** Examples are `mycard.mcr.bak` and `myapp.mcs.bak`. This app writes that copy one time, and it never writes over the copy. Thus the copy always holds the file exactly as it was before this emulator changed it. If a fault occurs, that copy is your method to recover: give it the name of the original file.
+- **Before the first change to your file, this app copies the original file next to it, as `<yourfile>.bak`.** Examples are `mycard.mcd.bak` and `myapp.mcs.bak`. This app writes that copy one time, and it never writes over the copy. Thus the copy always holds the file exactly as it was before this emulator changed it. If a fault occurs, that copy is your method to recover: give it the name of the original file.
 - This app writes the file approximately one second after the end of a change. It writes the file again when you exit, when you open a different file, and when you press Reset. Each write goes to a temporary file, which then replaces the original file. Thus an interrupted write cannot leave a truncated save.
 - **Load State does not write your file.** A save state contains its own copy of the card. Thus a load is not an edit to keep; it becomes the new start point. This app then writes the subsequent changes of the app to the file.
 - Over the IR link, each of the two copies writes its own file independently. That behavior is correct: this app saves both sides of a trade.
@@ -90,7 +90,7 @@ Both kinds go to the same storage, thus this app writes both back. Without this 
 
 **Save states continue to operate after an app saves.** A state records its source card or app, and it refuses a load onto a different one. That test deliberately uses the *identity* of the card: the file names in its directory, and the title and icon of an app. It does not use the contents of the file. Thus a set of states from before a card trade still loads after the trade, even though the card on disk changed. This app still separates two different cards, and a card that gained or lost a save, and it still refuses those loads.
 
-**For a `.mcs` or `.pss` file, this app saves only the data of the app.** An app that you load alone operates inside a memory card that this emulator builds around it. No other part of that card is in your file. In practice, an app writes only its own data. If an app must reach the save of a PS1 game, load a full `.mcr` card that contains both files.
+**For a `.mcs` or `.pss` file, this app saves only the data of the app.** An app that you load alone operates inside a memory card that this emulator builds around it. No other part of that card is in your file. In practice, an app writes only its own data. If an app must reach the save of a PS1 game, load a full `.mcd` card that contains both files.
 
 ## Building
 

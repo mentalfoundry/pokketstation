@@ -83,7 +83,7 @@ psemu_status psemu_load_flash_image(psemu_t *ps, const uint8_t *data, size_t siz
 
 /* Copies the full FLASH2 image out, in the condition an app left it.
    This function is the inverse of psemu_load_flash_image.
-   The layout is the raw layout that a .mcr file uses.
+   The layout is the raw layout that a .mcd file uses.
    Thus you can write the result back over the card image that supplied it.
 
    This function is necessary because the real output of an app is frequently not the
@@ -113,8 +113,8 @@ psemu_status psemu_save_flash_image(const psemu_t *ps, uint8_t *buf, size_t size
 
    THE SHAPE OF THIS REGION IS A COMPATIBILITY CONTRACT. IT IS NOT AN IMPLEMENTATION
    DETAIL. The region is exactly PSEMU_FLASH_SIZE bytes of raw card image, in the layout
-   that a .mcr file uses. Because of this, a dump of this region that a host writes is a
-   .mcr file, byte for byte. psemu_identify_content reads such a dump back as
+   that a .mcd file uses. Because of this, a dump of this region that a host writes is a
+   .mcd file, byte for byte. psemu_identify_content reads such a dump back as
    PSEMU_CONTENT_CARD, and PS1 memory-card tools open it directly. This is how a user
    gets a card out of this emulator. Do not make this region smaller for .mcs or .pss
    content, and do not add a header. Either change makes every file from an older build
@@ -213,7 +213,7 @@ uint32_t psemu_content_identity_hash(const uint8_t *data, size_t size);
    in the file: not the directory, and not any other block. An app can write outside its
    own blocks, because FLASH2 shows it the full synthesized card. A .mcs or .pss file has
    no space for those bytes, thus this function discards them. If an app needs more space
-   than its own blocks, load it as part of a real .mcr card.
+   than its own blocks, load it as part of a real .mcd card.
 
    Returns PSEMU_ERR_BAD_SIZE if `size` is 0, or if `size` is more than the 15 blocks that
    an app can use. */
