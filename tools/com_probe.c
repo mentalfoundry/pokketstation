@@ -31,13 +31,28 @@
               it reports which bit lets a second command run.
      func   - runs command 0x5B with FUNC 00h and FUNC 01h. FUNC 01h reads BIOS ROM, and this mode
               compares the reply against the loaded BIOS image.
+     cmd58  - sends command 0x58 after docking and prints the reply. A trace build also shows the
+              BIOS PCs executed and the bytes written to COM_DATA during the command.
+     launch58 - sends command 0x59 to start the app at a given slot, runs frames to let the app
+              settle, then sends command 0x58 and prints the reply. Use this mode to test whether
+              an app installs a FIQ hook that changes the 0x58 reply.
+     autolaunch - runs the machine undocked and reports the first frame where psemu_app_running
+              returns true. Then docks and sends command 0x58. Use this mode to measure how many
+              undocked frames the kernel needs to start an installed app.
+     test59_undock - sends command 0x59 while docked, undocks, runs frames checking
+              psemu_app_running, re-docks, then sends command 0x58. Use this mode to test the
+              app launch sequence that a PS1 uses when it writes and starts an app.
 
    usage: com_probe <bios.bin> dock [boot_frames]
           com_probe <bios.bin> cmd <hexbyte>... [--frames N] [--trace] [--card F] [--timeout N]
           com_probe <bios.bin> wait [boot_frames]
           com_probe <bios.bin> write [sector] [--card F] [--badsum] [--writeenable]
           com_probe <bios.bin> selbit [boot_frames]
-          com_probe <bios.bin> func [boot_frames] */
+          com_probe <bios.bin> func [boot_frames]
+          com_probe <bios.bin> cmd58 [boot_frames] [--card F]
+          com_probe <bios.bin> launch58 [slot] [--frames N] [--run N] [--card F]
+          com_probe <bios.bin> autolaunch [max_frames] [--card F]
+          com_probe <bios.bin> test59_undock [slot] [--frames N] [--run N] [--card F] */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -651,6 +666,367 @@ static int mode_func(const char *bios_path, unsigned boot_frames) {
     return mismatch ? 1 : 0;
 }
 
+/* Collected COM_DATA write events during a 0x58 run. Each write puts one byte into
+   the output shift register. The PS1 receives that byte in the NEXT exchange. */
+#define CMD58_TRACE_MAX 64
+static struct {
+    uint32_t pc;
+    uint8_t value;
+} g_comdata_log[CMD58_TRACE_MAX];
+static unsigned g_comdata_log_count;
+static int g_write_trace_active;
+
+#define COM_DATA_ADDR (0x0C000000u + COM_DATA_OFFSET)
+
+/* Collected unique PC values executed during 0x58 (deduped). */
+#define EXEC_LOG_MAX 512
+static uint32_t g_exec_log[EXEC_LOG_MAX];
+static unsigned g_exec_log_count;
+static int g_exec_trace_active;
+
+#ifdef PSEMU_TRACE_HOOKS
+static void cmd58_write_trace(uint32_t addr, uint8_t value, uint32_t pc) {
+    if (!g_write_trace_active) {
+        return;
+    }
+    if (addr == COM_DATA_ADDR && g_comdata_log_count < CMD58_TRACE_MAX) {
+        g_comdata_log[g_comdata_log_count].pc = pc;
+        g_comdata_log[g_comdata_log_count].value = value;
+        g_comdata_log_count++;
+    }
+}
+
+static void cmd58_exec_trace(uint32_t pc, uint32_t cpsr) {
+    (void)cpsr;
+    if (!g_exec_trace_active) {
+        return;
+    }
+    /* Only BIOS ROM range (0x04000000-0x04007FFF). Deduplicate. */
+    if (pc >= 0x04000000u && pc < 0x04008000u) {
+        unsigned j;
+        for (j = 0; j < g_exec_log_count; j++) {
+            if (g_exec_log[j] == pc) {
+                return;
+            }
+        }
+        if (g_exec_log_count < EXEC_LOG_MAX) {
+            g_exec_log[g_exec_log_count++] = pc;
+        }
+    }
+}
+#endif
+
+/* Sends command 0x58 after docking and prints the reply. With PSEMU_TRACE_HOOKS, also traces
+   the BIOS PCs that execute during the command and the bytes written to COM_DATA. */
+static int mode_cmd58(const char *bios_path, unsigned boot_frames) {
+    static const uint8_t CMD58[] = {0x81u, 0x58u, 0x00u, 0x00u, 0x00u};
+    psemu_t *ps = boot(bios_path, boot_frames);
+    uint8_t ram_snap[PSEMU_RAM_SIZE];
+    unsigned settled;
+    uint8_t out;
+    size_t i;
+
+    if (!ps) {
+        return 1;
+    }
+    settled = dock_and_settle(ps, 60);
+    if (!settled) {
+        printf("communication never enabled\n");
+        psemu_destroy(ps);
+        return 1;
+    }
+    printf("communication enabled after %u frame(s)\n", settled);
+    print_comflags("docked: ", read_comflags(ps));
+    memcpy(ram_snap, ps->bus.ram, PSEMU_RAM_SIZE);
+
+#ifdef PSEMU_TRACE_HOOKS
+    /* Arm both traces and run one 0x58 to find the setup code. */
+    g_comdata_log_count = 0;
+    g_exec_log_count = 0;
+    g_write_trace_active = 0;
+    g_exec_trace_active = 0;
+    psemu_bus_write_trace_cb = cmd58_write_trace;
+    psemu_exec_trace_cb = cmd58_exec_trace;
+
+    {
+        uint8_t r0;
+        psemu_com_transfer(ps, 0x81u, &r0, g_timeout_cycles);
+        g_write_trace_active = 1;
+        g_exec_trace_active = 1;
+        for (i = 1; i < sizeof(CMD58); i++) {
+            psemu_com_transfer(ps, CMD58[i], &out, g_timeout_cycles);
+        }
+        g_write_trace_active = 0;
+        g_exec_trace_active = 0;
+        psemu_bus_write_trace_cb = NULL;
+        psemu_exec_trace_cb = NULL;
+        end_command(ps);
+    }
+
+    printf("\nCOM_DATA writes during 0x58 (%u total):\n", g_comdata_log_count);
+    for (i = 0; i < g_comdata_log_count; i++) {
+        printf("  PC=0x%08X  wrote 0x%02X\n",
+            (unsigned)g_comdata_log[i].pc, (unsigned)g_comdata_log[i].value);
+    }
+    printf("\nUnique BIOS PCs executed during 0x58 (%u):\n", g_exec_log_count);
+    for (i = 0; i < g_exec_log_count; i++) {
+        printf("  0x%08X\n", (unsigned)g_exec_log[i]);
+    }
+#endif
+
+    /* Restore and run the byte-zeroing scan to confirm which reads are load-bearing. */
+    memcpy(ps->bus.ram, ram_snap, PSEMU_RAM_SIZE);
+
+    printf("\nbaseline 0x58:\n");
+    for (i = 0; i < sizeof(CMD58); i++) {
+        int ack = psemu_com_transfer(ps, CMD58[i], &out, g_timeout_cycles);
+        printf("  send 0x%02X -> 0x%02X  ack=%s\n", (unsigned)CMD58[i], (unsigned)out,
+            ack ? "yes" : "NO");
+    }
+    end_command(ps);
+
+    psemu_destroy(ps);
+    return 0;
+}
+
+/* Boots, docks, sends command 0x59 to start the app at the given slot, runs run_frames frames
+   to let the app install its FIQ hooks, then sends command 0x58 and reports the reply.
+   This tests whether an app-specific 0x58 handler differs from the BIOS default. */
+static int mode_launch58(const char *bios_path, unsigned boot_frames, unsigned slot,
+                         unsigned run_frames) {
+    static const uint8_t CMD58[] = {0x81u, 0x58u, 0x00u, 0x00u, 0x00u};
+    uint8_t cmd59[9];
+    uint8_t ram_before[PSEMU_RAM_SIZE];
+    psemu_t *ps = boot(bios_path, boot_frames);
+    unsigned settled;
+    unsigned i;
+    uint8_t out;
+
+    if (!ps) {
+        return 1;
+    }
+    settled = dock_and_settle(ps, 60);
+    if (!settled) {
+        printf("communication never enabled\n");
+        psemu_destroy(ps);
+        return 1;
+    }
+    printf("communication enabled after %u frame(s)\n", settled);
+    print_comflags("after dock:", read_comflags(ps));
+    memcpy(ram_before, ps->bus.ram, PSEMU_RAM_SIZE);
+
+    /* Send 0x59 to start the app at the given slot.
+       Format per psx-spx: 81 59 00(dummy) dir_hi dir_lo param0 param1 param2 param3.
+       Byte 2 is a dummy zero: the BIOS replies with the data length (06h) and exits the handler
+       early when it receives anything other than zero here. dir_index hi byte goes first. */
+    cmd59[0] = 0x81u;
+    cmd59[1] = 0x59u;
+    cmd59[2] = 0x00u;
+    cmd59[3] = (uint8_t)((slot >> 8) & 0xFFu);
+    cmd59[4] = (uint8_t)(slot & 0xFFu);
+    cmd59[5] = 0x00u;
+    cmd59[6] = 0x00u;
+    cmd59[7] = 0x00u;
+    cmd59[8] = 0x00u;
+    printf("\nsending 0x59 to start app at slot %u:\n", slot);
+    printf(" idx  send  reply  ack\n");
+    for (i = 0; i < sizeof(cmd59); i++) {
+        int ack = psemu_com_transfer(ps, cmd59[i], &out, g_timeout_cycles);
+        printf("   %u   0x%02X   0x%02X   %s\n", i, (unsigned)cmd59[i], (unsigned)out,
+               ack ? "yes" : "NO");
+    }
+    end_command(ps);
+    print_comflags("after 0x59:", read_comflags(ps));
+
+    /* Report RAM bytes that 0x59 changed. */
+    printf("\nRAM bytes changed by 0x59:\n");
+    {
+        unsigned changed = 0;
+        for (i = 0; i < PSEMU_RAM_SIZE; i++) {
+            if (ps->bus.ram[i] != ram_before[i]) {
+                printf("  RAM[0x%03X]  0x%02X -> 0x%02X\n", i,
+                       (unsigned)ram_before[i], (unsigned)ps->bus.ram[i]);
+                changed++;
+            }
+        }
+        if (!changed) printf("  (none)\n");
+    }
+
+    /* Run frames to give the BIOS time to start the app and for the app to install FIQ hooks. */
+    memcpy(ram_before, ps->bus.ram, PSEMU_RAM_SIZE);
+    printf("\nrunning %u frames (checking psemu_app_running each frame)...\n", run_frames);
+    {
+        unsigned first_app_frame = 0;
+        for (i = 0; i < run_frames; i++) {
+            psemu_run(ps, FRAME_CYCLES);
+            if (!first_app_frame && psemu_app_running(ps)) {
+                first_app_frame = i + 1;
+                printf("  app started running at frame %u\n", first_app_frame);
+            }
+        }
+        if (!first_app_frame) {
+            printf("  app did NOT start running in %u frames\n", run_frames);
+        }
+    }
+    print_comflags("after run:", read_comflags(ps));
+
+    /* Report RAM bytes that changed during the run. */
+    printf("\nRAM bytes changed during run:\n");
+    {
+        unsigned changed = 0;
+        for (i = 0; i < PSEMU_RAM_SIZE; i++) {
+            if (ps->bus.ram[i] != ram_before[i]) {
+                printf("  RAM[0x%03X]  0x%02X -> 0x%02X\n", i,
+                       (unsigned)ram_before[i], (unsigned)ps->bus.ram[i]);
+                changed++;
+            }
+        }
+        if (!changed) printf("  (none)\n");
+    }
+
+    printf("\n0x58 after app launch:\n");
+    printf(" idx  send  reply  ack\n");
+    for (i = 0; i < sizeof(CMD58); i++) {
+        int ack = psemu_com_transfer(ps, CMD58[i], &out, g_timeout_cycles);
+        printf("   %u   0x%02X   0x%02X   %s\n", i, (unsigned)CMD58[i], (unsigned)out,
+               ack ? "yes" : "NO");
+    }
+    end_command(ps);
+
+    psemu_destroy(ps);
+    return 0;
+}
+
+/* Boots undocked for up to max_frames, checking psemu_app_running each frame. Reports the frame
+   where the app first runs. Then docks and sends command 0x58 to read the status byte. Use this
+   mode to measure how many undocked frames the BIOS needs before it launches the installed app. */
+static int mode_autolaunch(const char *bios_path, unsigned max_frames) {
+    static const uint8_t CMD58[] = {0x81u, 0x58u, 0x00u, 0x00u, 0x00u};
+    psemu_t *ps = boot(bios_path, 0u);
+    unsigned first_app_frame = 0;
+    unsigned settled;
+    unsigned i;
+    uint8_t out;
+
+    if (!ps) {
+        return 1;
+    }
+    printf("running up to %u undocked frames, checking psemu_app_running each frame...\n", max_frames);
+    for (i = 0; i < max_frames; i++) {
+        psemu_run(ps, FRAME_CYCLES);
+        if (!first_app_frame && psemu_app_running(ps)) {
+            first_app_frame = i + 1;
+            printf("  app started running at frame %u\n", first_app_frame);
+            break;
+        }
+    }
+    if (!first_app_frame) {
+        printf("  app did NOT start running in %u frames\n", max_frames);
+    }
+
+    printf("\ndocking...\n");
+    settled = dock_and_settle(ps, 60);
+    if (!settled) {
+        printf("communication never enabled\n");
+        psemu_destroy(ps);
+        return 1;
+    }
+    printf("communication enabled after %u frame(s)\n", settled);
+    print_comflags("after dock:", read_comflags(ps));
+
+    printf("\n0x58 after undocked run:\n");
+    printf(" idx  send  reply  ack\n");
+    for (i = 0; i < sizeof(CMD58); i++) {
+        int ack = psemu_com_transfer(ps, CMD58[i], &out, g_timeout_cycles);
+        printf("   %u   0x%02X   0x%02X   %s\n", (unsigned)i, (unsigned)CMD58[i], (unsigned)out,
+               ack ? "yes" : "NO");
+    }
+    end_command(ps);
+
+    psemu_destroy(ps);
+    return 0;
+}
+
+/* Boots, docks, sends 0x59 (Prepare File Execution at the given slot), undocks, runs up to
+   run_frames checking psemu_app_running, re-docks, then sends 0x58 to see whether the app's
+   FIQ hook changed the status byte from the BIOS default of 0x02. */
+static int mode_test59_undock(const char *bios_path, unsigned boot_frames, unsigned slot,
+                               unsigned run_frames) {
+    static const uint8_t CMD58[] = {0x81u, 0x58u, 0x00u, 0x00u, 0x00u};
+    uint8_t cmd59[9];
+    psemu_t *ps = boot(bios_path, boot_frames);
+    unsigned settled;
+    unsigned first_app_frame = 0;
+    unsigned i;
+    uint8_t out;
+
+    if (!ps) {
+        return 1;
+    }
+    settled = dock_and_settle(ps, 60);
+    if (!settled) {
+        printf("communication never enabled after initial dock\n");
+        psemu_destroy(ps);
+        return 1;
+    }
+    printf("communication enabled after %u frame(s)\n", settled);
+    print_comflags("after dock:", read_comflags(ps));
+
+    cmd59[0] = 0x81u;
+    cmd59[1] = 0x59u;
+    cmd59[2] = 0x00u;
+    cmd59[3] = (uint8_t)((slot >> 8) & 0xFFu);
+    cmd59[4] = (uint8_t)(slot & 0xFFu);
+    cmd59[5] = 0x00u; cmd59[6] = 0x00u; cmd59[7] = 0x00u; cmd59[8] = 0x00u;
+    printf("\nsending 0x59 for slot %u:\n", slot);
+    printf(" idx  send  reply  ack\n");
+    for (i = 0; i < sizeof(cmd59); i++) {
+        int ack = psemu_com_transfer(ps, cmd59[i], &out, g_timeout_cycles);
+        printf("   %u   0x%02X   0x%02X   %s\n", i, (unsigned)cmd59[i], (unsigned)out,
+               ack ? "yes" : "NO");
+    }
+    end_command(ps);
+    print_comflags("after 0x59:", read_comflags(ps));
+
+    /* Undock, then run frames undocked so the BIOS can launch the app. */
+    printf("\nundocking and running %u frames (checking psemu_app_running each frame)...\n", run_frames);
+    psemu_com_set_docked(ps, 0);
+    for (i = 0; i < run_frames; i++) {
+        psemu_run(ps, FRAME_CYCLES);
+        if (!first_app_frame && psemu_app_running(ps)) {
+            first_app_frame = i + 1;
+            printf("  app started running at frame %u\n", first_app_frame);
+        }
+    }
+    if (!first_app_frame) {
+        printf("  app did NOT start running in %u undocked frames\n", run_frames);
+    }
+    print_comflags("after undocked run:", read_comflags(ps));
+
+    /* Re-dock and settle. */
+    printf("\nre-docking...\n");
+    settled = dock_and_settle(ps, 60);
+    if (!settled) {
+        printf("communication never re-enabled after re-dock\n");
+        psemu_destroy(ps);
+        return 1;
+    }
+    printf("communication re-enabled after %u frame(s)\n", settled);
+    print_comflags("after re-dock:", read_comflags(ps));
+
+    printf("\n0x58 after undocked run:\n");
+    printf(" idx  send  reply  ack\n");
+    for (i = 0; i < sizeof(CMD58); i++) {
+        int ack = psemu_com_transfer(ps, CMD58[i], &out, g_timeout_cycles);
+        printf("   %u   0x%02X   0x%02X   %s\n", (unsigned)i, (unsigned)CMD58[i], (unsigned)out,
+               ack ? "yes" : "NO");
+    }
+    end_command(ps);
+
+    psemu_destroy(ps);
+    return 0;
+}
+
 static void usage(void) {
     fprintf(stderr,
         "usage: com_probe <bios.bin> dock [boot_frames]\n"
@@ -658,6 +1034,10 @@ static void usage(void) {
         "       com_probe <bios.bin> wait [boot_frames]\n"
         "       com_probe <bios.bin> write [sector] [--card F] [--badsum] [--writeenable]\n"
         "       com_probe <bios.bin> selbit [boot_frames]\n"
+        "       com_probe <bios.bin> cmd58 [boot_frames] [--card F]\n"
+        "       com_probe <bios.bin> launch58 [slot] [--frames N] [--run N] [--card F]\n"
+        "       com_probe <bios.bin> autolaunch [max_frames] [--card F]\n"
+        "       com_probe <bios.bin> test59_undock [slot] [--frames N] [--run N] [--card F]\n"
         "\n"
         "  dock   reports each COM register access while the machine docks.\n"
         "  cmd    sends a byte sequence and reports each reply.\n"
@@ -666,6 +1046,14 @@ static void usage(void) {
         "  write  runs one Write Sector command, then reads the sector back out of flash.\n"
         "         sector defaults to 64, which is a data frame and not a directory frame.\n"
         "  selbit finds the COM_STAT1 bit that ends a command.\n"
+        "  cmd58  sends command 0x58 after docking and prints the reply. With a trace build,\n"
+        "         also shows the BIOS PCs executed and bytes written to COM_DATA.\n"
+        "  launch58 sends 0x59 to start the app at <slot> (default 8), runs --run frames,\n"
+        "         then sends 0x58 and reports the reply.\n"
+        "  autolaunch runs up to max_frames undocked (default 3000), reports at which frame\n"
+        "         psemu_app_running first returns true, then docks and sends 0x58.\n"
+        "  test59_undock boots, docks, sends 0x59 at <slot> (default 8), undocks, runs --run\n"
+        "         frames undocked checking psemu_app_running, re-docks, then sends 0x58.\n"
         "\n"
         "  --card F loads a card image or an app before the boot.\n"
         "  boot_frames defaults to 200. That is enough frames for the BIOS to get to its shell.\n");
@@ -767,6 +1155,51 @@ int main(int argc, char **argv) {
             return 1;
         }
         return mode_cmd(bios_path, boot_frames, bytes, count, trace);
+    }
+    if (strcmp(mode, "cmd58") == 0) {
+        if (argc >= 4 && argv[3][0] != '-') {
+            boot_frames = (unsigned)strtoul(argv[3], NULL, 10);
+        }
+        return mode_cmd58(bios_path, boot_frames);
+    }
+    if (strcmp(mode, "launch58") == 0) {
+        unsigned slot = 8u;
+        unsigned run_frames = 100u;
+        int i;
+        if (argc >= 4 && argv[3][0] != '-') {
+            slot = (unsigned)strtoul(argv[3], NULL, 0);
+        }
+        for (i = 3; i < argc - 1; i++) {
+            if (strcmp(argv[i], "--frames") == 0) {
+                boot_frames = (unsigned)strtoul(argv[i + 1], NULL, 10);
+            } else if (strcmp(argv[i], "--run") == 0) {
+                run_frames = (unsigned)strtoul(argv[i + 1], NULL, 10);
+            }
+        }
+        return mode_launch58(bios_path, boot_frames, slot, run_frames);
+    }
+    if (strcmp(mode, "autolaunch") == 0) {
+        unsigned max_frames = 3000u;
+        if (argc >= 4 && argv[3][0] != '-') {
+            max_frames = (unsigned)strtoul(argv[3], NULL, 10);
+        }
+        return mode_autolaunch(bios_path, max_frames);
+    }
+    if (strcmp(mode, "test59_undock") == 0) {
+        unsigned slot = 8u;
+        unsigned run_frames = 500u;
+        int i;
+        if (argc >= 4 && argv[3][0] != '-') {
+            slot = (unsigned)strtoul(argv[3], NULL, 0);
+        }
+        for (i = 3; i < argc - 1; i++) {
+            if (strcmp(argv[i], "--frames") == 0) {
+                boot_frames = (unsigned)strtoul(argv[i + 1], NULL, 10);
+            } else if (strcmp(argv[i], "--run") == 0) {
+                run_frames = (unsigned)strtoul(argv[i + 1], NULL, 10);
+            }
+        }
+        return mode_test59_undock(bios_path, boot_frames, slot, run_frames);
     }
 
     usage();
