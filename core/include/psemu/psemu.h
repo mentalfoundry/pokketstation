@@ -382,6 +382,13 @@ const uint8_t *psemu_get_framebuffer(const psemu_t *ps);
 /* Returns a nonzero value one time for each framebuffer change, then clears the flag. */
 int psemu_framebuffer_dirty(psemu_t *ps);
 
+/* Clears the ROT bit of LCD_MODE and recomputes the presented framebuffer.
+   The standalone orientation has ROT clear. The docked orientation has ROT set.
+   The dock interrupt handler sets ROT. The undock transition does not clear it: the interrupt
+   controller does not fire on the falling edge of INT_IOP, so the kernel never runs an undock
+   handler. Call this function before a state save to store the standalone orientation. */
+void psemu_lcd_clear_rot(psemu_t *ps);
+
 /* This is the fixed output rate of psemu_get_audio_samples.
    Real hardware has no fixed sample rate. Software controls the DAC directly, bit by bit
    (see dac.h).

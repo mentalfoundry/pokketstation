@@ -728,6 +728,11 @@ int psemu_framebuffer_dirty(psemu_t *ps) {
     return was_dirty;
 }
 
+void psemu_lcd_clear_rot(psemu_t *ps) {
+    uint8_t byte0 = (uint8_t)(ps->lcd.mode & 0xFFu);
+    lcd_mode_write8(&ps->lcd, 0u, byte0 & ~(uint8_t)LCD_MODE_ROT);
+}
+
 /* Settings that the BIOS owns. These settings are in RAM. See
    docs/hardware-notes.md for the method that found each address. No published
    register map gives them.
