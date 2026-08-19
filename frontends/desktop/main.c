@@ -2932,6 +2932,26 @@ int main(int argc, char **argv) {
         frame++;
     }
 
+    /* Simulate the power-off hold-save. The BIOS flash driver writes the app state to
+       flash when it detects a sustained action-button press. Hold the button for up to
+       300 frames and stop on the first frame that changes flash. */
+    {
+        const uint8_t *fl = psemu_flash_data(ps);
+        if (fl) {
+            static uint8_t snap[PSEMU_FLASH_SIZE];
+            unsigned f;
+            memcpy(snap, fl, PSEMU_FLASH_SIZE);
+            psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
+            for (f = 0u; f < 300u; f++) {
+                psemu_run(ps, 33000u);
+                if (memcmp(psemu_flash_data(ps), snap, PSEMU_FLASH_SIZE) != 0) {
+                    break;
+                }
+            }
+            psemu_set_buttons(ps, 0u);
+        }
+    }
+
     /* Whatever is still inside the settle window when the user quits. */
     content_writeback_commit(&content_writeback, ps);
     ir_link_disconnect(&ir_link);
