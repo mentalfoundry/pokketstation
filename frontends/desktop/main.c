@@ -2933,22 +2933,42 @@ int main(int argc, char **argv) {
     }
 
     /* Simulate the power-off hold-save. The BIOS flash driver writes the app state to
-       flash when it detects a sustained action-button press. Hold the button for up to
-       300 frames and stop on the first frame that changes flash. */
+       flash when it detects a sustained action-button press. Hold the button for the
+       full 300 frames and log each frame that changes flash. */
     {
         const uint8_t *fl = psemu_flash_data(ps);
         if (fl) {
             static uint8_t snap[PSEMU_FLASH_SIZE];
             unsigned f;
+            unsigned total_changed = 0u;
+            unsigned change_frames = 0u;
             memcpy(snap, fl, PSEMU_FLASH_SIZE);
             psemu_set_buttons(ps, PSEMU_BUTTON_FIRE);
             for (f = 0u; f < 300u; f++) {
+                unsigned frame_changed = 0u;
+                unsigned i;
                 psemu_run(ps, 33000u);
-                if (memcmp(psemu_flash_data(ps), snap, PSEMU_FLASH_SIZE) != 0) {
-                    break;
+                fl = psemu_flash_data(ps);
+                for (i = 0u; i < PSEMU_FLASH_SIZE; i++) {
+                    if (fl[i] != snap[i]) {
+                        frame_changed++;
+                    }
+                }
+                if (frame_changed > 0u) {
+                    total_changed += frame_changed;
+                    change_frames++;
+                    fprintf(stderr, "hold-save: frame %u: %u byte(s) changed (running total %u)\n",
+                            f + 1u, frame_changed, total_changed);
+                    memcpy(snap, fl, PSEMU_FLASH_SIZE);
                 }
             }
             psemu_set_buttons(ps, 0u);
+            if (total_changed == 0u) {
+                fprintf(stderr, "hold-save: no flash change after 300 frames\n");
+            } else {
+                fprintf(stderr, "hold-save: %u byte(s) across %u frame(s)\n",
+                        total_changed, change_frames);
+            }
         }
     }
 
