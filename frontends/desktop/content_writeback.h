@@ -49,11 +49,6 @@
    - A failed write does not change the file on disk, and this code writes a message to stderr. It does
      not fail without a message. */
 
-/* Approximately 1 second, at the approximately 32Hz rate of the desktop loop. An app that writes a
-   save over several frames makes one edit, and not one edit for each frame. Thus a commit waits this
-   time after the first observed change, and covers the full group of writes. */
-#define CONTENT_WRITEBACK_SETTLE_FRAMES 32
-
 /* The first PS1 directory frame of a .mcs file. This is the same value as MCS_HEADER_SIZE in psemu.c,
    which is private to that file. */
 #define CONTENT_WRITEBACK_MCS_FRAME_SIZE 0x80u
@@ -69,7 +64,6 @@ typedef struct {
     uint8_t baseline[PSEMU_FLASH_SIZE];
     uint8_t current[PSEMU_FLASH_SIZE];
     int dirty;
-    unsigned long dirty_since_frame;
 } content_writeback_t;
 
 /* Arms the write-back function for the file at `path`. `data` and `size` are the bytes of that file,
@@ -87,9 +81,9 @@ void content_writeback_resync(content_writeback_t *cw, psemu_t *ps);
    it wrote a file. */
 int content_writeback_commit(content_writeback_t *cw, psemu_t *ps);
 
-/* Call this function one time for each frame. It finds a change, and then waits
-   CONTENT_WRITEBACK_SETTLE_FRAMES frames before it writes the file.
-   `frame` is the frame counter of the caller. That counter only increases. */
-void content_writeback_poll(content_writeback_t *cw, psemu_t *ps, unsigned long frame);
+/* Call this function one time for each frame, and after any operation that may have changed flash
+   (for example, the hold-save sequence at exit). It writes the file immediately when flash differs
+   from the baseline. */
+void content_writeback_poll(content_writeback_t *cw, psemu_t *ps);
 
 #endif

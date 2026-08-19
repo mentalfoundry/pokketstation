@@ -1064,10 +1064,8 @@ static void prompt_open_app(menu_context_t *ctx) {
         return;
     }
 
-    /* This call occurs before the code loses access to the file that it replaces. An open operation
-       on a different file is not a reason to discard an edit that the app already made to the
-       loaded content. */
-    content_writeback_commit(ctx->content_writeback, ctx->ps);
+    /* Flush any uncommitted app edit to disk before the file pointer changes to the new content. */
+    content_writeback_poll(ctx->content_writeback, ctx->ps);
 
     free(*ctx->app);
     *ctx->app = new_app;
@@ -1085,9 +1083,9 @@ static void prompt_open_app(menu_context_t *ctx) {
    This function causes the reset when a user asks for it, and not only after a successful file
    dialog. */
 static void reset_emulation(menu_context_t *ctx) {
-    /* A reset does not change flash (see psemu_reset). Thus this code writes an edit that the app
-       already made, and does not discard it. It then uses the remaining data as the new baseline. */
-    content_writeback_commit(ctx->content_writeback, ctx->ps);
+    /* A reset does not change flash (see psemu_reset). Flush any uncommitted app edit, then use the
+       post-reset flash as the new baseline. */
+    content_writeback_poll(ctx->content_writeback, ctx->ps);
     psemu_reset(ctx->ps);
     content_writeback_resync(ctx->content_writeback, ctx->ps);
     drop_ir_link_if_active(ctx);
@@ -2927,7 +2925,7 @@ int main(int argc, char **argv) {
         SDL_RenderClear(renderer);
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
-        content_writeback_poll(&content_writeback, ps, frame);
+        content_writeback_poll(&content_writeback, ps);
         SDL_Delay(31); /* ~32Hz, matching the real LCD refresh */
         frame++;
     }
@@ -2972,8 +2970,9 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Whatever is still inside the settle window when the user quits. */
-    content_writeback_commit(&content_writeback, ps);
+    /* Commit any flash changes the hold-save produced. poll detects the change against
+       the pre-hold-save baseline and writes immediately. */
+    content_writeback_poll(&content_writeback, ps);
     ir_link_disconnect(&ir_link);
 
     if (audio_dev != 0) {

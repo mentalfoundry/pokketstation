@@ -93,10 +93,7 @@ static void poke_flash(psemu_t *ps, uint32_t offset, uint8_t value) {
 }
 
 static void settle(content_writeback_t *cw, psemu_t *ps) {
-    unsigned long frame;
-    for (frame = 0; frame <= CONTENT_WRITEBACK_SETTLE_FRAMES; frame++) {
-        content_writeback_poll(cw, ps, frame);
-    }
+    content_writeback_poll(cw, ps);
 }
 
 static void remove_all(const char *path) {
@@ -118,7 +115,7 @@ static void test_card(const char *dir) {
     char bak_path[MAX_PATH + 64];
     char tmp_path[MAX_PATH + 64];
     psemu_t *ps;
-    unsigned long frame;
+    unsigned f;
     size_t n;
 
     snprintf(path, sizeof(path), "%scontent_writeback_selftest.mcd", dir);
@@ -136,27 +133,19 @@ static void test_card(const char *dir) {
 
     /* This code never writes an unchanged card again. Thus an app that changes nothing does not
        change the file of the user. */
-    for (frame = 0; frame < CONTENT_WRITEBACK_SETTLE_FRAMES * 2; frame++) {
-        content_writeback_poll(&cw, ps, frame);
+    for (f = 0; f < 8u; f++) {
+        content_writeback_poll(&cw, ps);
     }
     CHECK(!cw.dirty, "an unchanged card should never go dirty");
     CHECK(read_file(bak_path, got, sizeof(got)) == (size_t)-1, "an unchanged card should not produce a .bak");
 
     /* The PS1-save case: the app edits the game's save in block 1 (see docs/app-notes.md). */
     poke_flash(ps, 0x2000u + 0x259u, 0x01);
-    for (frame = 0; frame < CONTENT_WRITEBACK_SETTLE_FRAMES; frame++) {
-        content_writeback_poll(&cw, ps, frame);
-    }
-    CHECK(cw.dirty, "an edited card should be dirty before the settle window elapses");
-    n = read_file(path, got, sizeof(got));
-    CHECK(n == PSEMU_FLASH_SIZE && got[0x2000u + 0x259u] == 0x11,
-        "nothing should be committed before the settle window elapses");
-
-    content_writeback_poll(&cw, ps, CONTENT_WRITEBACK_SETTLE_FRAMES);
+    content_writeback_poll(&cw, ps);
     CHECK(!cw.dirty, "committing should clear dirty");
     n = read_file(path, got, sizeof(got));
     CHECK(n == PSEMU_FLASH_SIZE, "the committed card should still be exactly one card");
-    CHECK(n == PSEMU_FLASH_SIZE && got[0x2000u + 0x259u] == 0x01, "the edit should have reached the file");
+    CHECK(n == PSEMU_FLASH_SIZE && got[0x2000u + 0x259u] == 0x01, "the edit should have reached the file immediately");
 
     /* An app that saves its OWN state uses the same path. This test is important because this
        function was made for the PS1-save condition. An app reaches its own blocks through the FLASH1
@@ -175,20 +164,27 @@ static void test_card(const char *dir) {
         "the backup should hold the ORIGINAL bytes, not any commit");
     CHECK(read_file(tmp_path, got, sizeof(got)) == (size_t)-1, "no .tmp should survive a successful commit");
 
-    /* An edit that is undone before the window elapses leaves the file alone. */
+    /* A write followed immediately by a revert commits both states. The file ends with the
+       reverted value, and dirty is clear. */
     poke_flash(ps, 0x2000u + 0x25Bu, 0x03);
-    content_writeback_poll(&cw, ps, 0);
-    CHECK(cw.dirty, "the transient edit should register as dirty");
+    content_writeback_poll(&cw, ps);
+    CHECK(!cw.dirty, "a committed edit clears dirty");
+    n = read_file(path, got, sizeof(got));
+    CHECK(n == PSEMU_FLASH_SIZE && got[0x2000u + 0x25Bu] == 0x03, "the edit should have been committed immediately");
     poke_flash(ps, 0x2000u + 0x25Bu, 0x11);
-    content_writeback_poll(&cw, ps, 1);
-    CHECK(!cw.dirty, "an edit that is undone should clear dirty without committing");
+    content_writeback_poll(&cw, ps);
+    CHECK(!cw.dirty, "a reverted edit clears dirty after committing the revert");
+    n = read_file(path, got, sizeof(got));
+    CHECK(n == PSEMU_FLASH_SIZE && got[0x2000u + 0x25Bu] == 0x11, "the reverted value should reach the file");
 
-    /* resync adopts a wholesale replacement (a reset, a save-state load) rather than committing it. */
+    /* resync adopts a wholesale replacement (a reset, a save-state load) rather than committing it.
+       The frontend calls resync immediately after the replacement, before the next poll call.
+       That order prevents poll from treating the replacement as an app write. */
     poke_flash(ps, 0x2000u + 0x25Cu, 0x04);
-    content_writeback_poll(&cw, ps, 0);
-    CHECK(cw.dirty, "a wholesale replacement still shows up as a change");
     content_writeback_resync(&cw, ps);
     CHECK(!cw.dirty, "resync should clear dirty");
+    content_writeback_poll(&cw, ps);
+    CHECK(!cw.dirty, "after resync, poll should find no change against the new baseline");
     CHECK(!content_writeback_commit(&cw, ps), "resync should leave nothing to commit");
     n = read_file(path, got, sizeof(got));
     CHECK(n == PSEMU_FLASH_SIZE && got[0x2000u + 0x25Cu] != 0x04, "resync should not have written the file");
@@ -364,7 +360,6 @@ static void test_real_file(const char *path) {
 
     /* Force a commit of content nothing has touched, so the only thing under test is the rebuild. */
     cw.dirty = 1;
-    cw.dirty_since_frame = 0;
     CHECK(content_writeback_commit(&cw, ps), "the forced commit should write");
     n = read_file(copy_path, got, sizeof(got));
     CHECK(n == size, "a rebuilt real file must be the same length");

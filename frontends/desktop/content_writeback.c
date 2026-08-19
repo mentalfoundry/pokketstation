@@ -126,7 +126,7 @@ int content_writeback_commit(content_writeback_t *cw, psemu_t *ps) {
     return 1;
 }
 
-void content_writeback_poll(content_writeback_t *cw, psemu_t *ps, unsigned long frame) {
+void content_writeback_poll(content_writeback_t *cw, psemu_t *ps) {
     if (!cw->enabled) {
         return;
     }
@@ -134,14 +134,9 @@ void content_writeback_poll(content_writeback_t *cw, psemu_t *ps, unsigned long 
     /* Only the region that the file can hold. See the header for the reason that a larger comparison
        writes a .mcs file again in a loop, over bytes that the file cannot store. */
     if (memcmp(cw->current + cw->region_offset, cw->baseline + cw->region_offset, cw->region_size) != 0) {
-        if (!cw->dirty) {
-            cw->dirty = 1;
-            cw->dirty_since_frame = frame;
-        } else if (frame - cw->dirty_since_frame >= CONTENT_WRITEBACK_SETTLE_FRAMES) {
-            content_writeback_commit(cw, ps);
-        }
+        cw->dirty = 1;
+        content_writeback_commit(cw, ps);
         return;
     }
-    /* Back to identical: an app that scribbled and undid it leaves nothing to write. */
     cw->dirty = 0;
 }
