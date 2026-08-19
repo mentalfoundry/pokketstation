@@ -660,6 +660,44 @@ int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t
     return acked;
 }
 
+int psemu_com_transfer_and_select_drop(psemu_t *ps, uint8_t data_in, uint8_t *data_out,
+                                       uint32_t timeout_cycles) {
+    uint32_t ran = 0;
+    int acked;
+
+    /* Assert SELECT before the transfer so the BIOS sees the line in the held state at the
+       start of this byte. com_set_selected is a no-op when SELECT is already held (1 -> 1). */
+    com_set_selected(&ps->com, 1);
+    com_begin_transfer(&ps->com, &ps->intc, data_in);
+
+    /* Drop /SEL before running any cycles. The byte is in the COM buffer (com_begin_transfer
+       set COM_STAT2 ready). The FIQ's internal poll loop will read the byte, call the app
+       callback, and then check sel_drop_latch. sel_drop_latch is 1 at that check because
+       we set it here, before the FIQ executes any of those instructions. */
+    com_set_selected(&ps->com, 0);
+
+    while (ran < timeout_cycles && !com_transfer_acked(&ps->com)) {
+        uint32_t remaining = timeout_cycles - ran;
+        uint32_t chunk = (remaining < COM_POLL_CHUNK_CYCLES) ? remaining : COM_POLL_CHUNK_CYCLES;
+        uint32_t did;
+        if (psemu_cpu_faulted(ps)) {
+            break;
+        }
+        did = psemu_run(ps, chunk);
+        if (did == 0u) {
+            break;
+        }
+        ran += did;
+    }
+
+    acked = com_transfer_acked(&ps->com);
+    if (data_out) {
+        *data_out = com_take_reply(&ps->com);
+    }
+    com_end_transfer(&ps->com, &ps->intc);
+    return acked;
+}
+
 int psemu_cpu_faulted(const psemu_t *ps) {
     return ps->cpu.unimplemented;
 }

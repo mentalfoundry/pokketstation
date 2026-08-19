@@ -147,8 +147,8 @@ void mock_ps1_run_frames(mock_ps1_t *m, unsigned frames) {
 }
 
 void mock_ps1_end_command(mock_ps1_t *m) {
-    /* The machine runs before the release, so the kernel can reach its end-of-command wait. See
-       mock_ps1_end_command in mock_ps1.h for the reason. */
+    /* SELECT releases before the frames run. The kernel finds the released level in its
+       end-of-command wait. See mock_ps1_end_command in mock_ps1.h. */
     psemu_com_set_selected(m->ps, 0);
     mock_ps1_run_frames(m, m->settle_frames);
 }
@@ -175,6 +175,64 @@ size_t mock_ps1_find_id_pair(const uint8_t *reply, size_t count) {
         }
     }
     return MOCK_PS1_NOT_FOUND;
+}
+
+int mock_ps1_launch_app(mock_ps1_t *m, unsigned slot) {
+    uint8_t cmd59[9];
+    uint8_t reply[9];
+    unsigned i;
+
+    /* Format per psx-spx: 81 59 00(dummy) dir_hi dir_lo param0..param3.
+       Byte 2 is a dummy zero. The kernel replies with the data length and exits early
+       when it receives any nonzero value there. */
+    cmd59[0] = 0x81u;
+    cmd59[1] = 0x59u;
+    cmd59[2] = 0x00u;
+    cmd59[3] = (uint8_t)((slot >> 8) & 0xFFu);
+    cmd59[4] = (uint8_t)(slot & 0xFFu);
+    cmd59[5] = 0x00u;
+    cmd59[6] = 0x00u;
+    cmd59[7] = 0x00u;
+    cmd59[8] = 0x00u;
+    mock_ps1_exchange(m, cmd59, reply, sizeof(cmd59));
+    mock_ps1_end_command(m);
+
+    for (i = 0; i < MOCK_PS1_LAUNCH_MAX_FRAMES; i++) {
+        psemu_run(m->ps, FRAME_CYCLES);
+        if (psemu_app_running(m->ps)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+size_t mock_ps1_dispatch(mock_ps1_t *m, uint8_t cmd, const uint8_t *data, size_t payload_size,
+                         uint8_t *out_reply) {
+    uint8_t send[2u + MOCK_PS1_DISPATCH_MAX_PAYLOAD];
+    uint8_t reply[2u + MOCK_PS1_DISPATCH_MAX_PAYLOAD];
+    size_t cmd_size = 2u + payload_size;
+    size_t i;
+    size_t n = 0;
+
+    send[0] = MOCK_PS1_SEL_CARD;
+    send[1] = cmd;
+    for (i = 0; i < payload_size; i++) {
+        send[2u + i] = data[i];
+    }
+
+    for (i = 0; i < cmd_size; i++) {
+        uint8_t out = 0xFFu;
+        int ack = psemu_com_transfer(m->ps, send[i], &out, m->timeout_cycles);
+        reply[i] = out;
+        n++;
+        if (!ack) {
+            break;
+        }
+    }
+    if (out_reply) {
+        memcpy(out_reply, reply, n);
+    }
+    return n;
 }
 
 size_t mock_ps1_get_id(mock_ps1_t *m, uint8_t *reply) {

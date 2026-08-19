@@ -122,6 +122,33 @@ size_t mock_ps1_find_id_pair(const uint8_t *reply, size_t count);
 #define MOCK_PS1_READ_SECTOR_OFFSET 6u
 #define MOCK_PS1_READ_DATA_OFFSET 8u
 
+/* Sends command 0x59 to start the app at `slot` (directory index).
+   An app loaded with psemu_load_mcs sits at slot 1. A full card image places the app
+   at the index of its directory entry. Runs frames until psemu_app_running reports a
+   nonzero value or MOCK_PS1_LAUNCH_MAX_FRAMES elapses. Calls mock_ps1_end_command after
+   the 0x59 exchange. Returns a nonzero value when the app is running on return. */
+#define MOCK_PS1_LAUNCH_MAX_FRAMES 200u
+int mock_ps1_launch_app(mock_ps1_t *m, unsigned slot);
+
+/* Sends one full PocketStation dispatch command (0x5B or 0x5C) to the machine.
+   `cmd` is the command byte. `data` is `payload_size` bytes. The payload includes
+   the function number at byte 0 and then the function arguments. The total bytes on
+   the wire is 2 + payload_size (device byte, command byte, payload). `out_reply`
+   receives the full reply stream and accepts NULL.
+
+   All bytes use psemu_com_transfer. SELECT stays asserted on return. The kernel FIQ
+   receives all bytes, runs its phase-2 callback, and then enters its SELECT-drop wait.
+   Call mock_ps1_end_command after this function. That call drops SELECT via
+   psemu_com_set_selected, which the FIQ detects in its wait and passes to the dispatch
+   processor.
+
+   The kernel ACKs every byte, thus the maximum return value is (2 + payload_size).
+
+   `payload_size` must be no greater than MOCK_PS1_DISPATCH_MAX_PAYLOAD. */
+#define MOCK_PS1_DISPATCH_MAX_PAYLOAD 256u
+size_t mock_ps1_dispatch(mock_ps1_t *m, uint8_t cmd, const uint8_t *data, size_t payload_size,
+                         uint8_t *out_reply);
+
 /* Command 0x53, Get ID.
    `reply` receives 10 bytes. It gives the number of exchanges that it made. */
 size_t mock_ps1_get_id(mock_ps1_t *m, uint8_t *reply);

@@ -32,3 +32,15 @@ target_compile_definitions(psemu_bu_test PRIVATE PSEMU_TESTDATA_DIR="${CMAKE_SOU
 target_link_libraries(psemu_bu_test PRIVATE psemu)
 add_test(NAME bu_test COMMAND psemu_bu_test)
 set_tests_properties(bu_test PROPERTIES SKIP_RETURN_CODE 77)
+
+# The dispatch command (0x5B/0x5C) end-of-command SELECT-drop protocol. This suite needs a BIOS
+# dump and a dispatch app. It skips itself with exit code 77 when it finds neither. Set
+# PSEMU_TEST_BIOS and PSEMU_TEST_DISPATCH_APP to supply alternate paths.
+#
+# THIS TARGET ALSO GETS NO PATH TO core/src, for the same reason as psemu_bu_test above.
+add_executable(psemu_sio_dispatch_test sio_dispatch_test.c mock_ps1.c)
+target_include_directories(psemu_sio_dispatch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(psemu_sio_dispatch_test PRIVATE PSEMU_TESTDATA_DIR="${CMAKE_SOURCE_DIR}/testdata")
+target_link_libraries(psemu_sio_dispatch_test PRIVATE psemu)
+add_test(NAME sio_dispatch_test COMMAND psemu_sio_dispatch_test)
+set_tests_properties(sio_dispatch_test PROPERTIES SKIP_RETURN_CODE 77)

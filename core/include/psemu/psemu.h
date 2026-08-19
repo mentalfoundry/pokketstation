@@ -544,6 +544,21 @@ void psemu_com_set_selected(psemu_t *ps, int selected);
 #define PSEMU_COM_DEFAULT_TIMEOUT_CYCLES 8192u
 int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles);
 
+/* Like psemu_com_transfer, but releases /SEL immediately after the byte enters the COM buffer,
+   before running any ARM cycles.
+   Use this for the last byte of a dispatch command (0x5B/0x5C). The FIQ stays in FIQ mode
+   for the full command (it polls COM_STAT2 internally for each byte). After the last byte, the
+   FIQ reads the byte from COM_STAT2, calls the app callback, and then checks sel_drop_latch
+   via COM_STAT1. That check runs inside the FIQ before any ARM cycles from the caller execute.
+   Releasing /SEL before psemu_run guarantees that sel_drop_latch is 1 at the check. The FIQ
+   then runs its end-of-command path: it clears the command-active flag and the outer-loop flag
+   in RAM, and the app function exits its wait and commits a flash write.
+   A normal psemu_com_transfer call holds /SEL for the full timeout. The FIQ checks
+   sel_drop_latch, finds 0, and exits without cleanup. The app function stays in its wait.
+   SELECT stays low on return. A subsequent psemu_com_set_selected(ps, 0) is a no-op. */
+int psemu_com_transfer_and_select_drop(psemu_t *ps, uint8_t data_in, uint8_t *data_out,
+                                       uint32_t timeout_cycles);
+
 /* Returns a nonzero value if the CPU executed an opcode that this emulator does not
    recognize.
    This flag is sticky: it stays set after it is set one time.
