@@ -116,6 +116,117 @@ mock_ps1_t *mock_ps1_open(const char *bios_path, const char *card_path) {
     return m;
 }
 
+mock_ps1_t *mock_ps1_open_from_flash(const char *bios_path,
+                                      const uint8_t *flash_data, size_t flash_size) {
+    mock_ps1_t *m;
+    psemu_t *ps;
+    uint8_t *bios;
+    size_t bios_size = 0;
+    unsigned i;
+    int enabled = 0;
+
+    bios = read_file(bios_path, &bios_size);
+    if (!bios) {
+        return NULL;
+    }
+    ps = psemu_create();
+    if (!ps) {
+        free(bios);
+        return NULL;
+    }
+    if (psemu_load_bios(ps, bios, bios_size) != PSEMU_OK) {
+        free(bios);
+        psemu_destroy(ps);
+        return NULL;
+    }
+    free(bios);
+    if (psemu_load_flash_image(ps, flash_data, flash_size) != PSEMU_OK) {
+        psemu_destroy(ps);
+        return NULL;
+    }
+    psemu_reset(ps);
+    for (i = 0; i < BOOT_FRAMES; i++) {
+        psemu_run(ps, FRAME_CYCLES);
+    }
+    psemu_com_set_docked(ps, 1);
+    for (i = 0; i < DOCK_FRAMES; i++) {
+        psemu_run(ps, FRAME_CYCLES);
+        if (psemu_com_is_enabled(ps)) {
+            enabled = 1;
+            break;
+        }
+    }
+    if (!enabled) {
+        psemu_destroy(ps);
+        return NULL;
+    }
+    m = (mock_ps1_t *)malloc(sizeof(mock_ps1_t));
+    if (!m) {
+        psemu_destroy(ps);
+        return NULL;
+    }
+    m->ps = ps;
+    m->timeout_cycles = PSEMU_COM_DEFAULT_TIMEOUT_CYCLES;
+    m->settle_frames = 8u;
+    return m;
+}
+
+mock_ps1_t *mock_ps1_open_from_state(const char *bios_path,
+                                      const uint8_t *flash_data, size_t flash_size,
+                                      const void *state_data, size_t state_size) {
+    mock_ps1_t *m;
+    psemu_t *ps;
+    uint8_t *bios;
+    size_t bios_size = 0;
+    unsigned i;
+    int enabled = 0;
+
+    bios = read_file(bios_path, &bios_size);
+    if (!bios) {
+        return NULL;
+    }
+    ps = psemu_create();
+    if (!ps) {
+        free(bios);
+        return NULL;
+    }
+    if (psemu_load_bios(ps, bios, bios_size) != PSEMU_OK) {
+        free(bios);
+        psemu_destroy(ps);
+        return NULL;
+    }
+    free(bios);
+    if (psemu_load_flash_image(ps, flash_data, flash_size) != PSEMU_OK) {
+        psemu_destroy(ps);
+        return NULL;
+    }
+    if (psemu_load_state(ps, state_data, state_size) != PSEMU_OK) {
+        psemu_destroy(ps);
+        return NULL;
+    }
+    psemu_com_set_docked(ps, 1);
+    for (i = 0; i < DOCK_FRAMES; i++) {
+        psemu_run(ps, FRAME_CYCLES);
+        if (psemu_com_is_enabled(ps)) {
+            enabled = 1;
+            break;
+        }
+    }
+    if (!enabled) {
+        psemu_destroy(ps);
+        return NULL;
+    }
+    m = (mock_ps1_t *)malloc(sizeof(mock_ps1_t));
+    if (!m) {
+        psemu_destroy(ps);
+        return NULL;
+    }
+    m->ps = ps;
+    m->timeout_cycles = PSEMU_COM_DEFAULT_TIMEOUT_CYCLES;
+    m->settle_frames = 8u;
+    return m;
+}
+
 void mock_ps1_close(mock_ps1_t *m) {
     if (!m) {
         return;

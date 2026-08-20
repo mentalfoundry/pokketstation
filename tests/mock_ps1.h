@@ -69,6 +69,24 @@ typedef struct mock_ps1 {
    enables communication. */
 mock_ps1_t *mock_ps1_open(const char *bios_path, const char *card_path);
 
+/* Opens a fresh session from raw flash data instead of a card file.
+   Boots the machine from scratch (BIOS boot, no saved state). Work RAM is zeroed by the reset.
+   Simulates what a PS1 emulator does when it restarts with only flash preserved.
+   `flash_data` is at most PSEMU_FLASH_SIZE bytes. The remainder of flash stays at zero.
+   Gives NULL on BIOS read failure, flash load failure, or comms timeout. */
+mock_ps1_t *mock_ps1_open_from_flash(const char *bios_path,
+                                      const uint8_t *flash_data, size_t flash_size);
+
+/* Opens a session by restoring a saved state rather than running boot frames.
+   Loads flash, then loads the state buffer (from psemu_save_state). Work RAM and all other
+   volatile state are restored to the point at which the state was saved. Docks and waits for
+   comms to re-enable, as a real reconnect requires.
+   Simulates loading a quicksave at PS1 emulator session start.
+   Gives NULL on BIOS read failure, flash load failure, state load failure, or comms timeout. */
+mock_ps1_t *mock_ps1_open_from_state(const char *bios_path,
+                                      const uint8_t *flash_data, size_t flash_size,
+                                      const void *state_data, size_t state_size);
+
 void mock_ps1_close(mock_ps1_t *m);
 
 /* Exchanges `count` bytes. It writes each reply into `reply`.

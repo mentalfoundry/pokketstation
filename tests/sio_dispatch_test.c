@@ -53,8 +53,22 @@
    to run its flash write after the FIQ cleanup path fires. */
 #define DISPATCH_SETTLE_FRAMES 60u
 
-/* The command byte for the write dispatch function. */
+/* The command bytes for dispatch functions. */
 #define CMD_WRITE 0x5Cu
+#define CMD_READ  0x5Bu
+
+/* FF8 Chocobo World dispatch layout (from Disc 3 traces).
+   fn#1 write: PS1 sends 128 bytes → PocketStation copies to work RAM at CHOCO_WRITE_ADDR.
+   fn#1 read:  PocketStation sends 128 bytes ← from work RAM at CHOCO_READ_ADDR.
+   Both addresses are in user work RAM (0x200-0x7FF), which psemu_reset zeros.
+   Data written here survives within a session but is lost on a fresh boot. */
+#define CHOCO_FN         0x01u
+#define CHOCO_N          0x80u          /* 128 bytes */
+#define CHOCO_READ_ADDR  0x00000200u    /* PocketStation reads from here (0x5B) */
+#define CHOCO_WRITE_ADDR 0x00000280u    /* PocketStation writes to here (0x5C) */
+#define CHOCO_PAYLOAD_SIZE (8u + CHOCO_N)
+/* Marker byte for continuity tests. Must differ from 0x00 (value after psemu_reset). */
+#define CHOCO_MARKER 0xA5u
 
 /* Function number 0x01 in the dispatch table: writes the character save to flash. */
 #define FN_WRITE 0x01u
@@ -152,6 +166,22 @@ static size_t dispatch_early_select_drop(mock_ps1_t *m, uint8_t cmd, const uint8
         memcpy(out_reply, reply, n);
     }
     return n;
+}
+
+/* Builds a CHOCO_PAYLOAD_SIZE-byte payload for a 0x5C fn#1 write command with FF8's actual
+   work RAM destination. All CHOCO_N data bytes are set to `marker`. */
+static void make_choco_write_payload(uint8_t *data, uint8_t marker) {
+    unsigned i;
+    memset(data, 0, CHOCO_PAYLOAD_SIZE);
+    data[0] = CHOCO_FN;
+    data[2] = (uint8_t)( CHOCO_WRITE_ADDR        & 0xFFu);
+    data[3] = (uint8_t)((CHOCO_WRITE_ADDR >>  8) & 0xFFu);
+    data[4] = (uint8_t)((CHOCO_WRITE_ADDR >> 16) & 0xFFu);
+    data[5] = (uint8_t)((CHOCO_WRITE_ADDR >> 24) & 0xFFu);
+    data[6] = CHOCO_N;
+    for (i = 0; i < CHOCO_N; i++) {
+        data[8u + i] = marker;
+    }
 }
 
 /* Builds a FN_WRITE_PAYLOAD_SIZE-byte payload for a 0x5C function-0x01 (write) command.
@@ -265,6 +295,390 @@ static void test_dispatch_without_select_drop_does_not_write_flash(const char *b
     printf("test_dispatch_without_select_drop_does_not_write_flash OK\n");
 }
 
+/* Baseline: a 0x5C write dispatch with FF8's work RAM address copies CHOCO_N bytes to
+   work RAM at CHOCO_WRITE_ADDR within the same session.
+
+   Unlike a flash write (which the BIOS phase-2 handler commits synchronously), a work RAM
+   write goes through the app's dispatch processor. That processor runs AFTER SELECT drops,
+   during the settle frames of mock_ps1_end_command. Check work RAM after end_command. */
+static void test_dispatch_write_then_read_within_session(const char *bios, const char *app) {
+    uint8_t payload[CHOCO_PAYLOAD_SIZE];
+    mock_ps1_t *m = open_with_app(bios, app);
+    const uint8_t *ram;
+    size_t n;
+    unsigned i;
+
+    if (!m) {
+        printf("test_dispatch_write_then_read_within_session SKIP (no app)\n");
+        return;
+    }
+    make_choco_write_payload(payload, CHOCO_MARKER);
+
+    n = mock_ps1_dispatch(m, CMD_WRITE, payload, CHOCO_PAYLOAD_SIZE, NULL);
+    printf("  dispatch bytes sent: %u (expected %u)\n", (unsigned)n, 2u + CHOCO_PAYLOAD_SIZE);
+
+    /* SELECT drops here. The FIQ exits its wait, the dispatch processor runs, and the app
+       writes the received data to work RAM at CHOCO_WRITE_ADDR during the settle frames. */
+    m->settle_frames = DISPATCH_SETTLE_FRAMES;
+    mock_ps1_end_command(m);
+
+    ram = psemu_ram_data(m->ps);
+    for (i = 0; i < CHOCO_N; i++) {
+        assert(ram[CHOCO_WRITE_ADDR + i] == CHOCO_MARKER);
+    }
+    mock_ps1_close(m);
+    printf("test_dispatch_write_then_read_within_session OK\n");
+}
+
+/* Demonstrates the continuity bug: chocobo data written to work RAM is lost after a fresh
+   boot from flash only. This is what DuckStation currently does on session restart. */
+static void test_dispatch_write_lost_after_fresh_boot(const char *bios, const char *app) {
+    uint8_t payload[CHOCO_PAYLOAD_SIZE];
+    static uint8_t flash_buf[PSEMU_FLASH_SIZE];
+    mock_ps1_t *m = open_with_app(bios, app);
+    const uint8_t *ram;
+    size_t n;
+    unsigned i;
+    mock_ps1_t *m2;
+
+    if (!m) {
+        printf("test_dispatch_write_lost_after_fresh_boot SKIP (no app)\n");
+        return;
+    }
+    make_choco_write_payload(payload, CHOCO_MARKER);
+
+    n = mock_ps1_dispatch(m, CMD_WRITE, payload, CHOCO_PAYLOAD_SIZE, NULL);
+    printf("  session 1: dispatch bytes sent: %u\n", (unsigned)n);
+
+    m->settle_frames = DISPATCH_SETTLE_FRAMES;
+    mock_ps1_end_command(m);
+
+    ram = psemu_ram_data(m->ps);
+    for (i = 0; i < CHOCO_N; i++) {
+        assert(ram[CHOCO_WRITE_ADDR + i] == CHOCO_MARKER);
+    }
+
+    /* Save flash only — no state. psemu_reset in session 2 zeros work RAM. */
+    psemu_save_flash_image(m->ps, flash_buf, PSEMU_FLASH_SIZE);
+    mock_ps1_close(m);
+
+    /* Session 2: fresh boot from flash. Work RAM is zeroed by psemu_reset. */
+    m2 = mock_ps1_open_from_flash(bios, flash_buf, PSEMU_FLASH_SIZE);
+    if (!m2) {
+        printf("test_dispatch_write_lost_after_fresh_boot SKIP (session 2 failed)\n");
+        return;
+    }
+    /* After fresh boot the dispatch data (128 × CHOCO_MARKER) must not be present.
+       The BIOS and app may initialize some bytes in user RAM to non-zero defaults, so
+       we cannot assert all zeros. Instead assert that at least one byte differs from the
+       marker, which is sufficient to show the dispatched data did not survive. */
+    ram = psemu_ram_data(m2->ps);
+    for (i = 0; i < CHOCO_N; i++) {
+        if (ram[CHOCO_WRITE_ADDR + i] != CHOCO_MARKER) {
+            break;
+        }
+    }
+    assert(i < CHOCO_N); /* at least one byte must differ — data lost after fresh boot */
+    mock_ps1_close(m2);
+    printf("test_dispatch_write_lost_after_fresh_boot OK"
+           " (data not preserved after fresh boot — this is the bug)\n");
+}
+
+/* Demonstrates the fix: restoring full machine state preserves work RAM across sessions.
+   After psemu_load_state the chocobo data at CHOCO_WRITE_ADDR is still present. */
+static void test_dispatch_write_survives_state_restore(const char *bios, const char *app) {
+    uint8_t payload[CHOCO_PAYLOAD_SIZE];
+    static uint8_t flash_buf[PSEMU_FLASH_SIZE];
+    uint8_t *state_buf;
+    size_t state_size;
+    mock_ps1_t *m = open_with_app(bios, app);
+    const uint8_t *ram;
+    size_t n;
+    unsigned i;
+    mock_ps1_t *m2;
+
+    if (!m) {
+        printf("test_dispatch_write_survives_state_restore SKIP (no app)\n");
+        return;
+    }
+    make_choco_write_payload(payload, CHOCO_MARKER);
+
+    n = mock_ps1_dispatch(m, CMD_WRITE, payload, CHOCO_PAYLOAD_SIZE, NULL);
+    printf("  session 1: dispatch bytes sent: %u\n", (unsigned)n);
+
+    m->settle_frames = DISPATCH_SETTLE_FRAMES;
+    mock_ps1_end_command(m);
+
+    ram = psemu_ram_data(m->ps);
+    for (i = 0; i < CHOCO_N; i++) {
+        assert(ram[CHOCO_WRITE_ADDR + i] == CHOCO_MARKER);
+    }
+
+    /* Save full machine state (CPU + work RAM) and flash. */
+    state_size = psemu_state_size(m->ps);
+    state_buf = (uint8_t *)malloc(state_size);
+    assert(state_buf != NULL);
+    psemu_save_state(m->ps, state_buf, state_size);
+    psemu_save_flash_image(m->ps, flash_buf, PSEMU_FLASH_SIZE);
+    mock_ps1_close(m);
+
+    /* Session 2: restore from state. Work RAM is restored, not zeroed. */
+    m2 = mock_ps1_open_from_state(bios, flash_buf, PSEMU_FLASH_SIZE,
+                                   state_buf, state_size);
+    free(state_buf);
+    if (!m2) {
+        printf("test_dispatch_write_survives_state_restore SKIP (session 2 failed)\n");
+        return;
+    }
+    ram = psemu_ram_data(m2->ps);
+    for (i = 0; i < CHOCO_N; i++) {
+        assert(ram[CHOCO_WRITE_ADDR + i] == CHOCO_MARKER);
+    }
+    mock_ps1_close(m2);
+    printf("test_dispatch_write_survives_state_restore OK\n");
+}
+
+/* Runs the app for many frames without any dispatch and reports when (if ever) the app
+   writes to flash. This establishes the auto-save cadence of the standalone app, which
+   is the baseline for understanding when dispatched data reaches flash.
+
+   NOTE: open_with_app leaves the machine in DOCKED mode (PS1 connected). In this
+   state the app is waiting for PS1 commands, not running its training game. This is
+   expected to produce zero flash writes. The real question is whether the app
+   auto-saves AFTER undock (see test_hold_save_after_dispatch). */
+static void test_autosave_cadence(const char *bios, const char *app) {
+    static uint8_t flash_snap[PSEMU_FLASH_SIZE];
+    mock_ps1_t *m = open_with_app(bios, app);
+    const uint8_t *fl;
+    unsigned f, save_count = 0;
+
+    if (!m) {
+        printf("test_autosave_cadence SKIP (no app)\n");
+        return;
+    }
+    fl = psemu_flash_data(m->ps);
+    memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+
+    /* Run 5000 frames docked (≈156 s at 32 Hz). Expect zero flash changes since the
+       app waits for PS1 commands in docked mode. */
+    for (f = 0u; f < 5000u; f++) {
+        mock_ps1_run_frames(m, 1u);
+        if (memcmp(psemu_flash_data(m->ps), flash_snap, PSEMU_FLASH_SIZE) != 0) {
+            unsigned changed = count_flash_diff(flash_snap, fl);
+            printf("  autosave (docked): flash changed %u bytes at frame %u\n", changed, f + 1u);
+            memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+            save_count++;
+            if (save_count >= 3u)
+                break;
+        }
+    }
+    if (save_count == 0u)
+        printf("  autosave (docked): no flash change in 5000 docked frames (expected)\n");
+
+    mock_ps1_close(m);
+    printf("test_autosave_cadence done\n");
+}
+
+/* Boots the machine in standalone mode (no PS1 dock), navigates the BIOS menu to
+   start the app, then runs for many frames to see if the app auto-saves to flash
+   during normal standalone training. This tests whether the training game writes to
+   flash at all during autonomous operation, regardless of any dispatch. */
+static void test_standalone_boot_autosave(const char *bios, const char *app) {
+    static uint8_t flash_snap[PSEMU_FLASH_SIZE];
+    mock_ps1_t *m;
+    psemu_t *ps;
+    uint8_t *bios_data;
+    size_t bios_size = 0;
+    const uint8_t *fl;
+    unsigned f, save_count = 0;
+
+    /* We need to load the app content (from the .mcs file) but NOT dock. */
+    {
+        FILE *bf = fopen(bios, "rb");
+        FILE *af = fopen(app, "rb");
+        uint8_t *app_data;
+        size_t app_size = 0;
+
+        if (!bf || !af) {
+            if (bf) fclose(bf);
+            if (af) fclose(af);
+            printf("test_standalone_boot_autosave SKIP (cannot open files)\n");
+            return;
+        }
+        fseek(bf, 0, SEEK_END); bios_size = (size_t)ftell(bf); fseek(bf, 0, SEEK_SET);
+        bios_data = (uint8_t *)malloc(bios_size);
+        fread(bios_data, 1, bios_size, bf);
+        fclose(bf);
+
+        fseek(af, 0, SEEK_END); app_size = (size_t)ftell(af); fseek(af, 0, SEEK_SET);
+        app_data = (uint8_t *)malloc(app_size);
+        fread(app_data, 1, app_size, af);
+        fclose(af);
+
+        ps = psemu_create();
+        if (!ps || psemu_load_bios(ps, bios_data, bios_size) != PSEMU_OK) {
+            free(bios_data); free(app_data);
+            printf("test_standalone_boot_autosave SKIP (bios load failed)\n");
+            return;
+        }
+        free(bios_data);
+        if (psemu_load_content(ps, app_data, app_size) != PSEMU_OK) {
+            free(app_data); psemu_destroy(ps);
+            printf("test_standalone_boot_autosave SKIP (app load failed)\n");
+            return;
+        }
+        free(app_data);
+    }
+
+    psemu_reset(ps);
+    /* Boot 200 frames in STANDALONE mode (never dock). */
+    for (f = 0u; f < 200u; f++)
+        psemu_run(ps, PSEMU_REFERENCE_CLOCK_HZ / 32u);
+
+    /* Try several button sequences to navigate past date/time and launch the app.
+       psemu docs say: "Down then Action" to pass date/time, "Right then Action" for app.
+       Try each sequence and wait to see if the app launches. */
+    {
+        unsigned seq;
+        static const uint32_t SEQS[][4] = {
+            /* btn,  hold, btn2, hold2 */
+            { PSEMU_BUTTON_DOWN,  8u, PSEMU_BUTTON_FIRE, 8u },
+            { PSEMU_BUTTON_FIRE,  8u, 0u,                0u },
+            { PSEMU_BUTTON_RIGHT, 8u, PSEMU_BUTTON_FIRE, 8u },
+            { PSEMU_BUTTON_FIRE,  8u, 0u,                0u },
+            { PSEMU_BUTTON_FIRE,  8u, 0u,                0u },
+        };
+        for (seq = 0u; seq < 5u; seq++) {
+            psemu_set_buttons(ps, SEQS[seq][0]);
+            for (f = 0u; f < SEQS[seq][1]; f++) psemu_run(ps, PSEMU_REFERENCE_CLOCK_HZ / 32u);
+            psemu_set_buttons(ps, 0);
+            for (f = 0u; f < 8u; f++) psemu_run(ps, PSEMU_REFERENCE_CLOCK_HZ / 32u);
+            if (SEQS[seq][2]) {
+                psemu_set_buttons(ps, SEQS[seq][2]);
+                for (f = 0u; f < SEQS[seq][3]; f++) psemu_run(ps, PSEMU_REFERENCE_CLOCK_HZ / 32u);
+                psemu_set_buttons(ps, 0);
+                for (f = 0u; f < 8u; f++) psemu_run(ps, PSEMU_REFERENCE_CLOCK_HZ / 32u);
+            }
+            /* Let the BIOS settle for 50 frames after each button group. */
+            for (f = 0u; f < 50u; f++) psemu_run(ps, PSEMU_REFERENCE_CLOCK_HZ / 32u);
+            if (psemu_app_running(ps)) {
+                printf("  standalone: app_running=1 after sequence %u\n", seq);
+                break;
+            }
+        }
+    }
+    printf("  standalone boot: app_running=%d after BIOS navigation\n",
+           psemu_app_running(ps));
+
+    m = (mock_ps1_t *)malloc(sizeof(mock_ps1_t));
+    if (!m) { psemu_destroy(ps); return; }
+    m->ps = ps;
+    m->timeout_cycles = PSEMU_COM_DEFAULT_TIMEOUT_CYCLES;
+    m->settle_frames = 8u;
+
+    fl = psemu_flash_data(m->ps);
+    memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+
+    /* Run 10000 frames in standalone mode. Report each flash change. */
+    for (f = 0u; f < 10000u; f++) {
+        mock_ps1_run_frames(m, 1u);
+        if (memcmp(fl, flash_snap, PSEMU_FLASH_SIZE) != 0) {
+            unsigned changed = count_flash_diff(flash_snap, fl);
+            printf("  standalone: flash changed %u bytes at frame %u (app_running=%d)\n",
+                   changed, f + 1u, psemu_app_running(m->ps));
+            memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+            save_count++;
+            if (save_count >= 3u)
+                break;
+        }
+    }
+    if (save_count == 0u)
+        printf("  standalone: no flash change in 10000 frames (app_running=%d)\n",
+               psemu_app_running(m->ps));
+
+    mock_ps1_close(m);
+    printf("test_standalone_boot_autosave done\n");
+}
+
+/* Probes when (if ever) the app auto-saves to flash after dispatch + undock.
+   Runs up to 10000 standalone frames without button input to find the auto-save event.
+   Then probes the FIRE-hold path for an additional 2000 frames.
+   Diagnostic only — reports but does not assert the flash write outcome. */
+static void test_hold_save_after_dispatch(const char *bios, const char *app) {
+    static uint8_t flash_snap[PSEMU_FLASH_SIZE];
+    uint8_t payload[CHOCO_PAYLOAD_SIZE];
+    mock_ps1_t *m = open_with_app(bios, app);
+    const uint8_t *fl;
+    unsigned f, changed, save_count;
+
+    if (!m) {
+        printf("test_hold_save_after_dispatch SKIP (no app)\n");
+        return;
+    }
+    fl = psemu_flash_data(m->ps);
+    memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+    make_choco_write_payload(payload, CHOCO_MARKER);
+
+    /* Phase 1: dispatch chocobo data to work RAM. */
+    mock_ps1_dispatch(m, CMD_WRITE, payload, CHOCO_PAYLOAD_SIZE, NULL);
+    m->settle_frames = DISPATCH_SETTLE_FRAMES;
+    mock_ps1_end_command(m);
+
+    changed = count_flash_diff(flash_snap, fl);
+    printf("  phase 1: flash changed %u bytes after dispatch+settle (expect 0)\n", changed);
+    if (changed > 0)
+        memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+
+    {
+        const uint8_t *ram = psemu_ram_data(m->ps);
+        unsigned i;
+        for (i = 0; i < CHOCO_N; i++)
+            assert(ram[CHOCO_WRITE_ADDR + i] == CHOCO_MARKER);
+    }
+
+    /* Phase 2: undock, run up to 10000 frames, report flash changes and app state. */
+    psemu_com_set_docked(m->ps, 0);
+    save_count = 0u;
+    for (f = 0u; f < 10000u; f++) {
+        mock_ps1_run_frames(m, 1u);
+        changed = count_flash_diff(flash_snap, fl);
+        if (changed > 0u) {
+            printf("  phase 2: flash changed %u bytes at undock frame %u\n", changed, f + 1u);
+            memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+            save_count++;
+            if (save_count >= 3u)
+                break;
+        }
+        if (f == 9u || f == 59u || f == 199u || f == 599u || f == 1999u || f == 4999u || f == 9999u) {
+            const uint8_t *ram = psemu_ram_data(m->ps);
+            printf("  frame %u: app_running=%d cpu_faulted=%d CMD_ACTIVE=0x%02X OUTER_LOOP=0x%02X\n",
+                   f + 1u, psemu_app_running(m->ps), psemu_cpu_faulted(m->ps),
+                   (unsigned)ram[CMD_ACTIVE_FLAG], (unsigned)ram[OUTER_LOOP_FLAG]);
+        }
+    }
+    if (save_count == 0u)
+        printf("  phase 2: no flash change after 10000 undock frames\n");
+
+    /* Phase 3: hold FIRE for 2000 frames, report first flash change. */
+    psemu_set_buttons(m->ps, PSEMU_BUTTON_FIRE);
+    for (f = 0u; f < 2000u; f++) {
+        mock_ps1_run_frames(m, 1u);
+        changed = count_flash_diff(flash_snap, fl);
+        if (changed > 0u) {
+            printf("  phase 3: hold-save fired — flash changed %u bytes at FIRE frame %u\n",
+                   changed, f + 1u);
+            memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+            break;
+        }
+    }
+    psemu_set_buttons(m->ps, 0u);
+    if (f >= 2000u)
+        printf("  phase 3: no flash change after 2000 FIRE frames\n");
+
+    mock_ps1_close(m);
+    printf("test_hold_save_after_dispatch done\n");
+}
+
 int main(void) {
     const char *bios = bios_path();
     const char *app  = app_path();
@@ -300,6 +714,12 @@ int main(void) {
 
     test_dispatch_with_select_drop_writes_flash(bios, app);
     test_dispatch_without_select_drop_does_not_write_flash(bios, app);
+    test_dispatch_write_then_read_within_session(bios, app);
+    test_dispatch_write_lost_after_fresh_boot(bios, app);
+    test_dispatch_write_survives_state_restore(bios, app);
+    test_autosave_cadence(bios, app);
+    test_standalone_boot_autosave(bios, app);
+    test_hold_save_after_dispatch(bios, app);
 
     printf("sio_dispatch_test: all tests OK\n");
     return 0;

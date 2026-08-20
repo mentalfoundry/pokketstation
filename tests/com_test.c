@@ -221,6 +221,82 @@ static void test_stat1_bit0_follows_an_arrived_byte(void) {
     printf("test_stat1_bit0_follows_an_arrived_byte OK\n");
 }
 
+static void test_com_transfer_reasserts_select_on_entry(void) {
+    psemu_t *ps = psemu_create();
+    uint8_t out = 0xFFu;
+
+    /* Drop /SEL. sel_drop_latch is now 1. */
+    psemu_com_set_selected(ps, 1);
+    psemu_com_set_selected(ps, 0);
+    assert(ps->com.sel_drop_latch == 1);
+
+    /* psemu_com_transfer unconditionally reasserts SELECT before it runs any ARM cycles.
+       That rising edge (0->1) clears sel_drop_latch. A deassert before psemu_com_transfer
+       therefore cannot set the latch for a FIQ to observe: the transfer undoes it
+       before the first cycle executes. */
+    psemu_com_transfer(ps, 0x81u, &out, 64u);
+    assert(ps->com.sel_drop_latch == 0);
+    assert(ps->com.selected == 1);
+
+    psemu_destroy(ps);
+    printf("test_com_transfer_reasserts_select_on_entry OK\n");
+}
+
+static void test_transfer_and_select_drop_deasserts_select_and_sets_latch(void) {
+    psemu_t *ps = psemu_create();
+    uint8_t out = 0xFFu;
+
+    /* psemu_com_transfer_and_select_drop is the mechanism by which the FIQ learns that a
+       dispatch command (0x5B/0x5C) is complete and should commit its pending work (e.g. flash
+       writes). The FIQ checks sel_drop_latch after the last byte of the command. That check
+       happens inside the psemu_run loop, so the drop must happen *before* any cycles execute.
+
+       This function asserts SELECT, puts the byte in the COM buffer, drops SELECT (setting
+       sel_drop_latch), and then enters the cycle loop. Because the drop precedes all cycles,
+       sel_drop_latch is 1 at the exact point the FIQ reads it.
+
+       Without a BIOS no ARM code runs, but the latch still records the drop. The observable
+       post-condition is the complement of test_com_transfer_reasserts_select_on_entry, which
+       verifies that psemu_com_transfer clears the latch on entry. */
+    psemu_com_transfer_and_select_drop(ps, 0x81u, &out, 64u);
+    assert(ps->com.selected == 0);
+    assert(ps->com.sel_drop_latch == 1);
+
+    psemu_destroy(ps);
+    printf("test_transfer_and_select_drop_deasserts_select_and_sets_latch OK\n");
+}
+
+static void test_transfer_and_select_drop_during_byte_sets_latch_while_byte_is_pending(void) {
+    psemu_t *ps = psemu_create();
+    uint8_t out = 0xFFu;
+
+    /* Documents the timing contract between the two transfer variants. In a dispatch command
+       (0x5B/0x5C), the BIOS FIQ receives all payload bytes while SELECT is asserted and then
+       enters a SELECT-drop wait loop (not a one-shot check). The correct sequence is therefore:
+
+         1. psemu_com_transfer for every byte — SELECT stays asserted, FIQ processes each byte
+            and calls its phase-2 callback (which may write flash) after the last byte.
+         2. psemu_com_set_selected(0) once, after all bytes — the FIQ exits its wait loop
+            and runs end-of-command cleanup.
+
+       psemu_com_transfer_and_select_drop is NOT used for the last dispatch byte. It drops
+       SELECT during the byte exchange, while sel_drop_latch is 1 AND the byte is still being
+       processed by the FIQ. The FIQ byte-receive poll may then treat sel_drop_latch=1 as a
+       mid-command error and invoke phase-2 with an error opcode, which skips the flash write.
+
+       This test pins the observable: after psemu_com_transfer_and_select_drop, the byte WAS
+       put into the COM buffer (com_begin_transfer ran) but SELECT was then dropped, setting
+       sel_drop_latch while the byte is simultaneously pending. */
+    psemu_com_transfer_and_select_drop(ps, 0x52u, &out, 64u);
+    /* SELECT was released before any cycles ran and the latch is set, confirming that
+       sel_drop_latch=1 precedes all FIQ execution — the timing hazard for dispatch commands. */
+    assert(ps->com.selected == 0);
+    assert(ps->com.sel_drop_latch == 1);
+
+    psemu_destroy(ps);
+    printf("test_transfer_and_select_drop_during_byte_sets_latch_while_byte_is_pending OK\n");
+}
+
 static void test_transfer_without_a_bios_reports_no_acknowledge(void) {
     psemu_t *ps = psemu_create();
     uint8_t out = 0x00;
@@ -417,6 +493,9 @@ int main(void) {
     test_acknowledge_ends_the_exchange_without_a_data_read();
     test_sel_release_sets_the_end_of_command_bit();
     test_stat1_bit0_follows_an_arrived_byte();
+    test_com_transfer_reasserts_select_on_entry();
+    test_transfer_and_select_drop_deasserts_select_and_sets_latch();
+    test_transfer_and_select_drop_during_byte_sets_latch_while_byte_is_pending();
     test_transfer_without_a_bios_reports_no_acknowledge();
     test_reset_clears_the_port();
     test_state_round_trip_keeps_the_machine();

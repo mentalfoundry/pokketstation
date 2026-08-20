@@ -51,3 +51,9 @@ add_executable(pk_exit_test pk_exit_test.c)
 target_include_directories(pk_exit_test PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(pk_exit_test PRIVATE psemu)
 
+# Links psemu_trace for the bus write-trace hook so it can report every flash write
+# the app attempts during the hold-and-exit sequence.
+add_executable(choco_exit_probe choco_exit_probe.c)
+target_include_directories(choco_exit_probe PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
+target_link_libraries(choco_exit_probe PRIVATE psemu_trace)
+
