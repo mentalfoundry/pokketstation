@@ -679,6 +679,130 @@ static void test_hold_save_after_dispatch(const char *bios, const char *app) {
     printf("test_hold_save_after_dispatch done\n");
 }
 
+/* Probes whether a session-end undock sequence clears CMD_ACTIVE and triggers a flash commit.
+   Variant A: minimal 8-frame settle then permanent undock (closest to current PrepareForSave).
+   Variant B: 60-frame settle, brief 10-frame undock, then redock (undock-pulse simulation).
+   Each polls CMD_ACTIVE for up to 10000 frames, then holds FIRE for 2000 frames.
+   Diagnostic only — reports but does not assert the flash write outcome. */
+static void test_session_end_commits_flash(const char *bios, const char *app) {
+    static uint8_t flash_snap[PSEMU_FLASH_SIZE];
+    uint8_t payload[CHOCO_PAYLOAD_SIZE];
+    const uint8_t *fl;
+    const uint8_t *ram;
+    unsigned f, changed, enabled;
+
+    /* --- Variant A: 8-frame settle, permanent undock --- */
+    {
+        mock_ps1_t *m = open_with_app(bios, app);
+        if (!m) {
+            printf("test_session_end_commits_flash SKIP (no app)\n");
+            return;
+        }
+        fl = psemu_flash_data(m->ps);
+        memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+        make_choco_write_payload(payload, CHOCO_MARKER);
+
+        mock_ps1_dispatch(m, CMD_WRITE, payload, CHOCO_PAYLOAD_SIZE, NULL);
+        m->settle_frames = 8u;
+        mock_ps1_end_command(m);
+
+        psemu_com_set_docked(m->ps, 0);
+        printf("  varA: polling CMD_ACTIVE (8-frame settle + permanent undock)\n");
+        for (f = 0u; f < 10000u; f++) {
+            mock_ps1_run_frames(m, 1u);
+            ram = psemu_ram_data(m->ps);
+            if (ram[CMD_ACTIVE_FLAG] == 0u) {
+                printf("  varA: CMD_ACTIVE cleared at frame %u (OUTER_LOOP=0x%02X)\n",
+                       f + 1u, (unsigned)ram[OUTER_LOOP_FLAG]);
+                break;
+            }
+            if (f == 9u || f == 59u || f == 199u || f == 599u || f == 1999u || f == 9999u) {
+                printf("  varA: frame %u CMD_ACTIVE=0x%02X OUTER_LOOP=0x%02X\n",
+                       f + 1u, (unsigned)ram[CMD_ACTIVE_FLAG], (unsigned)ram[OUTER_LOOP_FLAG]);
+            }
+        }
+        if (f >= 10000u)
+            printf("  varA: CMD_ACTIVE still set after 10000 frames\n");
+
+        psemu_set_buttons(m->ps, PSEMU_BUTTON_FIRE);
+        for (f = 0u; f < 2000u; f++) {
+            mock_ps1_run_frames(m, 1u);
+            changed = count_flash_diff(flash_snap, fl);
+            if (changed > 0u) {
+                printf("  varA: hold-save fired — flash changed %u bytes at FIRE frame %u\n",
+                       changed, f + 1u);
+                break;
+            }
+        }
+        psemu_set_buttons(m->ps, 0u);
+        if (f >= 2000u)
+            printf("  varA: no flash change after 2000 FIRE frames\n");
+
+        mock_ps1_close(m);
+    }
+
+    /* --- Variant B: 60-frame settle, brief undock (10 frames), then redock --- */
+    {
+        mock_ps1_t *m = open_with_app(bios, app);
+        if (!m) {
+            printf("  varB: SKIP (open failed)\n");
+            return;
+        }
+        fl = psemu_flash_data(m->ps);
+        memcpy(flash_snap, fl, PSEMU_FLASH_SIZE);
+        make_choco_write_payload(payload, CHOCO_MARKER);
+
+        mock_ps1_dispatch(m, CMD_WRITE, payload, CHOCO_PAYLOAD_SIZE, NULL);
+        m->settle_frames = DISPATCH_SETTLE_FRAMES;
+        mock_ps1_end_command(m);
+
+        psemu_com_set_docked(m->ps, 0);
+        mock_ps1_run_frames(m, 10u);
+        psemu_com_set_docked(m->ps, 1);
+        enabled = 0u;
+        for (f = 0u; f < 60u; f++) {
+            mock_ps1_run_frames(m, 1u);
+            if (psemu_com_is_enabled(m->ps)) { enabled = 1u; break; }
+        }
+        printf("  varB: after undock pulse — COM enabled=%u\n", enabled);
+
+        printf("  varB: polling CMD_ACTIVE (undock-pulse + redock)\n");
+        for (f = 0u; f < 10000u; f++) {
+            mock_ps1_run_frames(m, 1u);
+            ram = psemu_ram_data(m->ps);
+            if (ram[CMD_ACTIVE_FLAG] == 0u) {
+                printf("  varB: CMD_ACTIVE cleared at frame %u (OUTER_LOOP=0x%02X)\n",
+                       f + 1u, (unsigned)ram[OUTER_LOOP_FLAG]);
+                break;
+            }
+            if (f == 9u || f == 59u || f == 199u || f == 599u || f == 1999u || f == 9999u) {
+                printf("  varB: frame %u CMD_ACTIVE=0x%02X OUTER_LOOP=0x%02X\n",
+                       f + 1u, (unsigned)ram[CMD_ACTIVE_FLAG], (unsigned)ram[OUTER_LOOP_FLAG]);
+            }
+        }
+        if (f >= 10000u)
+            printf("  varB: CMD_ACTIVE still set after 10000 frames\n");
+
+        psemu_set_buttons(m->ps, PSEMU_BUTTON_FIRE);
+        for (f = 0u; f < 2000u; f++) {
+            mock_ps1_run_frames(m, 1u);
+            changed = count_flash_diff(flash_snap, fl);
+            if (changed > 0u) {
+                printf("  varB: hold-save fired — flash changed %u bytes at FIRE frame %u\n",
+                       changed, f + 1u);
+                break;
+            }
+        }
+        psemu_set_buttons(m->ps, 0u);
+        if (f >= 2000u)
+            printf("  varB: no flash change after 2000 FIRE frames\n");
+
+        mock_ps1_close(m);
+    }
+
+    printf("test_session_end_commits_flash done\n");
+}
+
 int main(void) {
     const char *bios = bios_path();
     const char *app  = app_path();
@@ -720,6 +844,7 @@ int main(void) {
     test_autosave_cadence(bios, app);
     test_standalone_boot_autosave(bios, app);
     test_hold_save_after_dispatch(bios, app);
+    test_session_end_commits_flash(bios, app);
 
     printf("sio_dispatch_test: all tests OK\n");
     return 0;
