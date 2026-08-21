@@ -956,6 +956,66 @@ static void test_session_end_commits_flash(const char *bios, const char *app) {
     printf("test_session_end_commits_flash done\n");
 }
 
+/* After a boot from an empty card, D0 and CE stay zero: the BIOS directory scan found no app.
+   When a PS1 game installs an app mid-session via 0x57 sector writes, the BIOS holds its
+   boot-time view and does not rescan. Command 0x59 is the mechanism that starts the app: its FIQ
+   handler writes D0 = slot and sets ComFlags bit 11, and the app runs on the next frame. Setting
+   bit 11 externally in RAM does not trigger dispatch — the BIOS checks bit 11 only in the context
+   of the 0x59 FIQ, not in its general docked-session loop.
+
+   This test verifies the mid-session path: it boots from an empty card, loads the app into flash
+   after boot, sends 0x59, and confirms the app answers a dispatch command. It also confirms that
+   D0 stays zero after the flash load, proving the BIOS has no background rescan. */
+static void test_midsession_app_start(const char *bios, const char *app)
+{
+    static uint8_t installed_flash[PSEMU_FLASH_SIZE];
+    static uint8_t flash_before[PSEMU_FLASH_SIZE];
+    mock_ps1_t *m;
+    const uint8_t *ram;
+    uint8_t payload[FN_WRITE_PAYLOAD_SIZE];
+    size_t n;
+
+    /* Capture the installed flash layout from a normal boot with the app. */
+    m = mock_ps1_open(bios, app);
+    if (!m) {
+        printf("test_midsession_app_start SKIP\n");
+        return;
+    }
+    memcpy(installed_flash, psemu_flash_data(m->ps), PSEMU_FLASH_SIZE);
+    mock_ps1_close(m);
+
+    /* Boot from an empty card. The BIOS directory scan finds nothing; D0 and CE stay zero. */
+    m = mock_ps1_open(bios, NULL);
+    if (!m) {
+        printf("test_midsession_app_start SKIP\n");
+        return;
+    }
+    ram = psemu_ram_data(m->ps);
+    assert(ram);
+    assert(ram[0xD0] == 0u && ram[0xD1] == 0u);
+    assert(ram[0xCE] == 0u);
+
+    /* Load the app into flash. D0 stays zero: the BIOS does not rescan after the initial boot. */
+    assert(psemu_load_flash_image(m->ps, installed_flash, PSEMU_FLASH_SIZE) == PSEMU_OK);
+    assert(ram[0xD0] == 0u);
+
+    /* Command 0x59 starts the app. The BIOS FIQ handler writes D0 = APP_SLOT, sets ComFlags
+       bit 11, and the app runs on the next frame. */
+    assert(mock_ps1_launch_app(m, APP_SLOT));
+
+    /* Send a write dispatch and verify the app copies the byte to flash. */
+    make_write_payload(payload);
+    memcpy(flash_before, psemu_flash_data(m->ps), PSEMU_FLASH_SIZE);
+    n = mock_ps1_dispatch(m, CMD_WRITE, payload, FN_WRITE_PAYLOAD_SIZE, NULL);
+    assert(n == 2u + FN_WRITE_PAYLOAD_SIZE);
+    assert(count_flash_diff(flash_before, psemu_flash_data(m->ps)) > 0u);
+    m->settle_frames = DISPATCH_SETTLE_FRAMES;
+    mock_ps1_end_command(m);
+
+    mock_ps1_close(m);
+    printf("test_midsession_app_start OK\n");
+}
+
 /* Boots the machine without an app and reports:
    - The exception-vector literal pool (RAM[0x20..0x3F]) which gives the IRQ handler address
    - RAM[0xC0..0xCF] before dock, after dock (COM enabled), and after undock.
@@ -1080,6 +1140,7 @@ int main(void) {
     test_standalone_boot_autosave(bios, app);
     test_hold_save_after_dispatch(bios, app);
     test_session_end_commits_flash(bios, app);
+    test_midsession_app_start(bios, app);
     test_com_flag_at_ram_c0(bios);
 
     printf("sio_dispatch_test: all tests OK\n");
