@@ -156,10 +156,15 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
 }
 
 /* F_KEY1 (0x08002A54) and F_KEY2 (0x080055AA) are the flash
-   unlock-sequence trigger addresses of real hardware. A real BIOS write
-   routine writes FFAAh, FF55h, and FFA0h to these addresses in sequence,
-   before it writes sector data. This is the standard command-latch
-   method that NOR flash chips use.
+   unlock-sequence trigger addresses of real hardware. A subroutine
+   at BIOS+0x1228 performs the three-step unlock: FFAAh to F_KEY2,
+   FF55h to F_KEY1, then FFA0h to F_KEY2 again. This is the standard
+   command-latch method that NOR flash chips use. The flash write
+   function at BIOS+0x126C (SWI 16) calls that subroutine, then
+   writes 128 bytes from a source pointer to FLASH2 at physical
+   offset (page_number * 128). The IR command dispatcher at
+   BIOS+0x1060 routes PS1 write command 57h to a handler that calls
+   BIOS+0x126C.
 
    These addresses are NOT storage locations. Real flash hardware
    intercepts writes to these addresses as unlock commands. It does not

@@ -53,6 +53,10 @@
    to run its flash write after the FIQ cleanup path fires. */
 #define DISPATCH_SETTLE_FRAMES 60u
 
+/* Settle frames after the exit-prompt navigation. The BIOS programs flash after the app
+   calls the write-sector SWI and returns. 120 frames matches choco_exit_probe.c. */
+#define EXIT_SAVE_SETTLE_FRAMES 120u
+
 /* The command bytes for dispatch functions. */
 #define CMD_WRITE 0x5Cu
 #define CMD_READ  0x5Bu
@@ -166,6 +170,20 @@ static size_t dispatch_early_select_drop(mock_ps1_t *m, uint8_t cmd, const uint8
         memcpy(out_reply, reply, n);
     }
     return n;
+}
+
+/* Builds a CHOCO_PAYLOAD_SIZE-byte payload for a 0x5B fn#1 read command with FF8's actual
+   work RAM source. The PS1 sends dummy bytes 8..8+N-1; the PocketStation fills those slots
+   in the reply with the data from CHOCO_READ_ADDR. */
+static void make_choco_read_payload(uint8_t *data) {
+    memset(data, 0, CHOCO_PAYLOAD_SIZE);
+    data[0] = CHOCO_FN;
+    data[2] = (uint8_t)( CHOCO_READ_ADDR        & 0xFFu);
+    data[3] = (uint8_t)((CHOCO_READ_ADDR >>  8) & 0xFFu);
+    data[4] = (uint8_t)((CHOCO_READ_ADDR >> 16) & 0xFFu);
+    data[5] = (uint8_t)((CHOCO_READ_ADDR >> 24) & 0xFFu);
+    data[6] = CHOCO_N;
+    /* bytes 8..8+N-1 are dummy sends; the PocketStation clocks out its data during those exchanges */
 }
 
 /* Builds a CHOCO_PAYLOAD_SIZE-byte payload for a 0x5C fn#1 write command with FF8's actual
@@ -436,6 +454,141 @@ static void test_dispatch_write_survives_state_restore(const char *bios, const c
     }
     mock_ps1_close(m2);
     printf("test_dispatch_write_survives_state_restore OK\n");
+}
+
+/* After a 0x5B read then a 0x5C write, the session-end sequence must commit the dispatched
+   chicobo data to flash so it survives a fresh boot. The 0x5B must precede the 0x5C because
+   FF8 always reads before writing, and because the 0x5B dispatch sets the FIQ cleanup gate
+   that the 0x5C FIQ needs to clear CMD_ACTIVE_FLAG after SELECT drops.
+
+   Sequence:
+     1. Dispatch 0x5B (read) — app sends current chicobo state to PS1; FIQ cleanup gate set.
+     2. Dispatch 0x5C (write) with CHOCO_MARKER — data lands in work RAM at CHOCO_WRITE_ADDR;
+        FIQ cleanup runs (gate was set by 0x5B), CMD_ACTIVE_FLAG clears, app resumes.
+     3. Assert work RAM holds the marker; assert CMD_ACTIVE_FLAG cleared; assert flash unchanged.
+     4. Session-end: undock, then 600 quiet frames so the app reaches its game screen.
+        CE is already set (mock_ps1_launch_app set it), so the BIOS dispatches to the
+        app directly — no BIOS menu navigation is needed or correct here.
+     5. Hold Fire 300 frames (hold-save or exit prompt).
+     6. If no flash change: select Exit via release/Down/release/Fire/release, settle.
+     7. Assert flash changed — the marker data is now in flash.
+
+   This test FAILS until the session-end sequence correctly reaches the app's game screen
+   and holds Fire long enough for the app to write flash. */
+static void test_dispatch_write_reaches_flash_on_session_end(const char *bios, const char *app)
+{
+    static uint8_t flash_before[PSEMU_FLASH_SIZE];
+    uint8_t payload[CHOCO_PAYLOAD_SIZE];
+    mock_ps1_t *m = open_with_app(bios, app);
+    const uint8_t *fl;
+    const uint8_t *ram;
+    unsigned f, changed;
+
+    if (!m) {
+        printf("test_dispatch_write_reaches_flash_on_session_end SKIP (no app)\n");
+        return;
+    }
+    fl = psemu_flash_data(m->ps);
+    memcpy(flash_before, fl, PSEMU_FLASH_SIZE);
+
+    /* Step 1: 0x5B read — FF8 reads the current chicobo state from the app. This sets the
+       FIQ cleanup gate that the subsequent 0x5C dispatch requires to clear CMD_ACTIVE_FLAG. */
+    make_choco_read_payload(payload);
+    mock_ps1_dispatch(m, CMD_READ, payload, CHOCO_PAYLOAD_SIZE, NULL);
+    m->settle_frames = DISPATCH_SETTLE_FRAMES;
+    mock_ps1_end_command(m);
+
+    /* Step 2: 0x5C write — FF8 sends updated chicobo data to the app. */
+    make_choco_write_payload(payload, CHOCO_MARKER);
+    mock_ps1_dispatch(m, CMD_WRITE, payload, CHOCO_PAYLOAD_SIZE, NULL);
+    m->settle_frames = DISPATCH_SETTLE_FRAMES;
+    mock_ps1_end_command(m);
+
+    ram = psemu_ram_data(m->ps);
+    {
+        unsigned i;
+        for (i = 0; i < CHOCO_N; i++)
+            assert(ram[CHOCO_WRITE_ADDR + i] == CHOCO_MARKER);
+    }
+    printf("  after dispatch: CMD_ACTIVE=0x%02X OUTER_LOOP=0x%02X (expect both 0x00)\n",
+           (unsigned)ram[CMD_ACTIVE_FLAG], (unsigned)ram[OUTER_LOOP_FLAG]);
+
+    changed = count_flash_diff(flash_before, fl);
+    printf("  after dispatch: flash changed %u bytes (expect 0)\n", changed);
+    assert(changed == 0u);
+
+    /* Print working-buffer state before undock.
+       CHOCO_WRITE_ADDR (0x280): the app's receive buffer — 0x5C writes here.
+       CHOCO_READ_ADDR  (0x200): the app's send buffer — 0x5B reads from here; also the
+       source the standalone game loop uses when it saves. If 0x5C populated 0x280 and
+       the dispatch processor copied it to 0x200, the save will commit the new data.
+       If the copy was skipped, 0x200 keeps its flash-initialized value and the save
+       commits the old data (no detectable change vs flash_before). */
+    {
+        unsigned i;
+        printf("  pre-undock: RAM[0x%03X..+7] =", CHOCO_READ_ADDR);
+        for (i = 0; i < 8u; i++) printf(" %02X", (unsigned)ram[CHOCO_READ_ADDR + i]);
+        printf("  (0x5C copy target — differs from flash if copy ran)\n");
+        printf("  pre-undock: RAM[0x%03X..+7] =", CHOCO_WRITE_ADDR);
+        for (i = 0; i < 8u; i++) printf(" %02X", (unsigned)ram[CHOCO_WRITE_ADDR + i]);
+        printf("  (0x5C receive buffer — expect 0x%02X)\n", CHOCO_MARKER);
+        printf("  pre-undock: CMD_ACTIVE=0x%02X OUTER_LOOP=0x%02X"
+               " (0x59 launch sets both; FIQ cleanup on undock must clear both)\n",
+               (unsigned)ram[CMD_ACTIVE_FLAG], (unsigned)ram[OUTER_LOOP_FLAG]);
+    }
+
+    /* Session-end. Undock first so the BIOS leaves the command-wait path. */
+    psemu_com_set_docked(m->ps, 0);
+
+    /* CE is already set (mock_ps1_launch_app put it there). The BIOS dispatches to the
+       app's standalone entry directly after undock — no BIOS menu navigation is needed.
+       Run quiet settle frames to let the BIOS process the undock interrupt, clear the
+       session-active flag (bit 9 of RAM[0xC0]), and dispatch to the app's standalone
+       entry. The app then clears CMD_ACTIVE when it detects the cleared session flag,
+       enters its game screen, and the subsequent Fire hold can trigger the save. */
+    for (f = 0; f < 600u; f++)
+        mock_ps1_run_frames(m, 1u);
+    printf("  after settle: app_running=%d cpu_faulted=%d CMD_ACTIVE=0x%02X OUTER_LOOP=0x%02X\n",
+           psemu_app_running(m->ps), psemu_cpu_faulted(m->ps),
+           (unsigned)ram[CMD_ACTIVE_FLAG], (unsigned)ram[OUTER_LOOP_FLAG]);
+
+    /* Hold Fire for up to 300 frames. Apps that save on a sustained press finish here. */
+    psemu_set_buttons(m->ps, PSEMU_BUTTON_FIRE);
+    changed = 0u;
+    for (f = 0; f < 300u; f++) {
+        mock_ps1_run_frames(m, 1u);
+        changed = count_flash_diff(flash_before, fl);
+        if (changed > 0u) {
+            printf("  hold-save: flash changed %u bytes at hold frame %u\n", changed, f + 1u);
+            break;
+        }
+    }
+    psemu_set_buttons(m->ps, 0u);
+
+    if (changed == 0u) {
+        /* Fire hold showed the exit prompt. Navigate: release one frame, Down to move
+           cursor to Exit, release, Fire to confirm, release. */
+        mock_ps1_run_frames(m, 1u);
+        psemu_set_buttons(m->ps, PSEMU_BUTTON_DOWN);
+        mock_ps1_run_frames(m, 1u);
+        psemu_set_buttons(m->ps, 0u);
+        mock_ps1_run_frames(m, 1u);
+        psemu_set_buttons(m->ps, PSEMU_BUTTON_FIRE);
+        mock_ps1_run_frames(m, 1u);
+        psemu_set_buttons(m->ps, 0u);
+
+        for (f = 0; f < EXIT_SAVE_SETTLE_FRAMES; f++)
+            mock_ps1_run_frames(m, 1u);
+
+        changed = count_flash_diff(flash_before, fl);
+        printf("  exit-save: flash changed %u bytes after exit sequence\n", changed);
+    }
+
+    /* The dispatched chicobo data must now be in flash. */
+    assert(changed > 0u);
+
+    mock_ps1_close(m);
+    printf("test_dispatch_write_reaches_flash_on_session_end OK\n");
 }
 
 /* Runs the app for many frames without any dispatch and reports when (if ever) the app
@@ -803,6 +956,87 @@ static void test_session_end_commits_flash(const char *bios, const char *app) {
     printf("test_session_end_commits_flash done\n");
 }
 
+/* Boots the machine without an app and reports:
+   - The exception-vector literal pool (RAM[0x20..0x3F]) which gives the IRQ handler address
+   - RAM[0xC0..0xCF] before dock, after dock (COM enabled), and after undock.
+   SWI #6 returns 0xC0 (the BIOS ComFlags pointer). Bit 9 of RAM[0xC0] is the flag the
+   app's state machine polls to decide whether the PS1 session is still active. This test
+   verifies whether the BIOS dock interrupt sets it and whether undock clears it. */
+static void test_com_flag_at_ram_c0(const char *bios) {
+#define FRAME_CYCLES_DIAG (PSEMU_REFERENCE_CLOCK_HZ / 32u)
+#define BOOT_FRAMES_DIAG  200u
+#define DOCK_FRAMES_DIAG  60u
+
+    psemu_t *ps;
+    size_t bios_size = 0;
+    const uint8_t *ram;
+    uint8_t bios_buf[PSEMU_BIOS_SIZE];
+    unsigned i, enabled;
+
+    {
+        FILE *f = fopen(bios, "rb");
+        if (!f) { printf("test_com_flag_at_ram_c0 SKIP (no BIOS)\n"); return; }
+        bios_size = fread(bios_buf, 1, sizeof(bios_buf), f);
+        fclose(f);
+    }
+    ps = psemu_create();
+    if (!ps || psemu_load_bios(ps, bios_buf, bios_size) != PSEMU_OK) {
+        printf("test_com_flag_at_ram_c0 SKIP (load failed)\n");
+        if (ps) psemu_destroy(ps);
+        return;
+    }
+    psemu_reset(ps);
+    for (i = 0; i < BOOT_FRAMES_DIAG; i++)
+        psemu_run(ps, FRAME_CYCLES_DIAG);
+
+    ram = psemu_ram_data(ps);
+
+    /* Exception-vector pool: RAM[0x20..0x3F] holds the 8 handler addresses in the order:
+       reset, undef, SWI, pabt, dabt, reserved, IRQ, FIQ. IRQ is at pool[6] = RAM[0x38]. */
+    printf("  exception pool (RAM[0x20..0x3F]):\n");
+    {
+        const char *names[] = {"reset","undef","SWI  ","pabt ","dabt ","resv ","IRQ  ","FIQ  "};
+        for (i = 0; i < 8; i++) {
+            uint32_t addr;
+            memcpy(&addr, ram + 0x20 + i * 4, 4);
+            printf("    pool[%u] %-5s: 0x%08X\n", i, names[i], addr);
+        }
+    }
+
+    printf("  RAM[0xC0..0xCF] after boot (undocked):\n  ");
+    for (i = 0; i < 16; i++) printf("%02X ", ram[0xC0 + i]);
+    printf("\n  RAM[0xC0] as word = 0x%08X  bit9=%d\n",
+           (unsigned)(ram[0xC0] | (ram[0xC1]<<8) | (ram[0xC2]<<16) | (ram[0xC3]<<24)),
+           (ram[0xC1] >> 1) & 1);
+
+    /* Dock and wait for COM enabled. */
+    psemu_com_set_docked(ps, 1);
+    enabled = 0;
+    for (i = 0; i < DOCK_FRAMES_DIAG; i++) {
+        psemu_run(ps, FRAME_CYCLES_DIAG);
+        if (psemu_com_is_enabled(ps)) { enabled = 1; break; }
+    }
+    printf("  docked: COM enabled=%u (frame %u)\n", enabled, i + 1u);
+    printf("  RAM[0xC0..0xCF] after dock:\n  ");
+    for (i = 0; i < 16; i++) printf("%02X ", ram[0xC0 + i]);
+    printf("\n  RAM[0xC0] as word = 0x%08X  bit9=%d\n",
+           (unsigned)(ram[0xC0] | (ram[0xC1]<<8) | (ram[0xC2]<<16) | (ram[0xC3]<<24)),
+           (ram[0xC1] >> 1) & 1);
+
+    /* Undock and run 200 frames. */
+    psemu_com_set_docked(ps, 0);
+    for (i = 0; i < 200; i++)
+        psemu_run(ps, FRAME_CYCLES_DIAG);
+    printf("  RAM[0xC0..0xCF] after undock (200 frames):\n  ");
+    for (i = 0; i < 16; i++) printf("%02X ", ram[0xC0 + i]);
+    printf("\n  RAM[0xC0] as word = 0x%08X  bit9=%d\n",
+           (unsigned)(ram[0xC0] | (ram[0xC1]<<8) | (ram[0xC2]<<16) | (ram[0xC3]<<24)),
+           (ram[0xC1] >> 1) & 1);
+
+    psemu_destroy(ps);
+    printf("test_com_flag_at_ram_c0 done\n");
+}
+
 int main(void) {
     const char *bios = bios_path();
     const char *app  = app_path();
@@ -841,10 +1075,12 @@ int main(void) {
     test_dispatch_write_then_read_within_session(bios, app);
     test_dispatch_write_lost_after_fresh_boot(bios, app);
     test_dispatch_write_survives_state_restore(bios, app);
+    test_dispatch_write_reaches_flash_on_session_end(bios, app);
     test_autosave_cadence(bios, app);
     test_standalone_boot_autosave(bios, app);
     test_hold_save_after_dispatch(bios, app);
     test_session_end_commits_flash(bios, app);
+    test_com_flag_at_ram_c0(bios);
 
     printf("sio_dispatch_test: all tests OK\n");
     return 0;

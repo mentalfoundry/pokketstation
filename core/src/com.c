@@ -186,10 +186,13 @@ void com_write(com_t *com, struct intc *intc, uint32_t offset, uint32_t value) {
 
 void com_set_docked(com_t *com, struct intc *intc, int docked) {
     com->docked = docked ? 1 : 0;
-    /* INT_IOP is a level. It is not a latched request. The kernel uses this one source for the dock
-       transition and for the undock transition. The kernel also reads the level during a transfer.
-       That read finds an undock event while the transfer is in progress. See intc.h. */
-    intc_set_line(intc, INT_IOP, com->docked);
+    /* INT_IOP fires an interrupt on both the dock transition and the undock transition.
+       intc_set_level_and_pulse latches HOLD on each edge so the IRQ handler runs in both
+       directions. STATUS follows the live level. The IRQ handler acknowledges HOLD and then
+       reads STATUS to determine direction: STATUS bit 11 = 1 means docked, 0 means undocked.
+       The kernel also reads this live level during a transfer to detect an undock event while
+       the transfer is in progress. See intc.h and INT_LEVEL_MASK. */
+    intc_set_level_and_pulse(intc, INT_IOP, com->docked);
 }
 
 void com_set_selected(com_t *com, int selected) {
