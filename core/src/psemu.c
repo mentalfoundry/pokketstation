@@ -510,14 +510,14 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
            hardware clocks.
 
            A button is an external signal, and this clock does not drive it. Thus a button can wake
-           the CPU. This is the result when a user presses a button on a PocketStation that sleeps.
-           The wake operation clears the bit, thus software does not have to clear it. Two facts are
-           unconfirmed: whether real hardware clears the bit automatically, and whether a source that
-           is not a button can wake the CPU. No app that this project can operate causes either
-           condition. */
+           the CPU. The RTC uses a separate oscillator (see rtc.h), and it ticks during a clock stop.
+           Thus an RTC tick can also wake the CPU. An app that steps a walking animation enters clock
+           stop between frames and waits for INT_RTC. The wake operation clears the CLK_STOP bit.
+           One fact is unconfirmed: whether real hardware clears the CLK_STOP bit automatically, or
+           whether the kernel clears it. */
         if (clk_stop_requested(&ps->clk)) {
             static const uint32_t WAKE_SOURCES =
-                INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP;
+                INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP | INT_RTC;
             if (ps->intc.hold & ps->intc.enable & WAKE_SOURCES) {
                 clk_clear_stop(&ps->clk);
             } else {
