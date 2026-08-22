@@ -956,6 +956,43 @@ static void test_session_end_commits_flash(const char *bios, const char *app) {
     printf("test_session_end_commits_flash done\n");
 }
 
+/* The BIOS does not set D0 or CE at boot — not even when an app is present in flash. Both
+   registers stay zero until command 0x59 arrives: the 0x59 FIQ handler writes D0 = slot, and
+   the app runs on the next frame. CE is a dispatch register that the host layer must write
+   (it is not written by the BIOS boot scan or by a command other than navigation).
+
+   The host layer (pocketstation.cpp SetActiveAppSlot) must therefore write CE before the first
+   0x58 command arrives, using a flash scan to find the slot. It cannot rely on D0 being set
+   first. This test pins that invariant: D0 and CE are both zero after boot regardless of whether
+   the card holds an app, and the app is not running yet. */
+static void test_d0_ce_zero_after_boot(const char *bios, const char *app)
+{
+    mock_ps1_t *m;
+    const uint8_t *ram;
+
+    /* Pre-installed app: D0 and CE are zero, app is not running. */
+    m = mock_ps1_open(bios, app);
+    if (!m) { printf("test_d0_ce_zero_after_boot SKIP\n"); return; }
+    ram = psemu_ram_data(m->ps);
+    assert(ram);
+    assert(!psemu_app_running(m->ps));
+    assert(ram[0xD0] == 0u && ram[0xD1] == 0u);
+    assert(ram[0xCE] == 0u);
+    mock_ps1_close(m);
+
+    /* Empty card: same. */
+    m = mock_ps1_open(bios, NULL);
+    if (!m) { printf("test_d0_ce_zero_after_boot SKIP\n"); return; }
+    ram = psemu_ram_data(m->ps);
+    assert(ram);
+    assert(!psemu_app_running(m->ps));
+    assert(ram[0xD0] == 0u && ram[0xD1] == 0u);
+    assert(ram[0xCE] == 0u);
+    mock_ps1_close(m);
+
+    printf("test_d0_ce_zero_after_boot OK\n");
+}
+
 /* After a boot from an empty card, D0 and CE stay zero: the BIOS directory scan found no app.
    When a PS1 game installs an app mid-session via 0x57 sector writes, the BIOS holds its
    boot-time view and does not rescan. Command 0x59 is the mechanism that starts the app: its FIQ
@@ -1140,6 +1177,7 @@ int main(void) {
     test_standalone_boot_autosave(bios, app);
     test_hold_save_after_dispatch(bios, app);
     test_session_end_commits_flash(bios, app);
+    test_d0_ce_zero_after_boot(bios, app);
     test_midsession_app_start(bios, app);
     test_com_flag_at_ram_c0(bios);
 
