@@ -1043,7 +1043,7 @@ static void prompt_open_app(menu_context_t *ctx) {
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = ctx->hwnd;
     ofn.lpstrFilter =
-        "App or memory-card image (*.pss;*.mcs;*.mcr;*.mcd)\0*.pss;*.mcs;*.mcr;*.mcd\0All files (*.*)\0*.*\0";
+        "App or memory-card image (*.pss;*.bin;*.mcs;*.mcr;*.mcd;*.gme)\0*.pss;*.bin;*.mcs;*.mcr;*.mcd;*.gme\0All files (*.*)\0*.*\0";
     ofn.lpstrFile = path;
     ofn.nMaxFile = sizeof(path);
     ofn.lpstrTitle = "Open app or memory card";

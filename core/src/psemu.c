@@ -108,6 +108,12 @@ psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size) {
 #define MCS_HEADER_SIZE 0x80u
 #define MCS_DATASIZE_OFFSET 0x04u
 
+/* DexDrive full-card dump: 11-byte magic, then a header, then PSEMU_FLASH_SIZE bytes of card data.
+   The total size is PSEMU_FLASH_SIZE + GME_HEADER_SIZE = 134976 bytes. */
+#define GME_MAGIC "123-456-STD"
+#define GME_MAGIC_SIZE 11u
+#define GME_HEADER_SIZE 3904u
+
 /* The directory-frame part of the validation of a .mcs file. This is each test that is possible
    before flash_load_app receives the body. This function returns a nonzero value and writes
    *out_payload_size when `data` holds a frame whose recorded size agrees with the bytes after it.
@@ -185,6 +191,9 @@ psemu_content_kind psemu_identify_content(const uint8_t *data, size_t size) {
     }
     if (size == PSEMU_FLASH_SIZE) {
         return PSEMU_CONTENT_CARD;
+    }
+    if (size == PSEMU_FLASH_SIZE + GME_HEADER_SIZE && memcmp(data, GME_MAGIC, GME_MAGIC_SIZE) == 0) {
+        return PSEMU_CONTENT_GME;
     }
     /* This function tests for a .mcs file before it tests for a Title Sector body. Single-save
        exports are much more frequent than Title Sector dumps. The two kinds are also easy to tell
@@ -270,6 +279,11 @@ uint32_t psemu_content_identity_hash(const uint8_t *data, size_t size) {
             identity_hash_directory_frame(&hash, data + frame * DIRECTORY_FRAME_SIZE);
         }
         return hash;
+    case PSEMU_CONTENT_GME:
+        for (frame = 1; frame < 16u; frame++) {
+            identity_hash_directory_frame(&hash, data + GME_HEADER_SIZE + frame * DIRECTORY_FRAME_SIZE);
+        }
+        return hash;
     case PSEMU_CONTENT_MCS:
         (void)mcs_payload_size(data, size, &payload_size);
         identity_hash_directory_frame(&hash, data);
@@ -288,6 +302,8 @@ psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size) {
     switch (psemu_identify_content(data, size)) {
     case PSEMU_CONTENT_CARD:
         return psemu_load_flash_image(ps, data, size);
+    case PSEMU_CONTENT_GME:
+        return psemu_load_flash_image(ps, data + GME_HEADER_SIZE, PSEMU_FLASH_SIZE);
     case PSEMU_CONTENT_MCS:
         return psemu_load_mcs(ps, data, size);
     case PSEMU_CONTENT_APP:

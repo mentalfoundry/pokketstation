@@ -20,13 +20,15 @@
    window, and it reaches the PS1 save through FLASH2. But flash1_write8 resolves the bank into the
    same storage (core/src/flash.c). Thus one comparison covers both kinds.
 
-   ALL THREE CONTENT KINDS ROUND-TRIP. Each one goes back into the shape of its source file:
+   ALL FOUR CONTENT KINDS ROUND-TRIP. Each one goes back into the shape of its source file:
 
    - A .mcr or .mcd file for a full card goes back as a full card.
+   - A .gme DexDrive dump goes back as a .gme file: its original 3904-byte header, unchanged,
+     followed by the current card data.
    - A .mcs file is built again: its own directory frame of 0x80 bytes, unchanged from the file, and
      then the body of the app from flash. The frame gives the properties of the file, and not its
      contents, and an app cannot reach the frame. Thus the loaded copy is still correct.
-   - A .pss file is the body alone.
+   - A .pss or .bin file is the body alone.
 
    For a .mcs or .pss file, ONLY THE BLOCKS OF THE APP ARE IN THE FILE. A loaded app operates in a
    memory card that this emulator synthesizes around it. The remainder of that card, which is the
@@ -52,6 +54,8 @@
 /* The first PS1 directory frame of a .mcs file. This is the same value as MCS_HEADER_SIZE in psemu.c,
    which is private to that file. */
 #define CONTENT_WRITEBACK_MCS_FRAME_SIZE 0x80u
+/* The DexDrive header of a .gme file. This is the same value as GME_HEADER_SIZE in psemu.c. */
+#define CONTENT_WRITEBACK_GME_HEADER_SIZE 3904u
 
 typedef struct {
     int enabled;
@@ -61,6 +65,7 @@ typedef struct {
     size_t region_offset;
     size_t region_size;
     uint8_t mcs_frame[CONTENT_WRITEBACK_MCS_FRAME_SIZE]; /* unchanged from the loaded .mcs file */
+    uint8_t gme_header[CONTENT_WRITEBACK_GME_HEADER_SIZE]; /* unchanged from the loaded .gme file */
     uint8_t baseline[PSEMU_FLASH_SIZE];
     uint8_t current[PSEMU_FLASH_SIZE];
     int dirty;

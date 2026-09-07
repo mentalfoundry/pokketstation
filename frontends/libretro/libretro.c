@@ -50,7 +50,7 @@ void retro_get_system_info(struct retro_system_info *info) {
     memset(info, 0, sizeof(*info));
     info->library_name = "pokketstation";
     info->library_version = "0.1";
-    info->valid_extensions = "mcr|mcs|pss|mcd";
+    info->valid_extensions = "mcr|mcs|pss|mcd|bin|gme";
     info->need_fullpath = false;
     info->block_extract = false;
 }

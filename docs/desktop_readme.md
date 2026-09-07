@@ -14,8 +14,9 @@ pokketstation.exe .\bios.bin .\samplememcard.mcd
 ```
 - **The extension of the second file has no effect.** This app selects the loader from the content:
   - If the size of the file is exactly the real flash size, the app loads it as a full memory-card image (`.mcd`). Use the keyboard to move through its real BIOS menu, the same as on real hardware.
+  - If the file has the `123-456-STD` magic of a DexDrive dump (`.gme`), the app strips the 3904-byte header and loads the card data.
   - If not, the app first tries the file as a single-save file with a real PS1 directory frame in front of it (`.mcs`). Most PS1 save managers use this format to export one save, and it is the more frequent of the two formats.
-  - If that attempt fails, the app tries the file as a raw PSX Title Sector app dump (`.pss`).
+  - If that attempt fails, the app tries the file as a raw PSX Title Sector app dump (`.pss` or `.bin`).
 
   Tests confirm that both `.mcd` card images and single-app loads operate correctly, against a real BIOS and real app dumps. See [hardware-notes.md](hardware-notes.md).
 - **If you start the .exe with a double click**, and give no command line, the app uses the last BIOS path from an earlier run, if one exists (see `settings.cfg` below). If no such path exists, the app uses `bios.bin` next to the executable. For the app or card, the app always looks for `memcard.mcd` next to the executable. The app never keeps that path.
@@ -73,7 +74,7 @@ Two separate copies of `pokketstation.exe`, **on the same Windows machine**, can
 
 ## Save write-back
 
-**When an app saves, this app updates the file that you opened.** This function operates for each kind of file that this app loads: a full card (`.mcd`), one save (`.mcs`), or an app (`.pss`). This app writes each kind back in its own format, which is the format that you opened.
+**When an app saves, this app updates the file that you opened.** This function operates for each kind of file that this app loads: a full card (`.mcd`), a DexDrive dump (`.gme`), one save (`.mcs`), or an app (`.pss` or `.bin`). This app writes each kind back in its own format, which is the format that you opened.
 
 *Each* change is applicable, and not one kind only:
 

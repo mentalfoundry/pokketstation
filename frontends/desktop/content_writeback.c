@@ -20,6 +20,11 @@ void content_writeback_arm(
         cw->region_offset = 0;
         cw->region_size = PSEMU_FLASH_SIZE;
         break;
+    case PSEMU_CONTENT_GME:
+        memcpy(cw->gme_header, data, sizeof(cw->gme_header));
+        cw->region_offset = 0;
+        cw->region_size = PSEMU_FLASH_SIZE;
+        break;
     case PSEMU_CONTENT_MCS:
         memcpy(cw->mcs_frame, data, sizeof(cw->mcs_frame));
         cw->region_offset = APP_BODY_OFFSET;
@@ -83,29 +88,48 @@ int content_writeback_commit(content_writeback_t *cw, psemu_t *ps) {
     uint8_t *image;
     size_t image_size;
     FILE *f;
+    int write_ok;
     if (!cw->enabled || !cw->dirty) {
         return 0;
     }
-    /* This code uses `current` as the staging buffer. A .mcs file is its frame and a body. The body
-       can fill 15 of the 16 blocks of the card. Thus the file always fits in the bytes of one
-       card. */
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", cw->path);
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", cw->path);
     image = cw->current;
-    image_size = build_file_image(cw, ps, image, sizeof(cw->current));
-    if (image_size == 0) {
-        fprintf(stderr, "psemu: couldn't rebuild %s from flash - it is unchanged on disk.\n", cw->path);
-        cw->dirty = 0;
-        return 0;
+    if (cw->kind == PSEMU_CONTENT_GME) {
+        /* GME is gme_header + full card. The card data fits in `current`; the header is in
+           gme_header. Write both parts to avoid a staging buffer larger than PSEMU_FLASH_SIZE. */
+        if (psemu_save_flash_image(ps, image, sizeof(cw->current)) != PSEMU_OK) {
+            fprintf(stderr, "psemu: couldn't rebuild %s from flash - it is unchanged on disk.\n", cw->path);
+            cw->dirty = 0;
+            return 0;
+        }
+        image_size = sizeof(cw->gme_header) + PSEMU_FLASH_SIZE;
+    } else {
+        /* This code uses `current` as the staging buffer. A .mcs file is its frame and a body. The
+           body can fill 15 of the 16 blocks of the card. Thus the file always fits in the bytes of
+           one card. */
+        image_size = build_file_image(cw, ps, image, sizeof(cw->current));
+        if (image_size == 0) {
+            fprintf(stderr, "psemu: couldn't rebuild %s from flash - it is unchanged on disk.\n", cw->path);
+            cw->dirty = 0;
+            return 0;
+        }
     }
 
     /* Only if there is not one already: see the header's note on why a backup is taken exactly once. */
-    snprintf(bak_path, sizeof(bak_path), "%s.bak", cw->path);
     if (GetFileAttributesA(bak_path) == INVALID_FILE_ATTRIBUTES) {
         CopyFileA(cw->path, bak_path, TRUE);
     }
 
-    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", cw->path);
     f = fopen(tmp_path, "wb");
-    if (!f || fwrite(image, 1, image_size, f) != image_size) {
+    if (cw->kind == PSEMU_CONTENT_GME) {
+        write_ok = f
+            && fwrite(cw->gme_header, 1, sizeof(cw->gme_header), f) == sizeof(cw->gme_header)
+            && fwrite(image, 1, PSEMU_FLASH_SIZE, f) == PSEMU_FLASH_SIZE;
+    } else {
+        write_ok = f && fwrite(image, 1, image_size, f) == image_size;
+    }
+    if (!write_ok) {
         if (f) {
             fclose(f);
         }

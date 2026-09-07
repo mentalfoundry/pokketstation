@@ -24,14 +24,13 @@ yourself, see [Building](#building) below.
 
 3. In RetroArch, select **Load Core** → **pokketstation** → **Load Content** → your app file.
 
-This core loads the same three content types as the desktop app, and it selects the type the same way: from the content, and not from the file extension.
+This core loads the same four content types as the desktop app, and it selects the type the same way: from the content, and not from the file extension.
 - A full memory-card image (`.mcd`), if the size of the file is exactly the real flash size.
+- A DexDrive full-card dump (`.gme`), identified by its `123-456-STD` header magic.
 - If not, a single-save `.mcs` file.
-- If not, a raw PSX Title Sector dump (`.pss`).
+- If not, a raw PSX Title Sector dump (`.pss` or `.bin`).
 
-A `.gme` full-card dump does not load directly. That format holds the same 128KB of card data in a container with its own header. Remove that header first, to give the raw 128KB.
-
-The content browser of RetroArch shows `.mcd`, `.mcs`, and `.pss` files for this core by default. But this core does not test the extension at load time.
+The content browser of RetroArch shows `.mcd`, `.mcs`, `.pss`, `.bin`, and `.gme` files for this core by default. But this core does not test the extension at load time.
 
 ## Saves
 

@@ -160,7 +160,8 @@ typedef enum {
     PSEMU_CONTENT_UNKNOWN = 0, /* no loader accepts the data */
     PSEMU_CONTENT_CARD,        /* full memory-card image, exactly PSEMU_FLASH_SIZE bytes */
     PSEMU_CONTENT_MCS,         /* single-save export: a directory frame of 0x80 bytes, then the app body */
-    PSEMU_CONTENT_APP          /* Title Sector body, with no directory frame */
+    PSEMU_CONTENT_APP,         /* Title Sector body, with no directory frame */
+    PSEMU_CONTENT_GME          /* DexDrive full-card dump: 3904-byte header, then PSEMU_FLASH_SIZE bytes */
 } psemu_content_kind;
 
 psemu_content_kind psemu_identify_content(const uint8_t *data, size_t size);
