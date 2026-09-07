@@ -10,6 +10,8 @@ IR now operates locally. First, set the receive side into receive mode in your a
 
 Do not depend on save-state compatibility between versions yet. The internal registries need more changes.
 
+Currently attempting to complete the ps1 SIO so that the core can talk to ps1 emulators - UPDATE: So I've tried all the PS1 emulators that I know of that claim to support the pocketstation - *none* of them support it to the degree I would be satisfied with. Progress is slow going but steady - no ETA on this but I am working through it bit by bit. 
+
 **Known gaps:**
 - The IR communication timing is unverified. I have only 1 PocketStation device, thus this is the best result that is possible without a second device. The core has hardware-tested behavior, and the desktop emulator does most of the work. I will try to get a second device when I have the opportunity.
 - This emulator makes a few edge cases simpler than the real hardware: low-battery detection, `F_BANK_VAL` entries that map more than one physical block to the same virtual slot, and the pre-remap boot phase of the BIOS.
