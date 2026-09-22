@@ -49,16 +49,22 @@ static void write_file(const char *path, const uint8_t *data, size_t size) {
     }
 }
 
-/* Reads `path` into `buf`, returning its size, or (size_t)-1 if it does not exist. */
+/* Reads `path` into `buf`, returning its size, READ_FILE_ABSENT if it does not exist, or
+   READ_FILE_TOO_LARGE if it holds more than `cap` bytes. The second sentinel keeps a buffer that is
+   too small from giving the size of the buffer, which reads as a correct read of a shorter file. */
+#define READ_FILE_ABSENT ((size_t)-1)
+#define READ_FILE_TOO_LARGE ((size_t)-2)
 static size_t read_file(const char *path, uint8_t *buf, size_t cap) {
     size_t n;
+    int extra;
     FILE *f = fopen(path, "rb");
     if (!f) {
-        return (size_t)-1;
+        return READ_FILE_ABSENT;
     }
     n = fread(buf, 1, cap, f);
+    extra = (n == cap) && (fgetc(f) != EOF);
     fclose(f);
-    return n;
+    return extra ? READ_FILE_TOO_LARGE : n;
 }
 
 static void make_card(uint8_t *card, uint8_t fill) {
@@ -319,6 +325,24 @@ static void test_unrecognised(const char *dir) {
     printf("  unrecognised: done\n");
 }
 
+/* The name of a content kind, for the report of the real-file mode. This is a switch, and not an
+   array with an index, because an array gives a read past its end when psemu.h adds a kind. */
+static const char *content_kind_name(psemu_content_kind kind) {
+    switch (kind) {
+    case PSEMU_CONTENT_CARD:
+        return "card (.mcd)";
+    case PSEMU_CONTENT_MCS:
+        return "single save (.mcs)";
+    case PSEMU_CONTENT_APP:
+        return "bare app (.pss)";
+    case PSEMU_CONTENT_GME:
+        return "DexDrive dump (.gme)";
+    case PSEMU_CONTENT_UNKNOWN:
+        break;
+    }
+    return "unrecognised";
+}
+
 /* An optional mode. CTest does not use it. It round-trips a REAL file that the caller names. The tests
    above build their own content, thus they can execute in each environment. This includes CI, where
    the testdata/ directory does not exist, because .gitignore excludes it. Thus those tests cannot show
@@ -328,20 +352,28 @@ static void test_unrecognised(const char *dir) {
      content_writeback_selftest testdata/<your app file>.mcs
 
    A load with no change must build the input again exactly. Each difference is a fault in the rebuild
-   code, because no emulation executed. */
+   code, because no emulation executed. The one file that grows is a .gme dump that ends early: the
+   rebuild always holds a full card, thus it gives the blocks that the short file has no space for.
+   Those blocks are zero, because the load made them zero and no code changed them. */
 static void test_real_file(const char *path) {
-    static uint8_t original[PSEMU_FLASH_SIZE];
-    static uint8_t got[PSEMU_FLASH_SIZE];
+    /* The largest content kind is a .gme file: a DexDrive header, then a full card. */
+    static uint8_t original[CONTENT_WRITEBACK_GME_HEADER_SIZE + PSEMU_FLASH_SIZE];
+    static uint8_t got[CONTENT_WRITEBACK_GME_HEADER_SIZE + PSEMU_FLASH_SIZE];
     static content_writeback_t cw;
     char copy_path[MAX_PATH + 64];
     char dir[MAX_PATH];
     psemu_t *ps;
-    size_t size, n;
-    const char *kind_name[] = { "unrecognised", "card (.mcd)", "single save (.mcs)", "bare app (.pss)" };
+    size_t size, n, expect, i;
+    int tail_is_clear;
 
     size = read_file(path, original, sizeof(original));
-    if (size == (size_t)-1) {
+    if (size == READ_FILE_ABSENT) {
         printf("FAIL: could not read %s\n", path);
+        failures++;
+        return;
+    }
+    if (size == READ_FILE_TOO_LARGE) {
+        printf("FAIL: %s is larger than any content kind\n", path);
         failures++;
         return;
     }
@@ -352,19 +384,35 @@ static void test_real_file(const char *path) {
     write_file(copy_path, original, size);
 
     ps = psemu_create();
-    printf("  %s: %zu bytes, %s, identity 0x%08X\n", path, size, kind_name[psemu_identify_content(original, size)],
-        psemu_content_identity_hash(original, size));
+    printf("  %s: %zu bytes, %s, identity 0x%08X\n", path, size,
+        content_kind_name(psemu_identify_content(original, size)), psemu_content_identity_hash(original, size));
     CHECK(psemu_load_content(ps, original, size) == PSEMU_OK, "the real file should load");
     content_writeback_arm(&cw, ps, copy_path, original, size);
     CHECK(cw.enabled, "a real app/card file should arm write-back");
+
+    /* A .gme dump always goes back as a full card. Each other kind goes back at the size that it
+       came in at. See content_writeback.h. */
+    expect = size;
+    if (psemu_identify_content(original, size) == PSEMU_CONTENT_GME) {
+        expect = CONTENT_WRITEBACK_GME_HEADER_SIZE + PSEMU_FLASH_SIZE;
+    }
 
     /* Force a commit of content nothing has touched, so the only thing under test is the rebuild. */
     cw.dirty = 1;
     CHECK(content_writeback_commit(&cw, ps), "the forced commit should write");
     n = read_file(copy_path, got, sizeof(got));
-    CHECK(n == size, "a rebuilt real file must be the same length");
-    CHECK(n == size && memcmp(got, original, size) == 0,
+    CHECK(n == expect, "a rebuilt real file must be the expected length");
+    CHECK(n == expect && memcmp(got, original, size) == 0,
         "an unchanged real file must rebuild byte-for-byte identically");
+
+    /* The part that a short dump did not hold. The load made those blocks zero, thus the rebuild
+       gives zero. A value that is not zero is data from an earlier load, which the rebuild must
+       never give. */
+    tail_is_clear = (n == expect);
+    for (i = size; tail_is_clear && i < n; i++) {
+        tail_is_clear = (got[i] == 0x00u);
+    }
+    CHECK(tail_is_clear, "the blocks that a short dump did not hold must rebuild as zero");
 
     psemu_destroy(ps);
     remove_all(copy_path);

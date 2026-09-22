@@ -108,11 +108,34 @@ psemu_status psemu_load_app(psemu_t *ps, const uint8_t *data, size_t size) {
 #define MCS_HEADER_SIZE 0x80u
 #define MCS_DATASIZE_OFFSET 0x04u
 
-/* DexDrive full-card dump: 11-byte magic, then a header, then PSEMU_FLASH_SIZE bytes of card data.
-   The total size is PSEMU_FLASH_SIZE + GME_HEADER_SIZE = 134976 bytes. */
+/* DexDrive card dump: 11-byte magic, then a header of GME_HEADER_SIZE bytes, then the card data.
+   A full dump gives PSEMU_FLASH_SIZE bytes of card data, thus a total of 134976 bytes. */
 #define GME_MAGIC "123-456-STD"
 #define GME_MAGIC_SIZE 11u
 #define GME_HEADER_SIZE 3904u
+
+/* The card part of a .gme file. This is each test that is possible on the file alone.
+   psemu_identify_content and psemu_load_content both use this function. Thus the two functions
+   always agree on the definition of a .gme file.
+
+   A dump that ends early gives fewer blocks than a full card, and it is still a .gme file. The card
+   part is a whole number of blocks, and it always holds block 0, because the directory is there.
+   The directory gives the state of each block of the full card, thus the blocks that the file does
+   not hold are known. psemu_load_flash_image makes those blocks zero.
+
+   This function returns a nonzero value and writes *out_card_size when `data` holds a .gme file. */
+static int gme_card_size(const uint8_t *data, size_t size, size_t *out_card_size) {
+    size_t card_size;
+    if (!data || size <= GME_HEADER_SIZE || memcmp(data, GME_MAGIC, GME_MAGIC_SIZE) != 0) {
+        return 0;
+    }
+    card_size = size - GME_HEADER_SIZE;
+    if (card_size % FLASH_BLOCK_SIZE != 0 || card_size > PSEMU_FLASH_SIZE) {
+        return 0;
+    }
+    *out_card_size = card_size;
+    return 1;
+}
 
 /* The directory-frame part of the validation of a .mcs file. This is each test that is possible
    before flash_load_app receives the body. This function returns a nonzero value and writes
@@ -186,13 +209,14 @@ psemu_status psemu_save_app_image(const psemu_t *ps, uint8_t *buf, size_t size) 
 
 psemu_content_kind psemu_identify_content(const uint8_t *data, size_t size) {
     size_t payload_size;
+    size_t card_size;
     if (!data) {
         return PSEMU_CONTENT_UNKNOWN;
     }
     if (size == PSEMU_FLASH_SIZE) {
         return PSEMU_CONTENT_CARD;
     }
-    if (size == PSEMU_FLASH_SIZE + GME_HEADER_SIZE && memcmp(data, GME_MAGIC, GME_MAGIC_SIZE) == 0) {
+    if (gme_card_size(data, size, &card_size)) {
         return PSEMU_CONTENT_GME;
     }
     /* This function tests for a .mcs file before it tests for a Title Sector body. Single-save
@@ -299,11 +323,17 @@ uint32_t psemu_content_identity_hash(const uint8_t *data, size_t size) {
 }
 
 psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size) {
+    /* This variable has an initial value for the same reason as the one in
+       psemu_content_identity_hash: psemu_identify_content gives GME only when gme_card_size was
+       successful with these same arguments, and that function is deterministic. Thus the second
+       call cannot fail. A value of zero makes a load of no bytes, which leaves flash clear. */
+    size_t card_size = 0;
     switch (psemu_identify_content(data, size)) {
     case PSEMU_CONTENT_CARD:
         return psemu_load_flash_image(ps, data, size);
     case PSEMU_CONTENT_GME:
-        return psemu_load_flash_image(ps, data + GME_HEADER_SIZE, PSEMU_FLASH_SIZE);
+        (void)gme_card_size(data, size, &card_size);
+        return psemu_load_flash_image(ps, data + GME_HEADER_SIZE, card_size);
     case PSEMU_CONTENT_MCS:
         return psemu_load_mcs(ps, data, size);
     case PSEMU_CONTENT_APP:

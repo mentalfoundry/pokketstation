@@ -140,6 +140,11 @@ uint8_t *psemu_ram_data(psemu_t *ps);
    Dispatch rules:
    - If `data` is exactly PSEMU_FLASH_SIZE bytes, this function treats it as a full
      memory-card image. It then calls psemu_load_flash_image.
+   - If `data` starts with the DexDrive magic, and the bytes after its 3904-byte header
+     are a whole number of card blocks and are not more than PSEMU_FLASH_SIZE, this
+     function treats it as a .gme dump. It gives those bytes to psemu_load_flash_image,
+     which makes each block that the file does not hold zero. A dump that ends early is
+     thus still usable: the directory in block 0 gives the state of each block.
    - If not, this function first tries `data` as a single-save .mcs file, with
      psemu_load_mcs. Single-save exports are much more frequent than Title Sector dumps.
    - If that attempt fails, this function tries `data` as a Title Sector .pss file, with
@@ -161,7 +166,7 @@ typedef enum {
     PSEMU_CONTENT_CARD,        /* full memory-card image, exactly PSEMU_FLASH_SIZE bytes */
     PSEMU_CONTENT_MCS,         /* single-save export: a directory frame of 0x80 bytes, then the app body */
     PSEMU_CONTENT_APP,         /* Title Sector body, with no directory frame */
-    PSEMU_CONTENT_GME          /* DexDrive full-card dump: 3904-byte header, then PSEMU_FLASH_SIZE bytes */
+    PSEMU_CONTENT_GME          /* DexDrive card dump: 3904-byte header, then a whole number of card blocks */
 } psemu_content_kind;
 
 psemu_content_kind psemu_identify_content(const uint8_t *data, size_t size);

@@ -1694,6 +1694,79 @@ static void test_psemu_load_content_dispatches_by_size(void) {
     printf("test_psemu_load_content_dispatches_by_size OK\n");
 }
 
+/* The size of the DexDrive header of a .gme file. This is the same value as GME_HEADER_SIZE in
+   core/src/psemu.c. */
+#define GME_TEST_HEADER_SIZE 3904u
+
+/* Makes a .gme file that holds `blocks` blocks of card data. The card gets one file in block 1 and
+   a directory that marks each other block free, thus each dump of this shape has one identity. */
+static size_t make_gme(uint8_t *gme, uint32_t blocks) {
+    uint8_t *card = &gme[GME_TEST_HEADER_SIZE];
+    uint32_t frame;
+    memset(gme, 0, GME_TEST_HEADER_SIZE + blocks * FLASH_BLOCK_SIZE);
+    memcpy(gme, "123-456-STD", 11);
+    memcpy(card, "MC", 2);
+    card[128] = 0x51u; /* frame 1: in use, first block of a file */
+    memcpy(&card[128 + 0x0A], "BESLES-99999-TEST", 17);
+    for (frame = 2; frame < 16u; frame++) {
+        card[frame * 128u] = 0xA0u; /* free */
+    }
+    memcpy(&card[FLASH_BLOCK_SIZE], "SC", 2);
+    memcpy(&card[FLASH_BLOCK_SIZE + 0x52], "MCX0", 4);
+    return GME_TEST_HEADER_SIZE + blocks * FLASH_BLOCK_SIZE;
+}
+
+static void test_psemu_load_content_accepts_a_short_gme(void) {
+    /* A DexDrive dump that ends early holds fewer blocks than a full card. Real dumps of this shape
+       exist: one dump in testdata/ holds 12 blocks of the 16. The directory in block 0 marks each
+       absent block free, thus no file of the card is in those bytes. This test pins that such a
+       dump loads, that the blocks it does not hold become zero, and that its identity is the
+       identity of the full dump. */
+    static uint8_t gme[GME_TEST_HEADER_SIZE + PSEMU_FLASH_SIZE + FLASH_BLOCK_SIZE];
+    size_t size;
+
+    /* A full dump: 16 blocks. */
+    size = make_gme(gme, 16u);
+    assert(size == GME_TEST_HEADER_SIZE + PSEMU_FLASH_SIZE);
+    assert(psemu_identify_content(gme, size) == PSEMU_CONTENT_GME);
+
+    /* A short dump: 12 blocks. It is the same kind of content, and the same card. */
+    {
+        uint32_t full_hash = psemu_content_identity_hash(gme, size);
+        psemu_t *ps = make_arm_cpu();
+        size = make_gme(gme, 12u);
+        assert(psemu_identify_content(gme, size) == PSEMU_CONTENT_GME);
+        assert(psemu_content_identity_hash(gme, size) == full_hash);
+        assert(psemu_load_content(ps, gme, size) == PSEMU_OK);
+        /* The blocks that the file holds arrive in flash. */
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 0) == 'M');
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 128) == 0x51u);
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + FLASH_BLOCK_SIZE) == 'S');
+        /* The blocks that it does not hold are zero, and not the data of an earlier load. */
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + 12u * FLASH_BLOCK_SIZE) == 0x00u);
+        assert(psemu_bus_read8(&ps->bus, PSEMU_FLASH2_BASE + PSEMU_FLASH_SIZE - 1u) == 0x00u);
+        psemu_destroy(ps);
+    }
+
+    /* A part of a block is not a dump. The card part must be a whole number of blocks. */
+    size = make_gme(gme, 12u);
+    assert(psemu_identify_content(gme, size - 1u) != PSEMU_CONTENT_GME);
+
+    /* The header alone holds no card, thus it is not a dump. */
+    assert(psemu_identify_content(gme, GME_TEST_HEADER_SIZE) != PSEMU_CONTENT_GME);
+
+    /* More than a full card is not a dump. A card has 16 blocks and no more. */
+    size = make_gme(gme, 17u);
+    assert(psemu_identify_content(gme, size) != PSEMU_CONTENT_GME);
+
+    /* The magic is still necessary. */
+    size = make_gme(gme, 12u);
+    gme[0] = 'X';
+    assert(psemu_identify_content(gme, size) != PSEMU_CONTENT_GME);
+
+    printf("test_psemu_load_content_accepts_a_short_gme OK\n");
+}
+
 static void test_flash_key_addresses_are_not_data_storage(void) {
     /* A real, confirmed fault that a real crash report found (see
        docs/hardware-notes.md, "Flash memory").
@@ -2555,6 +2628,7 @@ int main(void) {
     test_flash_load_app_rejects_oversized_app();
     test_psemu_load_mcs_validates_and_unwraps();
     test_psemu_load_content_dispatches_by_size();
+    test_psemu_load_content_accepts_a_short_gme();
     test_flash_key_addresses_are_not_data_storage();
     test_flash_header_write_via_unlock_sequence();
     test_flash_frame_write_lands_in_a_ps1_save_block();

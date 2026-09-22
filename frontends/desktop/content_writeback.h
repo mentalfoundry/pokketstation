@@ -24,7 +24,9 @@
 
    - A .mcr or .mcd file for a full card goes back as a full card.
    - A .gme DexDrive dump goes back as a .gme file: its original 3904-byte header, unchanged,
-     followed by the current card data.
+     followed by the current card data. The card data is always a full card. Thus a dump that ends
+     early grows to the full size of 134976 bytes at the first write. This is correct: an app can
+     write to a block that the short file does not hold, and that block must have space in the file.
    - A .mcs file is built again: its own directory frame of 0x80 bytes, unchanged from the file, and
      then the body of the app from flash. The frame gives the properties of the file, and not its
      contents, and an app cannot reach the frame. Thus the loaded copy is still correct.
