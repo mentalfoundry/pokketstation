@@ -268,6 +268,13 @@ typedef struct {
        off by default: the numbers have no meaning to a person who only uses the link, and they change
        at each frame. See ir_link_diagnostics in the comment on load_settings above. */
     int ir_link_diagnostics;
+    /* IR Link > Connect Over Network...: the address that the dialog offers first. The format is
+       "host:port", and see ir_transport.h. This app writes the value when a connection attempt
+       starts, thus a second session needs no retyping.
+       IR Link > Host Over Network...: the port that this app listens on. It is a port and not a
+       full address, because a host listens on each interface of the machine. */
+    char ir_link_peer_address[256];
+    char ir_link_listen_port[16];
     /* Key names in the format of SDL_GetScancodeName(), for example "Up", "Z", or "Left Ctrl".
        An empty value means "use the default key for that button". See resolve_key_binding. */
     char key_up[32];
@@ -647,6 +654,9 @@ static int load_settings(app_settings_t *settings, const char *path) {
     settings->key_quick_load[0] = '\0';
     settings->show_console = 0;
     settings->ir_link_diagnostics = 0;
+    settings->ir_link_peer_address[0] = '\0';
+    snprintf(settings->ir_link_listen_port, sizeof(settings->ir_link_listen_port), "%s",
+        IR_TRANSPORT_DEFAULT_TCP_PORT);
     settings->show_shadows = 0;
     /* The default value is off. Thus a new installation operates the same way as
        before this override existed. */
@@ -707,6 +717,10 @@ static int load_settings(app_settings_t *settings, const char *path) {
                 settings->show_console = atoi(line + 13) != 0;
             } else if (strncmp(line, "ir_link_diagnostics=", 20) == 0) {
                 settings->ir_link_diagnostics = atoi(line + 20) != 0;
+            } else if (strncmp(line, "ir_link_peer_address=", 21) == 0) {
+                snprintf(settings->ir_link_peer_address, sizeof(settings->ir_link_peer_address), "%s", line + 21);
+            } else if (strncmp(line, "ir_link_listen_port=", 20) == 0) {
+                snprintf(settings->ir_link_listen_port, sizeof(settings->ir_link_listen_port), "%s", line + 20);
             } else if (strncmp(line, "show_shadows=", 13) == 0) {
                 settings->show_shadows = atoi(line + 13) != 0;
             }
@@ -788,6 +802,8 @@ static void save_settings(const app_settings_t *settings, const char *path) {
     fprintf(f, "speaker=%s\n", SPEAKER_SIM_PRESETS[clamp_speaker_sim(settings->speaker_sim)].name);
     fprintf(f, "show_console=%d\n", settings->show_console ? 1 : 0);
     fprintf(f, "ir_link_diagnostics=%d\n", settings->ir_link_diagnostics ? 1 : 0);
+    fprintf(f, "ir_link_peer_address=%s\n", settings->ir_link_peer_address);
+    fprintf(f, "ir_link_listen_port=%s\n", settings->ir_link_listen_port);
     fprintf(f, "show_shadows=%d\n", settings->show_shadows ? 1 : 0);
     fclose(f);
 }
@@ -2035,17 +2051,95 @@ static void show_about(menu_context_t *ctx) {
    for a name. One fixed name is the simplest method that operates for two instances on one machine.
    See ir_link.h for the transport. */
 static void ir_link_host_from_menu(menu_context_t *ctx) {
+    /* The two local items always use the named pipe. An earlier network item can have left the TCP
+       transport in place, thus each item selects its own transport before it starts. */
+    ir_link_set_transport(ctx->ir_link, IR_LINK_TRANSPORT_PIPE);
     ir_link_host(ctx->ir_link, IR_LINK_DEFAULT_PIPE_NAME);
     ir_link_refresh_title(ctx);
 }
 
 static void ir_link_connect_from_menu(menu_context_t *ctx) {
+    ir_link_set_transport(ctx->ir_link, IR_LINK_TRANSPORT_PIPE);
     ir_link_connect(ctx->ir_link, IR_LINK_DEFAULT_PIPE_NAME);
     ir_link_refresh_title(ctx);
 }
 
 static void ir_link_disconnect_from_menu(menu_context_t *ctx) {
     ir_link_disconnect(ctx->ir_link);
+    ir_link_refresh_title(ctx);
+}
+
+/* The dialog for the two network items of the IR Link menu. One dialog serves both, and the caller
+   gives the caption and the label. See IDD_IR_ADDRESS in resource.rc. */
+typedef struct {
+    const char *caption;
+    const char *label;
+    char address[256];
+} ir_address_dialog_data_t;
+
+static INT_PTR CALLBACK ir_address_dialog_proc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam) {
+    switch (msg) {
+    case WM_INITDIALOG: {
+        ir_address_dialog_data_t *data = (ir_address_dialog_data_t *)lparam;
+        SetWindowLongPtrA(hdlg, GWLP_USERDATA, (LONG_PTR)lparam);
+        SetWindowTextA(hdlg, data->caption);
+        SetDlgItemTextA(hdlg, IDC_IR_ADDRESS_LABEL, data->label);
+        SetDlgItemTextA(hdlg, IDC_IR_ADDRESS_EDIT, data->address);
+        SendDlgItemMessageA(hdlg, IDC_IR_ADDRESS_EDIT, EM_SETLIMITTEXT, sizeof(data->address) - 1, 0);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wparam) == IDOK) {
+            ir_address_dialog_data_t *data = (ir_address_dialog_data_t *)GetWindowLongPtrA(hdlg, GWLP_USERDATA);
+            GetDlgItemTextA(hdlg, IDC_IR_ADDRESS_EDIT, data->address, (int)sizeof(data->address));
+            if (data->address[0] == '\0') {
+                MessageBoxA(hdlg, "Enter an address.", "pokketstation", MB_ICONERROR);
+                return TRUE;
+            }
+            EndDialog(hdlg, IDOK);
+            return TRUE;
+        } else if (LOWORD(wparam) == IDCANCEL) {
+            EndDialog(hdlg, IDCANCEL);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
+/* IR Link > Host Over Network...
+   It asks for a port, and not for a full address. A host listens on each interface of this machine, thus
+   a peer can reach it at any address that the machine holds. */
+static void ir_link_host_net_from_menu(menu_context_t *ctx) {
+    ir_address_dialog_data_t data;
+    data.caption = "Host Over Network";
+    data.label = "Listen on this port. Give the peer the address of this machine and this port.";
+    snprintf(data.address, sizeof(data.address), "%s", ctx->settings->ir_link_listen_port);
+    if (DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_IR_ADDRESS), ctx->hwnd,
+            ir_address_dialog_proc, (LPARAM)&data) != IDOK) {
+        return;
+    }
+    snprintf(ctx->settings->ir_link_listen_port, sizeof(ctx->settings->ir_link_listen_port), "%s", data.address);
+    save_settings(ctx->settings, ctx->settings_path);
+    ir_link_set_transport(ctx->ir_link, IR_LINK_TRANSPORT_TCP);
+    ir_link_host(ctx->ir_link, data.address);
+    ir_link_refresh_title(ctx);
+}
+
+/* IR Link > Connect Over Network... */
+static void ir_link_connect_net_from_menu(menu_context_t *ctx) {
+    ir_address_dialog_data_t data;
+    data.caption = "Connect Over Network";
+    data.label = "Address of the machine that hosts the session, as host:port.";
+    snprintf(data.address, sizeof(data.address), "%s", ctx->settings->ir_link_peer_address);
+    if (DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_IR_ADDRESS), ctx->hwnd,
+            ir_address_dialog_proc, (LPARAM)&data) != IDOK) {
+        return;
+    }
+    snprintf(ctx->settings->ir_link_peer_address, sizeof(ctx->settings->ir_link_peer_address), "%s", data.address);
+    save_settings(ctx->settings, ctx->settings_path);
+    ir_link_set_transport(ctx->ir_link, IR_LINK_TRANSPORT_TCP);
+    ir_link_connect(ctx->ir_link, data.address);
     ir_link_refresh_title(ctx);
 }
 
@@ -2281,6 +2375,12 @@ static void SDLCALL handle_windows_message(void *userdata, void *hwnd, unsigned 
         break;
     case ID_IR_CONNECT:
         ir_link_connect_from_menu(ctx);
+        break;
+    case ID_IR_HOST_NET:
+        ir_link_host_net_from_menu(ctx);
+        break;
+    case ID_IR_CONNECT_NET:
+        ir_link_connect_net_from_menu(ctx);
         break;
     case ID_IR_DISCONNECT:
         ir_link_disconnect_from_menu(ctx);

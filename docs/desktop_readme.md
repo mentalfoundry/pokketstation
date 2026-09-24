@@ -57,18 +57,29 @@ A single-app load (`.pss` or `.mcs`) boots through the real BIOS menu, the same 
 
 ## IR Link
 
-Two separate copies of `pokketstation.exe`, **on the same Windows machine**, can exchange real IR signals. Each copy is an independent emulator, with its own window, its own loaded BIOS and app, and its own save state. IR is the only connection between them, the same as two real PocketStation units.
+Two separate copies of `pokketstation.exe` can exchange real IR signals, on one machine or across a network. Each copy is an independent emulator, with its own window, its own loaded BIOS and app, and its own save state. IR is the only connection between them, the same as two real PocketStation units.
 
-**To connect two copies:**
+**To connect two copies on one machine:**
 1. Start `pokketstation.exe` two times. For example, execute it one time, and then start it again with a double click, or start a second copy from a terminal. You then have two separate windows.
 2. In one window, select **IR Link > Host Session**. The title bar shows "IR - Waiting...".
 3. In the other window, select **IR Link > Connect**. The title bar shows "IR - Connecting..." until the two copies find each other, which is usually immediate. Both title bars then show "IR - Connected".
 4. Use each copy normally. The IR port operations of the loaded app now reach the other copy.
 5. **IR Link > Disconnect** ends the session, from either side, at any time.
 
+**To connect two machines:**
+1. On the machine that hosts, select **IR Link > Host Over Network...**. It asks for a port, and it offers 27411. Select OK. The title bar shows "IR - Waiting...".
+2. Give the other person the address of that machine and that port. Windows asks to permit the program on the network at the first host operation. The link needs that permission.
+3. On the other machine, select **IR Link > Connect Over Network...**. Give the address as `host:port`, for example `192.168.1.40:27411`, and select OK.
+4. Both title bars show "IR - Synchronizing..." for a moment, and then "IR - Connected". The step between them measures the difference between the two clocks of the machines, which the link needs before it carries any signal.
+5. Use each copy normally, and **IR Link > Disconnect** ends the session from either side.
+
 **Important data:**
-- This version does not ask for a pipe name or a session name. Host Session and Connect always use the same known local connection. Only one connected pair can be active on a machine at one time.
-- This function operates only between two copies on **one machine**. There is no network or remote play support.
+- The two local items, Host Session and Connect, always use the same known local connection. They do not ask for a name. Only one connected pair can be active on a machine at one time.
+- This app keeps the last address that you entered, and the port that you listen on, in `settings.cfg`. Thus a second session needs no retyping.
+- Across the internet, the machine that hosts needs a forwarded port on its router. On one local network no such step is necessary. A port that a router does not forward gives "IR - Connecting..." on the other machine and nothing more.
+- The network link accepts a connection from any address that can reach the port. There is no password. Use it on a network that you trust, or forward the port only while a session is active.
+- A network link adds the time of the network to the IR timing. On a local network that addition is small. Across the internet it is not, and no test of this project measures whether a real app tolerates it. Please report the result if you try it.
+- An address can be an IPv4 address, an IPv6 address in brackets such as `[fe80::1]:27411`, or a host name. The machine that hosts accepts both address families on one port.
 - Three actions end an active IR link automatically: a load of a different BIOS, app, or card; a press of **Reset**; and a **Load State** operation. All three actions reset the IR state of the emulator. Thus a link that stays connected through one of them loses synchronization with the other copy. Connect again through **IR Link > Connect** or **Host Session** after such an action, if you still need the link.
 - The IR timing is an inference. No test against real hardware confirms it. Two details in particular are inferences: the quantity of filtering that this emulator applies to a noisy signal, and the data that a receiving app reads during a transfer. No trace of an app in the test set of this project uses IR. If an app operates differently over the IR link than on real hardware, please report that condition. See [hardware-notes.md](hardware-notes.md#ir--ir-link) for the technical detail.
 

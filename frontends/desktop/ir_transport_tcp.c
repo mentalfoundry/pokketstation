@@ -141,7 +141,8 @@ static void tcp_close(ir_transport_t *t) {
     c->read_fill = 0;
     c->read_head = 0;
     c->connect_in_progress = 0;
-    c->peer_addr_len = 0;
+    c->peer_addr_count = 0;
+    c->peer_addr_index = 0;
     wsa_release(c);
     t->state = IR_TRANSPORT_IDLE;
     t->error[0] = 0;
@@ -186,6 +187,17 @@ static int tcp_host(ir_transport_t *t, const char *address) {
         if (s == INVALID_SOCKET) {
             continue;
         }
+        if (it->ai_family == AF_INET6) {
+            /* Serve both address families on one socket.
+               getaddrinfo with AI_PASSIVE gives the IPv6 wildcard address first, and Windows sets
+               IPV6_V6ONLY on a new IPv6 socket. Thus a host that binds that address with the default
+               option listens on "[::]" and refuses each IPv4 peer. A measurement shows the result: the
+               host reported "Waiting...", the client reported "Connecting...", and the connection of the
+               client stayed in SYN_SENT against 127.0.0.1. A peer usually gets an IPv4 address for the
+               machine of the host, thus that condition is the usual one and not a rare one. */
+            int v6_only = 0;
+            setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&v6_only, (int)sizeof(v6_only));
+        }
         /* A host that ends a session and hosts again finds its own port in the TIME_WAIT state of TCP.
            Without this option that second attempt fails, and the user sees an error for a port that
            nothing uses. */
@@ -210,20 +222,23 @@ static int tcp_host(ir_transport_t *t, const char *address) {
    named pipe. */
 static void try_client_connect(ir_transport_t *t) {
     ir_transport_tcp_t *c = &t->impl.tcp;
-    if (c->fd != INVALID_SOCKET) {
+    int slot = c->peer_addr_index;
+    if (c->fd != INVALID_SOCKET || c->peer_addr_count == 0) {
         return;
     }
-    c->fd = socket(c->peer_addr.ss_family, SOCK_STREAM, IPPROTO_TCP);
+    /* Move to the next candidate address, thus a later attempt uses a different family if this one gives
+       no connection. */
+    c->peer_addr_index = (c->peer_addr_index + 1) % c->peer_addr_count;
+    c->fd = socket(c->peer_addr[slot].ss_family, SOCK_STREAM, IPPROTO_TCP);
     if (c->fd == INVALID_SOCKET) {
-        set_error(t, "Couldn't make a socket", WSAGetLastError());
-        return;
+        return; /* this family is not available on this machine: the next call uses the next candidate */
     }
     if (!set_non_blocking(c->fd)) {
         set_error(t, "Couldn't set the socket mode", WSAGetLastError());
         close_socket(&c->fd);
         return;
     }
-    if (connect(c->fd, (const struct sockaddr *)&c->peer_addr, c->peer_addr_len) == 0) {
+    if (connect(c->fd, (const struct sockaddr *)&c->peer_addr[slot], c->peer_addr_len[slot]) == 0) {
         on_connected(t); /* a loopback connection can be immediately successful */
         return;
     }
@@ -288,9 +303,25 @@ static int tcp_connect(ir_transport_t *t, const char *address) {
         set_error(t, "Couldn't resolve the address of the peer", err);
         return 0;
     }
-    memcpy(&c->peer_addr, result->ai_addr, result->ai_addrlen);
-    c->peer_addr_len = (int)result->ai_addrlen;
+    {
+        struct addrinfo *it;
+        c->peer_addr_count = 0;
+        c->peer_addr_index = 0;
+        for (it = result; it != NULL && c->peer_addr_count < (int)IR_TRANSPORT_MAX_PEER_ADDRESSES;
+             it = it->ai_next) {
+            if (it->ai_addrlen > sizeof(c->peer_addr[0])) {
+                continue;
+            }
+            memcpy(&c->peer_addr[c->peer_addr_count], it->ai_addr, it->ai_addrlen);
+            c->peer_addr_len[c->peer_addr_count] = (int)it->ai_addrlen;
+            c->peer_addr_count++;
+        }
+    }
     freeaddrinfo(result);
+    if (c->peer_addr_count == 0) {
+        set_error(t, "Couldn't resolve the address of the peer", 0);
+        return 0;
+    }
 
     t->state = IR_TRANSPORT_CONNECTING;
     try_client_connect(t);

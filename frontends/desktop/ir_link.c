@@ -61,6 +61,17 @@ void ir_link_disconnect(ir_link_t *link) {
     set_status(link, "Idle");
 }
 
+void ir_link_set_transport(ir_link_t *link, ir_link_transport_kind_t kind) {
+    /* Close the current transport first. Each initializer below zeroes the ir_transport_t, thus a call
+       with an open handle or socket in it would lose that handle. */
+    ir_link_disconnect(link);
+    if (kind == IR_LINK_TRANSPORT_TCP) {
+        ir_transport_init_tcp(&link->transport);
+    } else {
+        ir_transport_init_pipe(&link->transport);
+    }
+}
+
 int ir_link_is_active(const ir_link_t *link) {
     return link->state != IR_LINK_IDLE;
 }

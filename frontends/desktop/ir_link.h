@@ -301,6 +301,11 @@ typedef enum {
    measures 0 for the named pipe, where both processes read the same wall clock. */
 void ir_link_init(ir_link_t *link, ir_link_transport_kind_t kind);
 
+/* Closes any link that is present, and then changes the transport to `kind`.
+   It keeps each value of the link that is not part of a connection: show_diagnostics and the counters.
+   Thus a frontend can offer both a local link and a network link on one ir_link_t. */
+void ir_link_set_transport(ir_link_t *link, ir_link_transport_kind_t kind);
+
 /* Makes the endpoint at `address`, and then listens for a peer.
    It returns 1 if the operation is successful. The state "this instance still waits for a peer" is
    success, and not an error.

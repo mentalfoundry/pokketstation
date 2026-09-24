@@ -12,6 +12,11 @@
 #define IDD_REMAP_CONTROLS 205
 #define IDD_CAPTURE_PROMPT 206
 #define IDD_ABOUT 207
+/* IR Link > Host Over Network... and Connect Over Network... both use this one
+   dialog. It holds one address field. The caption and the label text come from
+   main.c, because the host side asks for a port to listen on and the client side
+   asks for the address of a peer. */
+#define IDD_IR_ADDRESS 208
 
 #define IDC_HWID_EDIT 1001
 #define IDC_PIXEL_HEX 1002
@@ -52,6 +57,11 @@
 #define IDC_CUSTOM_BG_LABEL 1039
 #define IDC_SCREEN_CHOOSE 1040
 #define IDC_SHADOWS_ENABLE 1041
+/* IDD_IR_ADDRESS: the one address field, and the label above it. main.c sets the
+   label text, because the host side and the client side ask for different
+   things. */
+#define IDC_IR_ADDRESS_EDIT 1042
+#define IDC_IR_ADDRESS_LABEL 1043
 
 #define ID_FILE_OPEN_BIOS 1101
 #define ID_FILE_OPEN_APP 1102
@@ -75,6 +85,12 @@
 #define ID_IR_HOST 1119
 #define ID_IR_CONNECT 1120
 #define ID_IR_DISCONNECT 1121
+/* IR Link > Host Over Network... and Connect Over Network..., the TCP pair of
+   ID_IR_HOST and ID_IR_CONNECT above. The two local items keep one fixed pipe
+   name and need no dialog. These two ask for an address, thus they carry an
+   ellipsis. ID_IR_DISCONNECT ends a link of either kind. */
+#define ID_IR_HOST_NET 1149
+#define ID_IR_CONNECT_NET 1150
 /* Tools > Date/Time Override. A radio set: exactly one is checked, and
    "Default" means the frontend does not interfere, so the BIOS's own system
    menus work normally.

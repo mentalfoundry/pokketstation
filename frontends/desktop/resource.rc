@@ -94,8 +94,17 @@ BEGIN
     END
     POPUP "&IR Link"
     BEGIN
+        /* The first pair is the local link, between two windows on this machine.
+           It uses one fixed pipe name, thus it needs no dialog and takes no
+           ellipsis. The second pair is the network link, which must ask for a
+           port or for the address of a peer. Disconnect ends a link of either
+           kind. */
         MENUITEM "&Host Session", ID_IR_HOST
         MENUITEM "&Connect", ID_IR_CONNECT
+        MENUITEM SEPARATOR
+        MENUITEM "Host Over &Network...", ID_IR_HOST_NET
+        MENUITEM "Connect Over Net&work...", ID_IR_CONNECT_NET
+        MENUITEM SEPARATOR
         MENUITEM "&Disconnect", ID_IR_DISCONNECT
     END
     POPUP "&View"
@@ -120,6 +129,21 @@ BEGIN
     BEGIN
         MENUITEM "&About pokketstation...", ID_HELP_ABOUT
     END
+END
+
+/* One dialog for both network items of the IR Link menu. main.c gives it the
+   caption and the label, because the host side asks for a port to listen on and
+   the client side asks for the address of a peer. The field is wide enough for a
+   host name with a port, and for an IPv6 address in brackets. */
+IDD_IR_ADDRESS DIALOGEX 0, 0, 240, 74
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "IR Link"
+FONT 8, "MS Shell Dlg"
+BEGIN
+    LTEXT           "Address:", IDC_IR_ADDRESS_LABEL, 7, 7, 226, 20
+    EDITTEXT        IDC_IR_ADDRESS_EDIT, 7, 30, 226, 14, ES_AUTOHSCROLL
+    DEFPUSHBUTTON   "OK",     IDOK,     126, 52, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 183, 52, 50, 14
 END
 
 IDD_HWID DIALOGEX 0, 0, 190, 70

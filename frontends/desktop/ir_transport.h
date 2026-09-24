@@ -76,6 +76,11 @@ typedef struct ir_transport_pipe {
 /* The port that an address with no port uses. It has no assignment from any registry. */
 #define IR_TRANSPORT_DEFAULT_TCP_PORT "27411"
 
+/* The number of resolved addresses of the peer that a client keeps. A name with one address in each
+   family needs two. This value holds more than that, and it stays small because a point-to-point link
+   needs one reachable address and not a full list. */
+#define IR_TRANSPORT_MAX_PEER_ADDRESSES 4u
+
 /* The TCP transport, for two machines.
    An address is "host:port", "[v6address]:port", ":port", or a bare port. A host side with no host part
    listens on each interface of the machine.
@@ -87,11 +92,16 @@ typedef struct ir_transport_tcp {
     SOCKET fd;        /* the connected socket */
     SOCKET listen_fd; /* the listening socket. The host side closes it when a peer arrives. */
     int wsa_held;
-    /* The address of the peer, resolved one time by ir_transport_connect. A connection that is refused
+    /* The addresses of the peer, resolved one time by ir_transport_connect. A connection that is refused
        tries again at each poll call, in the manner of the named pipe, and a stored address keeps that
-       repetition off the name resolver. */
-    struct sockaddr_storage peer_addr;
-    int peer_addr_len;
+       repetition off the name resolver.
+       A name can give an address in each family, and only one of them can be reachable. Thus this code
+       keeps several candidates and moves to the next one at each attempt that fails. One stored address
+       would try one family for the life of the link. */
+    struct sockaddr_storage peer_addr[IR_TRANSPORT_MAX_PEER_ADDRESSES];
+    int peer_addr_len[IR_TRANSPORT_MAX_PEER_ADDRESSES];
+    int peer_addr_count;
+    int peer_addr_index;
     int connect_in_progress;
 
     uint8_t read_buf[IR_TRANSPORT_READ_BUFFER_SIZE];
