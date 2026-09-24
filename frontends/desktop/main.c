@@ -2582,7 +2582,7 @@ int main(int argc, char **argv) {
     int cpu_faulted_reported = 0;
 
     ir_link_t ir_link;
-    ir_link_init(&ir_link);
+    ir_link_init(&ir_link, IR_LINK_TRANSPORT_PIPE);
     /* After ir_link_init, which zeroes the struct. Off unless settings.cfg asks for it. */
     ir_link.show_diagnostics = settings.ir_link_diagnostics;
 

@@ -22,10 +22,10 @@ enable_language(RC)
 # alongside the SDL window by default. main() still gets a normal argc/argv
 # via SDL2::SDL2main's WinMain shim; pass --console to opt back into a
 # visible console for stderr diagnostics (see main.c).
-add_executable(pokketstation_desktop WIN32 main.c ir_link.c ir_transport_pipe.c content_writeback.c resource.rc)
+add_executable(pokketstation_desktop WIN32 main.c ir_link.c ir_transport.c ir_transport_pipe.c ir_transport_tcp.c content_writeback.c resource.rc)
 # comctl32 - the About dialog's SysLink control (Help > About's clickable
 # repo link); shell32 - ShellExecuteA, to actually open it in a browser.
-target_link_libraries(pokketstation_desktop PRIVATE psemu SDL2::SDL2 SDL2::SDL2main comdlg32 comctl32 shell32)
+target_link_libraries(pokketstation_desktop PRIVATE psemu SDL2::SDL2 SDL2::SDL2main comdlg32 comctl32 shell32 ws2_32)
 
 # CMake target name stays pokketstation_desktop (matches the
 # pokketstation_libretro/pokketstation_vita naming convention and anything
@@ -39,9 +39,9 @@ set_target_properties(pokketstation_desktop PROPERTIES OUTPUT_NAME "pokketstatio
 # test turns flaky and slow when it runs automatically.
 # Run it by hand after a change to ir_link.c or to a transport. The --bytes and --burst modes need no
 # BIOS and no save state, thus they run at any time.
-add_executable(ir_link_selftest ir_link_selftest.c ir_link.c ir_transport_pipe.c)
+add_executable(ir_link_selftest ir_link_selftest.c ir_link.c ir_transport.c ir_transport_pipe.c ir_transport_tcp.c)
 target_include_directories(ir_link_selftest PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
-target_link_libraries(ir_link_selftest PRIVATE psemu)
+target_link_libraries(ir_link_selftest PRIVATE psemu ws2_32)
 
 # Unlike ir_link_selftest this one IS wired into CTest - see its top comment. It covers the only code
 # here that overwrites a file the user supplied, and it does so with plain file operations that have no

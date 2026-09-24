@@ -2,6 +2,11 @@
 #define POKKETSTATION_IR_TRANSPORT_H
 
 #define WIN32_LEAN_AND_MEAN
+/* Before windows.h. WIN32_LEAN_AND_MEAN holds the version 1 winsock.h out of windows.h, and this order
+   keeps the version 2 headers the only ones that this file uses. The two versions do not agree on the
+   same names. */
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 
 #include <stddef.h>
@@ -68,6 +73,34 @@ typedef struct ir_transport_pipe {
     char name[256];
 } ir_transport_pipe_t;
 
+/* The port that an address with no port uses. It has no assignment from any registry. */
+#define IR_TRANSPORT_DEFAULT_TCP_PORT "27411"
+
+/* The TCP transport, for two machines.
+   An address is "host:port", "[v6address]:port", ":port", or a bare port. A host side with no host part
+   listens on each interface of the machine.
+
+   This transport uses non-blocking sockets, and not overlapped I/O. The model of this interface is "test
+   what is ready and return immediately", and a non-blocking socket gives that model directly. Overlapped
+   I/O would add a completion object for each operation and give nothing more here. */
+typedef struct ir_transport_tcp {
+    SOCKET fd;        /* the connected socket */
+    SOCKET listen_fd; /* the listening socket. The host side closes it when a peer arrives. */
+    int wsa_held;
+    /* The address of the peer, resolved one time by ir_transport_connect. A connection that is refused
+       tries again at each poll call, in the manner of the named pipe, and a stored address keeps that
+       repetition off the name resolver. */
+    struct sockaddr_storage peer_addr;
+    int peer_addr_len;
+    int connect_in_progress;
+
+    uint8_t read_buf[IR_TRANSPORT_READ_BUFFER_SIZE];
+    uint32_t read_fill;
+    uint32_t read_head;
+
+    char name[256];
+} ir_transport_tcp_t;
+
 struct ir_transport;
 typedef struct ir_transport ir_transport_t;
 
@@ -90,12 +123,17 @@ struct ir_transport {
        embed, thus this file needs no allocation. */
     union {
         ir_transport_pipe_t pipe;
+        ir_transport_tcp_t tcp;
     } impl;
 };
 
 /* Prepares `t` as a local named-pipe transport. The transport is idle after this call.
    Call ir_transport_close before you prepare the same ir_transport_t a second time. */
 void ir_transport_init_pipe(ir_transport_t *t);
+
+/* Prepares `t` as a TCP transport, for a peer on a different machine. The transport is idle after this
+   call. Call ir_transport_close before you prepare the same ir_transport_t a second time. */
+void ir_transport_init_tcp(ir_transport_t *t);
 
 /* Makes the endpoint at `address` and listens for a peer.
    It gives 1 if the operation is successful. The state "this endpoint still waits for a peer" is

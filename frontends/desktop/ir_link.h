@@ -292,7 +292,14 @@ typedef struct ir_link {
     char status[128]; /* human-readable text for ir_link_status_text, for example a window-title suffix */
 } ir_link_t;
 
-void ir_link_init(ir_link_t *link);
+typedef enum {
+    IR_LINK_TRANSPORT_PIPE, /* two processes on one machine. The address is a named-pipe name. */
+    IR_LINK_TRANSPORT_TCP   /* two machines. The address is "host:port", and see ir_transport.h. */
+} ir_link_transport_kind_t;
+
+/* Prepares a link that uses `kind` for its transport. The clock measurement operates for each kind. It
+   measures 0 for the named pipe, where both processes read the same wall clock. */
+void ir_link_init(ir_link_t *link, ir_link_transport_kind_t kind);
 
 /* Makes the endpoint at `address`, and then listens for a peer.
    It returns 1 if the operation is successful. The state "this instance still waits for a peer" is

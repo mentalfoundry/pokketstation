@@ -38,10 +38,16 @@ static void set_status(ir_link_t *link, const char *text) {
     snprintf(link->status, sizeof(link->status), "%s", text);
 }
 
-void ir_link_init(ir_link_t *link) {
+void ir_link_init(ir_link_t *link, ir_link_transport_kind_t kind) {
     ZeroMemory(link, sizeof(*link));
     link->state = IR_LINK_IDLE;
-    ir_transport_init_pipe(&link->transport);
+    /* The transport initializer zeroes its own ir_transport_t, thus it runs after the ZeroMemory call
+       above and not before it. */
+    if (kind == IR_LINK_TRANSPORT_TCP) {
+        ir_transport_init_tcp(&link->transport);
+    } else {
+        ir_transport_init_pipe(&link->transport);
+    }
     set_status(link, "Idle");
 }
 

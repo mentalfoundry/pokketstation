@@ -1,7 +1,13 @@
-/* A verification tool for the real Windows named-pipe transport in ir_transport_pipe.c, and for the
-   timing above it in ir_link.c. Start it manually.
+/* A verification tool for the real transports in ir_transport_pipe.c and ir_transport_tcp.c, and for the
+   timing above them in ir_link.c. Start it manually.
    It is not part of the automatic CTest suite.
    tests/ir_test.c tests the state machine in core/src/ir.c, with no transport.
+
+   A --tcp first argument moves whichever mode follows it onto the TCP transport, on the loopback
+   interface. Without it, each mode uses the local named pipe. The modes are the same for both, thus one
+   set of tests covers both transports:
+
+     ir_link_selftest [--tcp] ...
 
    Three modes need no BIOS and no save state, thus they run at any time:
 
@@ -72,6 +78,29 @@
 #define RX_ACTIVE_MODE (IR_MODE_BFLT) /* receive, filter disabled for an immediate assert in this test */
 
 #define SELFTEST_PIPE_NAME "\\\\.\\pipe\\pokketstation_ir_link_selftest"
+/* The loopback interface. Thus a TCP run of this tool needs no network and no second machine, and it
+   still uses the real socket path: a real connect, a real accept, and a real byte stream. */
+#define SELFTEST_TCP_ADDRESS "127.0.0.1:27412"
+
+/* A --tcp first argument moves each mode of this tool onto the TCP transport. Without it, each mode uses
+   the local named pipe. The modes are the same, thus one set of tests covers both transports. */
+static int g_use_tcp = 0;
+
+static const char *selftest_address(void) {
+    return g_use_tcp ? SELFTEST_TCP_ADDRESS : SELFTEST_PIPE_NAME;
+}
+
+static void selftest_link_init(ir_link_t *link) {
+    ir_link_init(link, g_use_tcp ? IR_LINK_TRANSPORT_TCP : IR_LINK_TRANSPORT_PIPE);
+}
+
+static void selftest_transport_init(ir_transport_t *t) {
+    if (g_use_tcp) {
+        ir_transport_init_tcp(t);
+    } else {
+        ir_transport_init_pipe(t);
+    }
+}
 
 static int pump_until(ir_link_t *a, psemu_t *ps_a, ir_link_t *b, psemu_t *ps_b, int max_iterations,
     int (*done)(ir_link_t *, ir_link_t *)) {
@@ -176,13 +205,13 @@ static int run_transfer(const char *bios_path, const char *app_path, const char 
     psemu_set_hardware_id(a, id_a);
     psemu_set_hardware_id(b, id_b);
 
-    ir_link_init(&host_link);
-    ir_link_init(&client_link);
-    if (!ir_link_host(&host_link, SELFTEST_PIPE_NAME)) {
+    selftest_link_init(&host_link);
+    selftest_link_init(&client_link);
+    if (!ir_link_host(&host_link, selftest_address())) {
         fprintf(stderr, "ir_link_host failed: %s\n", ir_link_status_text(&host_link));
         return 1;
     }
-    ir_link_connect(&client_link, SELFTEST_PIPE_NAME);
+    ir_link_connect(&client_link, selftest_address());
     if (!pump_until(&host_link, a, &client_link, b, 2000, both_connected)) {
         fprintf(stderr, "never connected\n");
         return 1;
@@ -218,7 +247,7 @@ static int run_transfer(const char *bios_path, const char *app_path, const char 
     if (a_has_b) {
         printf("A holds B's id 0x%08X at 0x%08X\n", id_b, addr);
     }
-    printf("\nIR TRANSFER OVER REAL PIPE: A->B %s, B->A %s\n", b_has_a ? "VERIFIED" : "not seen",
+    printf("\nIR TRANSFER OVER THE REAL TRANSPORT: A->B %s, B->A %s\n", b_has_a ? "VERIFIED" : "not seen",
         a_has_b ? "VERIFIED" : "not seen");
 
     ir_link_disconnect(&host_link);
@@ -299,14 +328,14 @@ static int run_role(int is_host, const char *bios_path, const char *app_path, co
         }
     }
 
-    ir_link_init(&link);
+    selftest_link_init(&link);
     if (is_host) {
-        if (!ir_link_host(&link, SELFTEST_PIPE_NAME)) {
+        if (!ir_link_host(&link, selftest_address())) {
             fprintf(stderr, "[%s] ir_link_host failed: %s\n", tag, ir_link_status_text(&link));
             return 2;
         }
     } else {
-        ir_link_connect(&link, SELFTEST_PIPE_NAME);
+        ir_link_connect(&link, selftest_address());
     }
     {
         int i;
@@ -396,17 +425,17 @@ static int run_sync(long seconds, int64_t injected_offset_us) {
     long f;
     int ok = 1;
 
-    ir_link_init(&host_link);
-    ir_link_init(&client_link);
+    selftest_link_init(&host_link);
+    selftest_link_init(&client_link);
     /* The client operates on a clock that is injected_offset_us ahead of the clock of the host. Thus the
        host must measure +injected_offset_us for its peer, and the client must measure the negative of
        that value. */
     client_link.test_wall_offset_us = injected_offset_us;
-    if (!ir_link_host(&host_link, SELFTEST_PIPE_NAME)) {
+    if (!ir_link_host(&host_link, selftest_address())) {
         fprintf(stderr, "ir_link_host failed: %s\n", ir_link_status_text(&host_link));
         return 1;
     }
-    ir_link_connect(&client_link, SELFTEST_PIPE_NAME);
+    ir_link_connect(&client_link, selftest_address());
 
     for (f = 0; f < frames; f++) {
         ir_link_pump(&host_link, ps_a);
@@ -547,13 +576,13 @@ static int run_byte_fidelity(unsigned long total) {
     unsigned host_chunk = 0, client_chunk = 0;
     int i;
 
-    ir_transport_init_pipe(&host);
-    ir_transport_init_pipe(&client);
-    if (!ir_transport_host(&host, SELFTEST_PIPE_NAME)) {
+    selftest_transport_init(&host);
+    selftest_transport_init(&client);
+    if (!ir_transport_host(&host, selftest_address())) {
         fprintf(stderr, "ir_transport_host failed: %s\n", host.error);
         return 1;
     }
-    ir_transport_connect(&client, SELFTEST_PIPE_NAME);
+    ir_transport_connect(&client, selftest_address());
     for (i = 0; i < 2000; i++) {
         ir_transport_poll(&host);
         ir_transport_poll(&client);
@@ -587,7 +616,7 @@ static int run_byte_fidelity(unsigned long total) {
         fprintf(stderr, "FAIL: the transport did not relay every byte one time and in order\n");
         return 1;
     }
-    printf("PASS: %lu bytes crossed the pipe in each direction, in order, with no loss\n", total);
+    printf("PASS: %lu bytes crossed the transport in each direction, in order, with no loss\n", total);
     return 0;
 }
 
@@ -623,18 +652,18 @@ static int run_burst(unsigned long edge_count, int64_t injected_offset_us) {
         }
     }
 
-    ir_link_init(&host_link);
-    ir_link_init(&client_link);
+    selftest_link_init(&host_link);
+    selftest_link_init(&client_link);
     /* The receiving side operates on a clock that is this far from the clock of the sender. A count of the
        edges and an order of the levels cannot show whether the code applies the measured offset: each
        edge still reaches the queue with the incorrect offset. The test of the lead below is the check that
        shows it. See test_wall_offset_us in ir_link.h. */
     client_link.test_wall_offset_us = injected_offset_us;
-    if (!ir_link_host(&host_link, SELFTEST_PIPE_NAME)) {
+    if (!ir_link_host(&host_link, selftest_address())) {
         fprintf(stderr, "ir_link_host failed: %s\n", ir_link_status_text(&host_link));
         return 1;
     }
-    ir_link_connect(&client_link, SELFTEST_PIPE_NAME);
+    ir_link_connect(&client_link, selftest_address());
     if (!pump_until(&host_link, ps_tx, &client_link, ps_rx, 2000, both_connected)) {
         fprintf(stderr, "never connected: host=%s client=%s\n", ir_link_status_text(&host_link),
             ir_link_status_text(&client_link));
@@ -743,7 +772,7 @@ static int run_burst(unsigned long edge_count, int64_t injected_offset_us) {
     if (!ok) {
         return 1;
     }
-    printf("PASS: %lu edges crossed the pipe as one group, in order, with no loss\n", edge_count);
+    printf("PASS: %lu edges crossed the link as one group, in order, with no loss\n", edge_count);
     return 0;
 }
 
@@ -751,6 +780,16 @@ int main(int argc, char **argv) {
     ir_link_t host_link, client_link;
     psemu_t *ps_tx;
     psemu_t *ps_rx;
+
+    /* A --tcp first argument selects the TCP transport for whichever mode follows it. The remaining
+       arguments then shift by one, thus each mode reads them from the same positions as before. */
+    if (argc >= 2 && strcmp(argv[1], "--tcp") == 0) {
+        g_use_tcp = 1;
+        argv[1] = argv[0];
+        argv++;
+        argc--;
+        printf("transport: TCP on %s\n", selftest_address());
+    }
 
     if (argc >= 2 && strcmp(argv[1], "--bytes") == 0) {
         return run_byte_fidelity(argc >= 3 ? strtoul(argv[2], NULL, 10) : 262144ul);
@@ -775,14 +814,14 @@ int main(int argc, char **argv) {
     ps_tx = psemu_create();
     ps_rx = psemu_create();
 
-    ir_link_init(&host_link);
-    ir_link_init(&client_link);
+    selftest_link_init(&host_link);
+    selftest_link_init(&client_link);
 
-    if (!ir_link_host(&host_link, SELFTEST_PIPE_NAME)) {
+    if (!ir_link_host(&host_link, selftest_address())) {
         fprintf(stderr, "ir_link_host failed: %s\n", ir_link_status_text(&host_link));
         return 1;
     }
-    ir_link_connect(&client_link, SELFTEST_PIPE_NAME);
+    ir_link_connect(&client_link, selftest_address());
 
     if (!pump_until(&host_link, ps_tx, &client_link, ps_rx, 2000, both_connected)) {
         fprintf(stderr, "never connected: host=%s client=%s\n", ir_link_status_text(&host_link),
@@ -829,7 +868,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("PASS: an edge written on one psemu_t's IR TX registers relayed over the named pipe and asserted "
+    printf("PASS: an edge written on one psemu_t's IR TX registers relayed over the link and asserted "
            "INT_IRDA on a separate psemu_t\n");
 
     ir_link_disconnect(&host_link);
