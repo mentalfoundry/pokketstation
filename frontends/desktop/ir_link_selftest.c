@@ -1,6 +1,18 @@
-/* A verification tool for the real Windows named-pipe transport in ir_link.c. Start it manually.
+/* A verification tool for the real Windows named-pipe transport in ir_transport_pipe.c, and for the
+   timing above it in ir_link.c. Start it manually.
    It is not part of the automatic CTest suite.
    tests/ir_test.c tests the state machine in core/src/ir.c, with no transport.
+
+   Two modes need no BIOS and no save state, thus they run at any time:
+
+     ir_link_selftest --bytes [total]
+     ir_link_selftest --burst [edges]
+
+   --bytes tests the transport alone. Both endpoints send the same number of bytes at the same time, in
+   uneven chunks, and each byte must arrive one time and in order. This mode covers the read buffer, the
+   partial-write path, and a concurrent read and write on one handle.
+   --burst tests ir_link.c with a group of edges near the size of a real IR message. The single-edge
+   mode moves one edge, thus it cannot show a lost message or a message in the incorrect order.
 
    This tool operates two ir_link_t endpoints, a host and a client, on a real named pipe in one process.
    It writes an edge to the IR TX registers of one psemu_t instance.
@@ -333,10 +345,220 @@ static int run_role(int is_host, const char *bios_path, const char *app_path, co
     return holds_peer ? 0 : 1;
 }
 
+/* The byte pattern of the fidelity mode below. It is a function of the index only, thus neither side
+   has to keep a copy of the data that it sent. */
+static uint8_t stream_byte(unsigned long index) {
+    return (uint8_t)(index * 31u + 7u);
+}
+
+/* Offers one chunk to the transport, and then takes each byte that the transport has ready.
+   The chunk sizes are uneven, and some of them are larger than the buffers of the transport. Thus this
+   loop makes partial sends and split reads, which a test with one fixed size of 16 bytes never makes.
+   A byte that arrives out of order, two times, or not at all increases *mismatches or leaves *received
+   below the total. */
+static void pump_byte_stream(ir_transport_t *t, unsigned long total, unsigned long *sent,
+    unsigned long *received, unsigned long *mismatches, unsigned *chunk_index) {
+    static const size_t chunk_sizes[] = {1, 7, 13, 16, 17, 255, 1000, 4095, 4096, 5000};
+    static const unsigned chunk_size_count = (unsigned)(sizeof(chunk_sizes) / sizeof(chunk_sizes[0]));
+    uint8_t buf[6000];
+    if (*sent < total) {
+        size_t want = chunk_sizes[*chunk_index % chunk_size_count];
+        size_t i, took;
+        if (want > total - *sent) {
+            want = (size_t)(total - *sent);
+        }
+        for (i = 0; i < want; i++) {
+            buf[i] = stream_byte(*sent + i);
+        }
+        took = ir_transport_send(t, buf, want);
+        if (took == want) {
+            (*chunk_index)++; /* a full chunk went, thus the next call uses the next size */
+        }
+        *sent += (unsigned long)took;
+    }
+    for (;;) {
+        size_t got = ir_transport_recv(t, buf, sizeof(buf));
+        size_t i;
+        if (got == 0) {
+            break;
+        }
+        for (i = 0; i < got; i++) {
+            if (buf[i] != stream_byte(*received + i)) {
+                (*mismatches)++;
+            }
+        }
+        *received += (unsigned long)got;
+    }
+}
+
+/* Byte fidelity of the transport, with no psemu_t and no wire message.
+   ir_transport.h gives a byte stream and keeps no message boundary. This mode confirms that property
+   directly: each side sends the same number of bytes, both directions operate at the same time on one
+   handle, and each byte must arrive one time and in order.
+   This mode covers the read buffer, the partial-write path, and the concurrent read and write on one
+   handle. The single-edge mode above covers only 16 bytes in one direction. */
+static int run_byte_fidelity(unsigned long total) {
+    ir_transport_t host, client;
+    unsigned long host_sent = 0, host_received = 0, host_bad = 0;
+    unsigned long client_sent = 0, client_received = 0, client_bad = 0;
+    unsigned host_chunk = 0, client_chunk = 0;
+    int i;
+
+    ir_transport_init_pipe(&host);
+    ir_transport_init_pipe(&client);
+    if (!ir_transport_host(&host, SELFTEST_PIPE_NAME)) {
+        fprintf(stderr, "ir_transport_host failed: %s\n", host.error);
+        return 1;
+    }
+    ir_transport_connect(&client, SELFTEST_PIPE_NAME);
+    for (i = 0; i < 2000; i++) {
+        ir_transport_poll(&host);
+        ir_transport_poll(&client);
+        if (host.state == IR_TRANSPORT_CONNECTED && client.state == IR_TRANSPORT_CONNECTED) {
+            break;
+        }
+        Sleep(1);
+    }
+    if (host.state != IR_TRANSPORT_CONNECTED || client.state != IR_TRANSPORT_CONNECTED) {
+        fprintf(stderr, "never connected: host=%d client=%d\n", (int)host.state, (int)client.state);
+        return 1;
+    }
+
+    for (i = 0; i < 2000000; i++) {
+        pump_byte_stream(&host, total, &host_sent, &host_received, &host_bad, &host_chunk);
+        pump_byte_stream(&client, total, &client_sent, &client_received, &client_bad, &client_chunk);
+        if (host.state != IR_TRANSPORT_CONNECTED || client.state != IR_TRANSPORT_CONNECTED) {
+            fprintf(stderr, "transport fault: host=%s client=%s\n", host.error, client.error);
+            return 1;
+        }
+        if (host_received >= total && client_received >= total) {
+            break;
+        }
+    }
+
+    printf("host  sent=%lu received=%lu mismatches=%lu\n", host_sent, host_received, host_bad);
+    printf("client sent=%lu received=%lu mismatches=%lu\n", client_sent, client_received, client_bad);
+    ir_transport_close(&host);
+    ir_transport_close(&client);
+    if (host_received != total || client_received != total || host_bad != 0 || client_bad != 0) {
+        fprintf(stderr, "FAIL: the transport did not relay every byte one time and in order\n");
+        return 1;
+    }
+    printf("PASS: %lu bytes crossed the pipe in each direction, in order, with no loss\n", total);
+    return 0;
+}
+
+/* A full group of edges across the link, with no BIOS and no save state.
+   One real IR message makes approximately 658 edges. The single-edge mode above moves one edge, thus it
+   cannot show a fault that needs a full group: a lost message, a message in the incorrect order, or a
+   frame boundary that moves.
+   A frame boundary that moves needs no separate test here. Each wire message holds IR_WIRE_MAGIC, and
+   ir_link.c tests that value for each message that it assembles. Thus a boundary that moves by one byte
+   puts the link into IR_LINK_ERROR immediately, and this mode reports that state.
+   The gaps between the edges are uneven, and the count is near the count of a real message. */
+static int run_burst(unsigned long edge_count) {
+    ir_link_t host_link, client_link;
+    psemu_t *ps_tx = psemu_create();
+    psemu_t *ps_rx = psemu_create();
+    unsigned long i;
+    int ok = 1;
+
+    ir_link_init(&host_link);
+    ir_link_init(&client_link);
+    if (!ir_link_host(&host_link, SELFTEST_PIPE_NAME)) {
+        fprintf(stderr, "ir_link_host failed: %s\n", ir_link_status_text(&host_link));
+        return 1;
+    }
+    ir_link_connect(&client_link, SELFTEST_PIPE_NAME);
+    if (!pump_until(&host_link, ps_tx, &client_link, ps_rx, 2000, both_connected)) {
+        fprintf(stderr, "never connected: host=%s client=%s\n", ir_link_status_text(&host_link),
+            ir_link_status_text(&client_link));
+        return 1;
+    }
+
+    psemu_bus_write32(&ps_tx->bus, IRDA_MODE, TX_ACTIVE_MODE);
+    psemu_bus_write32(&ps_rx->bus, IRDA_MODE, RX_ACTIVE_MODE);
+
+    /* Make the full group before any pump call. The frontend also collects the edges of one frame and
+       then relays them together.
+       The gaps are 300 and 600 cycles. Both are larger than IR_TX_FALL_STRETCH_CYCLES (200, in ir.c),
+       thus a stretched falling edge stays before the pulse that follows it. */
+    for (i = 0; i < edge_count; i++) {
+        psemu_bus_write32(&ps_tx->bus, IRDA_DATA, (i & 1u) ? 0u : IR_DATA_LED);
+        ir_tick(&ps_tx->ir, &ps_tx->intc, (i % 3u == 0u) ? 600u : 300u);
+    }
+
+    /* This mode never calls ir_tick on ps_rx. Thus no edge becomes due, and rx_queue holds the full
+       group for the comparison below. */
+    for (i = 0; i < 20000 && client_link.edges_received < edge_count; i++) {
+        ir_link_pump(&host_link, ps_tx);
+        ir_link_pump(&client_link, ps_rx);
+        if (host_link.state != IR_LINK_CONNECTED || client_link.state != IR_LINK_CONNECTED) {
+            break;
+        }
+        Sleep(1);
+    }
+
+    printf("host  state=%s tx=%lu drop=%lu\n", ir_link_status_text(&host_link), host_link.edges_sent,
+        host_link.dropped_tx);
+    printf("client state=%s rx=%lu queued=%lu\n", ir_link_status_text(&client_link), client_link.edges_received,
+        (unsigned long)ps_rx->ir.rx_queue.count);
+
+    if (host_link.state != IR_LINK_CONNECTED || client_link.state != IR_LINK_CONNECTED) {
+        fprintf(stderr, "FAIL: the link left the connected state during the group\n");
+        ok = 0;
+    }
+    if (host_link.edges_sent != edge_count || host_link.dropped_tx != 0) {
+        fprintf(stderr, "FAIL: the sender did not queue every edge\n");
+        ok = 0;
+    }
+    if (client_link.edges_received != edge_count) {
+        fprintf(stderr, "FAIL: the receiver got %lu of %lu edges\n", client_link.edges_received, edge_count);
+        ok = 0;
+    }
+    if ((unsigned long)ps_rx->ir.rx_queue.count != edge_count) {
+        fprintf(stderr, "FAIL: rx_queue holds %lu of %lu edges\n", (unsigned long)ps_rx->ir.rx_queue.count,
+            edge_count);
+        ok = 0;
+    } else {
+        /* A transmit group alternates the level at each edge, and it starts with the LED on. An edge
+           that arrives in the incorrect order breaks that sequence. */
+        unsigned long wrong_level = 0;
+        for (i = 0; i < edge_count; i++) {
+            uint32_t slot = (ps_rx->ir.rx_queue.head + (uint32_t)i) % IR_EDGE_QUEUE_CAPACITY;
+            int expected = (i & 1u) ? 0 : 1;
+            if (ps_rx->ir.rx_queue.entries[slot].level != expected) {
+                wrong_level++;
+            }
+        }
+        if (wrong_level != 0) {
+            fprintf(stderr, "FAIL: %lu edges arrived with the incorrect level (order changed)\n", wrong_level);
+            ok = 0;
+        }
+    }
+
+    ir_link_disconnect(&host_link);
+    ir_link_disconnect(&client_link);
+    psemu_destroy(ps_tx);
+    psemu_destroy(ps_rx);
+    if (!ok) {
+        return 1;
+    }
+    printf("PASS: %lu edges crossed the pipe as one group, in order, with no loss\n", edge_count);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     ir_link_t host_link, client_link;
     psemu_t *ps_tx;
     psemu_t *ps_rx;
+
+    if (argc >= 2 && strcmp(argv[1], "--bytes") == 0) {
+        return run_byte_fidelity(argc >= 3 ? strtoul(argv[2], NULL, 10) : 262144ul);
+    }
+    if (argc >= 2 && strcmp(argv[1], "--burst") == 0) {
+        return run_burst(argc >= 3 ? strtoul(argv[2], NULL, 10) : 700ul);
+    }
 
     if (argc >= 5 && (strcmp(argv[1], "--host") == 0 || strcmp(argv[1], "--client") == 0)) {
         return run_role(strcmp(argv[1], "--host") == 0, argv[2], argv[3], argv[4],

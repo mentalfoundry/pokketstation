@@ -1,23 +1,25 @@
 #ifndef POKKETSTATION_IR_LINK_H
 #define POKKETSTATION_IR_LINK_H
 
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-
 #include <stdint.h>
 
+#include "ir_transport.h"
 #include "psemu/psemu.h"
 
-/* A local IR link between two instances, on a Windows named pipe.
+/* An IR link between two instances.
    It connects psemu_ir_pop_tx_edge and psemu_ir_push_rx_edge of this instance (see psemu.h) to a
-   different pokketstation.exe process on the same machine. Thus two independent emulator instances can
-   exchange real IR signals. This is the same operation as two physical PocketStation units that a user
-   holds together.
+   different pokketstation.exe process. Thus two independent emulator instances can exchange real IR
+   signals. This is the same operation as two physical PocketStation units that a user holds together.
+
+   This file holds the timing of the link. ir_transport.h holds the movement of bytes. A transport gives
+   a byte stream, and this file gives the wire messages, the playout buffer, and the clock conversion
+   that operate on it. IR_LINK_DEFAULT_PIPE_NAME selects the local named-pipe transport, for two
+   processes on one machine.
 
    One instance hosts the link with ir_link_host. The other instance connects with ir_link_connect.
-   Both use the same known pipe name.
+   Both use the same address.
    After the connection, ir_link_pump executes one time for each frame, immediately after psemu_run.
-   It moves the local TX edges of this instance onto the pipe.
+   It moves the local TX edges of this instance onto the transport.
    It also sends the edges from the other instance into the RX queue of this instance.
 
    The edges relay as absolute host wall-clock microseconds, from GetSystemTimePreciseAsFileTime. They
@@ -25,19 +27,18 @@
    Nothing synchronizes the two IR clocks of the instances. Real IR hardware also shares no clock. See
    ir.h.
    Both processes operate on the same machine, and each process can read the same wall clock with no
-   coordination. A conversion of a wall-clock timestamp into the local IR timeline of this instance,
-   or back, needs only the current offset of this instance. That offset is wall_us minus core_us, and
-   each pump call calculates it again.
+   coordination. A conversion of a wall-clock timestamp into the local IR timeline of this instance, or
+   back, needs only the current offset of this instance. That offset is wall_us minus core_us, and each
+   pump call calculates it again.
 
-   All I/O is overlapped, which means asynchronous.
    ir_link_pump only tests operations that are already in progress. It never blocks.
    The main loop of the desktop frontend has one thread and uses no locks, and this design agrees with
    that loop. */
 
 typedef enum {
     IR_LINK_IDLE,
-    IR_LINK_HOSTING,    /* server: the pipe exists, and this instance waits for a peer to connect */
-    IR_LINK_CONNECTING, /* client: this instance calls CreateFileA again until a host listens */
+    IR_LINK_HOSTING,    /* server: the endpoint exists, and this instance waits for a peer to connect */
+    IR_LINK_CONNECTING, /* client: this instance tries the connection again until a host listens */
     IR_LINK_CONNECTED,
     IR_LINK_ERROR
 } ir_link_state_t;
@@ -125,26 +126,24 @@ typedef struct ir_wire_message {
 
 typedef struct ir_link {
     ir_link_state_t state;
-    int is_server;
-    HANDLE pipe;
-    HANDLE ev_connect;
-    HANDLE ev_read;
-    HANDLE ev_write;
-    OVERLAPPED ov_connect;
-    OVERLAPPED ov_read;
-    OVERLAPPED ov_write;
+    ir_transport_t transport;
 
-    ir_wire_message_t read_msg; /* the target buffer for the one overlapped read that is always in progress */
-    int read_pending;
+    /* The framing of the receive direction. A transport keeps no message boundary, thus this code
+       collects the bytes of one wire message before it uses that message. A short read leaves a partial
+       message here until more bytes arrive. */
+    uint8_t read_bytes[sizeof(ir_wire_message_t)];
+    uint32_t read_fill;
 
     /* The outgoing edges. In the worst condition, the CPU makes a group of transitions in one frame,
-       faster than one pipe round trip can drain the queue.
+       faster than one transport round trip can drain the queue.
        A full queue discards the newest edge. It does not block, and it does not increase without a
        limit. See enqueue_write. */
     ir_wire_message_t write_queue[IR_LINK_WRITE_QUEUE_CAPACITY];
     uint32_t write_head;
     uint32_t write_count;
-    int write_pending;
+    /* The number of bytes of the message at write_head that the transport already took. A transport can
+       take part of a message and refuse the remainder. */
+    uint32_t write_offset;
 
     /* The offset from the wall clock to the core clock. This code latches the offset one time, when
        the link connects. It does not calculate the offset at each use.
@@ -185,22 +184,21 @@ typedef struct ir_link {
     int64_t max_lead_us;
     unsigned long late_edges;
 
-    char pipe_name[256];
     char status[128]; /* human-readable text for ir_link_status_text, for example a window-title suffix */
 } ir_link_t;
 
 void ir_link_init(ir_link_t *link);
 
-/* Makes the named pipe, and then listens for a peer.
+/* Makes the endpoint at `address`, and then listens for a peer.
    It returns 1 if the operation is successful. The state "this instance still waits for a peer" is
    success, and not an error.
-   It returns 0 if it cannot make the pipe. */
-int ir_link_host(ir_link_t *link, const char *pipe_name);
+   It returns 0 if it cannot make the endpoint. */
+int ir_link_host(ir_link_t *link, const char *address);
 
-/* Starts a connection to a peer that already hosts a link at `pipe_name`.
+/* Starts a connection to a peer that already hosts a link at `address`.
    It always returns 1. ir_link_pump tries the connection again at later calls, until a host
    listens. */
-int ir_link_connect(ir_link_t *link, const char *pipe_name);
+int ir_link_connect(ir_link_t *link, const char *address);
 
 /* Closes the link, if a link is present, and returns to IR_LINK_IDLE.
    You can call this function at any time. This includes the time when the link is already idle.

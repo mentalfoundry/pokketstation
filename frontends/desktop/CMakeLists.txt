@@ -22,7 +22,7 @@ enable_language(RC)
 # alongside the SDL window by default. main() still gets a normal argc/argv
 # via SDL2::SDL2main's WinMain shim; pass --console to opt back into a
 # visible console for stderr diagnostics (see main.c).
-add_executable(pokketstation_desktop WIN32 main.c ir_link.c content_writeback.c resource.rc)
+add_executable(pokketstation_desktop WIN32 main.c ir_link.c ir_transport_pipe.c content_writeback.c resource.rc)
 # comctl32 - the About dialog's SysLink control (Help > About's clickable
 # repo link); shell32 - ShellExecuteA, to actually open it in a browser.
 target_link_libraries(pokketstation_desktop PRIVATE psemu SDL2::SDL2 SDL2::SDL2main comdlg32 comctl32 shell32)
@@ -33,11 +33,13 @@ target_link_libraries(pokketstation_desktop PRIVATE psemu SDL2::SDL2 SDL2::SDL2m
 # produced binary's filename changes, to plain pokketstation.exe.
 set_target_properties(pokketstation_desktop PROPERTIES OUTPUT_NAME "pokketstation")
 
-# Manually-run verification tool for ir_link.c's real named-pipe transport. See ir_link_selftest.c's top
-# comment. It is not wired into CTest. It exercises real OS-level IPC timing, such as connect retries and
-# overlapped I/O completion. That kind of test turns flaky and slow when it runs automatically.
-# Run it by hand after a change to ir_link.c.
-add_executable(ir_link_selftest ir_link_selftest.c ir_link.c)
+# Manually-run verification tool for the real named-pipe transport in ir_transport_pipe.c, and for the
+# timing above it in ir_link.c. See ir_link_selftest.c's top comment. It is not wired into CTest. It
+# exercises real OS-level IPC timing, such as connect retries and overlapped I/O completion. That kind of
+# test turns flaky and slow when it runs automatically.
+# Run it by hand after a change to ir_link.c or to a transport. The --bytes and --burst modes need no
+# BIOS and no save state, thus they run at any time.
+add_executable(ir_link_selftest ir_link_selftest.c ir_link.c ir_transport_pipe.c)
 target_include_directories(ir_link_selftest PRIVATE ${CMAKE_SOURCE_DIR}/core/src)
 target_link_libraries(ir_link_selftest PRIVATE psemu)
 

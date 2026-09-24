@@ -29,40 +29,20 @@ static void set_status(ir_link_t *link, const char *text) {
     snprintf(link->status, sizeof(link->status), "%s", text);
 }
 
-static void set_status_with_error(ir_link_t *link, const char *prefix, DWORD err) {
-    snprintf(link->status, sizeof(link->status), "%s (error %lu)", prefix, (unsigned long)err);
-}
-
 void ir_link_init(ir_link_t *link) {
     ZeroMemory(link, sizeof(*link));
-    link->pipe = INVALID_HANDLE_VALUE;
     link->state = IR_LINK_IDLE;
-    /* Manual-reset events, one for each operation in progress.
-       This code only calls GetOverlappedResult with bWait = FALSE.
-       But a NULL hEvent makes the OVERLAPPED structure use the pipe handle as its signal object.
-       That is not safe when a read and a write are both in progress on that same handle.
-       See the remarks on ReadFile and WriteFile in the platform documentation.
-       Thus each operation gets its own event. */
-    link->ev_connect = CreateEventA(NULL, TRUE, FALSE, NULL);
-    link->ev_read = CreateEventA(NULL, TRUE, FALSE, NULL);
-    link->ev_write = CreateEventA(NULL, TRUE, FALSE, NULL);
+    ir_transport_init_pipe(&link->transport);
     set_status(link, "Idle");
 }
 
 void ir_link_disconnect(ir_link_t *link) {
-    if (link->pipe != INVALID_HANDLE_VALUE) {
-        CancelIoEx(link->pipe, NULL);
-        if (link->is_server) {
-            DisconnectNamedPipe(link->pipe);
-        }
-        CloseHandle(link->pipe);
-        link->pipe = INVALID_HANDLE_VALUE;
-    }
+    ir_transport_close(&link->transport);
     link->state = IR_LINK_IDLE;
-    link->read_pending = 0;
-    link->write_pending = 0;
+    link->read_fill = 0;
     link->write_head = 0;
     link->write_count = 0;
+    link->write_offset = 0;
     set_status(link, "Idle");
 }
 
@@ -96,123 +76,49 @@ static void enqueue_write(ir_link_t *link, uint64_t timestamp_us, int level, uin
     link->write_count++;
 }
 
-static void start_read(ir_link_t *link) {
-    BOOL ok;
-    ZeroMemory(&link->ov_read, sizeof(link->ov_read));
-    link->ov_read.hEvent = link->ev_read;
-    ResetEvent(link->ev_read);
-    ok = ReadFile(link->pipe, &link->read_msg, sizeof(link->read_msg), NULL, &link->ov_read);
-    if (!ok && GetLastError() != ERROR_IO_PENDING) {
-        link->state = IR_LINK_ERROR;
-        set_status_with_error(link, "Read failed", GetLastError());
-        return;
-    }
-    link->read_pending = 1;
-}
-
-static void start_write(ir_link_t *link) {
-    ir_wire_message_t *msg;
-    BOOL ok;
-    if (link->write_pending || link->write_count == 0) {
-        return;
-    }
-    msg = &link->write_queue[link->write_head];
-    ZeroMemory(&link->ov_write, sizeof(link->ov_write));
-    link->ov_write.hEvent = link->ev_write;
-    ResetEvent(link->ev_write);
-    ok = WriteFile(link->pipe, msg, sizeof(*msg), NULL, &link->ov_write);
-    if (!ok && GetLastError() != ERROR_IO_PENDING) {
-        link->state = IR_LINK_ERROR;
-        set_status_with_error(link, "Write failed", GetLastError());
-        return;
-    }
-    link->write_pending = 1;
+/* Copies the fault text of the transport into the status line of the link. */
+static void adopt_transport_error(ir_link_t *link) {
+    link->state = IR_LINK_ERROR;
+    set_status(link, link->transport.error[0] ? link->transport.error : "Link failed");
 }
 
 static void on_connected(ir_link_t *link) {
     link->state = IR_LINK_CONNECTED;
-    link->read_pending = 0;
-    link->write_pending = 0;
+    link->read_fill = 0;
     link->write_head = 0;
     link->write_count = 0;
+    link->write_offset = 0;
     link->clock_offset_latched = 0; /* re-latched on this connection's first conversion */
     set_status(link, "Connected");
-    start_read(link);
     enqueue_write(link, 0, 0, IR_WIRE_KIND_HELLO);
 }
 
-int ir_link_host(ir_link_t *link, const char *pipe_name) {
+int ir_link_host(ir_link_t *link, const char *address) {
     ir_link_disconnect(link); /* idempotent: clears any previous attempt first */
-    snprintf(link->pipe_name, sizeof(link->pipe_name), "%s", pipe_name);
-    link->is_server = 1;
-    link->pipe = CreateNamedPipeA(pipe_name, PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-        PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT, 1 /* one peer, this is a point-to-point link */,
-        /* The buffers hold a full group of messages. At 8 messages, the pipe was the limit: a sender
-           could send only 8 edges before it blocked. A real transfer makes approximately 65 edges
-           for each frame. */
-        (DWORD)(sizeof(ir_wire_message_t) * IR_LINK_WRITE_QUEUE_CAPACITY),
-        (DWORD)(sizeof(ir_wire_message_t) * IR_LINK_WRITE_QUEUE_CAPACITY), 0, NULL);
-    if (link->pipe == INVALID_HANDLE_VALUE) {
-        link->state = IR_LINK_ERROR;
-        set_status_with_error(link, "Couldn't create pipe", GetLastError());
+    if (!ir_transport_host(&link->transport, address)) {
+        adopt_transport_error(link);
         return 0;
     }
-
-    ZeroMemory(&link->ov_connect, sizeof(link->ov_connect));
-    link->ov_connect.hEvent = link->ev_connect;
-    ResetEvent(link->ev_connect);
-    if (ConnectNamedPipe(link->pipe, &link->ov_connect)) {
-        on_connected(link); /* unexpected-but-handled synchronous success */
-        return 1;
-    }
-    switch (GetLastError()) {
-    case ERROR_PIPE_CONNECTED: /* a peer already raced in before this call */
+    if (link->transport.state == IR_TRANSPORT_CONNECTED) {
         on_connected(link);
-        break;
-    case ERROR_IO_PENDING:
+    } else {
         link->state = IR_LINK_HOSTING;
         set_status(link, "Waiting for peer...");
-        break;
-    default:
-        CloseHandle(link->pipe);
-        link->pipe = INVALID_HANDLE_VALUE;
-        link->state = IR_LINK_ERROR;
-        set_status_with_error(link, "Couldn't listen", GetLastError());
-        return 0;
     }
     return 1;
 }
 
-/* A named pipe has no separate "connect" handshake step on the client side. A socket has such a step.
-   CreateFileA is immediately successful, and the client is then connected. Or it fails, because no
-   server listens at this time. Thus this code calls CreateFileA again at each pump call. That
-   repetition does the function of an asynchronous connect. */
-static void try_client_connect(ir_link_t *link) {
-    DWORD mode;
-    HANDLE h = CreateFileA(
-        link->pipe_name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
-        DWORD err = GetLastError();
-        if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PIPE_BUSY) {
-            return; /* no host listening yet (or its single slot is taken) - keep retrying */
-        }
-        link->state = IR_LINK_ERROR;
-        set_status_with_error(link, "Couldn't connect", err);
-        return;
-    }
-    mode = PIPE_READMODE_MESSAGE;
-    SetNamedPipeHandleState(h, &mode, NULL, NULL);
-    link->pipe = h;
-    on_connected(link);
-}
-
-int ir_link_connect(ir_link_t *link, const char *pipe_name) {
+int ir_link_connect(ir_link_t *link, const char *address) {
     ir_link_disconnect(link);
-    snprintf(link->pipe_name, sizeof(link->pipe_name), "%s", pipe_name);
-    link->is_server = 0;
     link->state = IR_LINK_CONNECTING;
     set_status(link, "Connecting...");
-    try_client_connect(link);
+    if (!ir_transport_connect(&link->transport, address)) {
+        adopt_transport_error(link);
+        return 1;
+    }
+    if (link->transport.state == IR_TRANSPORT_CONNECTED) {
+        on_connected(link);
+    }
     return 1;
 }
 
@@ -266,47 +172,45 @@ static void handle_incoming_message(ir_link_t *link, psemu_t *ps, const ir_wire_
     }
 }
 
-/* Returns 1 if a message was completed and consumed, 0 if nothing was ready. */
+/* Collects the bytes of one wire message from the transport, and uses that message when it is
+   complete. A transport keeps no message boundary, thus a message can arrive in parts.
+   Returns 1 if a message was completed and consumed, 0 if nothing was ready. */
 static int poll_read(ir_link_t *link, psemu_t *ps) {
-    DWORD bytes;
-    if (!link->read_pending) {
+    size_t want = sizeof(link->read_bytes) - link->read_fill;
+    size_t got = ir_transport_recv(&link->transport, link->read_bytes + link->read_fill, want);
+    link->read_fill += (uint32_t)got;
+    if (link->transport.state != IR_TRANSPORT_CONNECTED) {
+        adopt_transport_error(link);
         return 0;
     }
-    if (!GetOverlappedResult(link->pipe, &link->ov_read, &bytes, FALSE)) {
-        DWORD err = GetLastError();
-        if (err == ERROR_IO_INCOMPLETE) {
-            return 0;
-        }
-        link->state = IR_LINK_ERROR;
-        set_status_with_error(link, "Peer disconnected", err);
-        return 0;
+    if (link->read_fill < sizeof(link->read_bytes)) {
+        return 0; /* a partial message stays here until the remaining bytes arrive */
     }
-    link->read_pending = 0;
-    if (bytes == sizeof(link->read_msg)) {
-        handle_incoming_message(link, ps, &link->read_msg);
-    }
-    if (link->state == IR_LINK_CONNECTED) {
-        start_read(link);
+    link->read_fill = 0;
+    {
+        ir_wire_message_t msg;
+        memcpy(&msg, link->read_bytes, sizeof(msg));
+        handle_incoming_message(link, ps, &msg);
     }
     return 1;
 }
 
-/* Returns 1 if the outstanding write completed, 0 if it is still in flight. */
+/* Offers the message at the head of the queue to the transport. A transport can take part of a
+   message, thus write_offset records the part that it already took.
+   Returns 1 if the full message went to the transport, 0 if the transport took no more data. */
 static int poll_write(ir_link_t *link) {
-    DWORD bytes;
-    if (!link->write_pending) {
+    const uint8_t *bytes = (const uint8_t *)&link->write_queue[link->write_head];
+    size_t want = sizeof(ir_wire_message_t) - link->write_offset;
+    size_t got = ir_transport_send(&link->transport, bytes + link->write_offset, want);
+    if (link->transport.state != IR_TRANSPORT_CONNECTED) {
+        adopt_transport_error(link);
         return 0;
     }
-    if (!GetOverlappedResult(link->pipe, &link->ov_write, &bytes, FALSE)) {
-        DWORD err = GetLastError();
-        if (err == ERROR_IO_INCOMPLETE) {
-            return 0;
-        }
-        link->state = IR_LINK_ERROR;
-        set_status_with_error(link, "Peer disconnected", err);
+    link->write_offset += (uint32_t)got;
+    if (link->write_offset < sizeof(ir_wire_message_t)) {
         return 0;
     }
-    link->write_pending = 0;
+    link->write_offset = 0;
     link->write_head = (link->write_head + 1u) % IR_LINK_WRITE_QUEUE_CAPACITY;
     link->write_count--;
     return 1;
@@ -327,10 +231,10 @@ static void drain_tx_edges(ir_link_t *link, psemu_t *ps) {
    message gave 658 edges, which is approximately 65 edges for each frame. This code completed exactly
    one read and one write for each pump call before. Thus the transport carried approximately one edge
    for each frame in each direction, and a group could never get through in time. The write queue then
-   overflowed and discarded the remainder. Both directions now drain until the pipe has no more data to
-   give or no more space to take data. The backpressure is the same as before, but the rate is no
-   longer one message for each frame.
-   The limit is a safety measure against a pipe with unexpected activity that takes time from the
+   overflowed and discarded the remainder. Both directions now drain until the transport has no more
+   data to give or no more space to take data. The backpressure is the same as before, but the rate is
+   no longer one message for each frame.
+   The limit is a safety measure against a transport with unexpected activity that takes time from the
    remainder of the frame. It is not an expected limit. */
 #define IR_LINK_MAX_MESSAGES_PER_PUMP 4096
 
@@ -360,14 +264,12 @@ static void pump_connected(ir_link_t *link, psemu_t *ps) {
     }
     drain_tx_edges(link, ps);
     for (i = 0; i < IR_LINK_MAX_MESSAGES_PER_PUMP; i++) {
-        poll_write(link);
-        if (link->state != IR_LINK_CONNECTED) {
-            return;
+        if (link->write_count == 0) {
+            break;
         }
-        if (link->write_pending || link->write_count == 0) {
-            break; /* still in flight, or nothing left to send */
+        if (!poll_write(link) || link->state != IR_LINK_CONNECTED) {
+            break; /* still in flight, or the transport reported a fault */
         }
-        start_write(link);
     }
     if (link->state == IR_LINK_CONNECTED) {
         update_connected_status(link);
@@ -375,24 +277,28 @@ static void pump_connected(ir_link_t *link, psemu_t *ps) {
 }
 
 void ir_link_pump(ir_link_t *link, psemu_t *ps) {
-    switch (link->state) {
-    case IR_LINK_IDLE:
-    case IR_LINK_ERROR:
+    if (link->state == IR_LINK_IDLE || link->state == IR_LINK_ERROR) {
         return;
-    case IR_LINK_HOSTING: {
-        DWORD bytes;
-        if (GetOverlappedResult(link->pipe, &link->ov_connect, &bytes, FALSE)) {
+    }
+    ir_transport_poll(&link->transport);
+    switch (link->transport.state) {
+    case IR_TRANSPORT_LISTENING:
+        link->state = IR_LINK_HOSTING;
+        break;
+    case IR_TRANSPORT_CONNECTING:
+        link->state = IR_LINK_CONNECTING;
+        break;
+    case IR_TRANSPORT_CONNECTED:
+        if (link->state != IR_LINK_CONNECTED) {
             on_connected(link);
-        } else if (GetLastError() != ERROR_IO_INCOMPLETE) {
-            link->state = IR_LINK_ERROR;
-            set_status_with_error(link, "Listen failed", GetLastError());
         }
         break;
-    }
-    case IR_LINK_CONNECTING:
-        try_client_connect(link);
+    case IR_TRANSPORT_ERROR:
+        adopt_transport_error(link);
         break;
-    case IR_LINK_CONNECTED:
+    case IR_TRANSPORT_IDLE:
+        link->state = IR_LINK_IDLE;
+        set_status(link, "Idle");
         break;
     }
     if (link->state == IR_LINK_CONNECTED) {
