@@ -39,6 +39,7 @@ typedef enum {
     IR_LINK_IDLE,
     IR_LINK_HOSTING,    /* server: the endpoint exists, and this instance waits for a peer to connect */
     IR_LINK_CONNECTING, /* client: this instance tries the connection again until a host listens */
+    IR_LINK_SYNCING,    /* the transport is connected, and this instance waits for its first clock sample */
     IR_LINK_CONNECTED,
     IR_LINK_ERROR
 } ir_link_state_t;
@@ -101,18 +102,89 @@ typedef enum {
    value, and this value is less than the shortest gap between a message and its reply. */
 #define IR_LINK_OFFSET_RELATCH_IDLE_US 250000ull
 
+/* The wall clock of the peer, minus the wall clock of this instance.
+
+   The transport gives an absolute host wall-clock timestamp for each edge. Two processes on one machine
+   read the same wall clock, thus this term is 0 for the named pipe. Two machines do not: their clocks
+   can differ by seconds or by minutes. Without a correction, each arriving edge lands that far outside
+   the playout buffer.
+
+   ir_link_ping_* below measures this term. The estimate has error, from the variation in the transit
+   time and from a path that is not symmetric. That error is harmless, and the reason is the same reason
+   that wall_minus_core_us must stay constant in one message: this code latches both terms at the same
+   moment, and it holds both for the same duration. Thus each edge of one message gets the identical
+   error, which is one uniform shift and not a change in the space between the edges.
+   IR_LINK_PLAYOUT_DELAY_US absorbs a uniform shift.
+
+   The measurement is the standard method for two clocks with a message path between them, and it uses
+   four timestamps. This instance sends a PING at t0 on its own clock. The peer reads that PING at t1 and
+   answers at t2, both on the clock of the peer. This instance reads the answer at t3 on its own clock.
+   Then:
+
+     offset = ((t1 - t0) + (t2 - t3)) / 2
+     round trip = (t3 - t0) - (t2 - t1)
+
+   Two timestamps are not sufficient here, and a measurement gives the reason. A form with two timestamps
+   must assume that the peer answers in the middle of the round trip. The peer does not: it reads a
+   message at one pump call and it answers at that same call, thus its turnaround is as long as the
+   interval between two pump calls, which is approximately 31ms. A measurement on the local pipe, where
+   the true offset is 0 and each reported value is error, gave a round trip of 46695us and an error of
+   23336us, which is one half of that round trip. The four-timestamp form subtracts (t2 - t1), thus the
+   turnaround of the peer leaves the estimate.
+
+   This code keeps the last IR_LINK_SYNC_WINDOW samples and uses the offset of the sample with the
+   smallest round trip. The error that remains is one half of the difference between the two directions of
+   the path. A small round trip is the sample where both directions were fastest, thus its difference is
+   also smallest. A sample from a busy moment has a large round trip, and the filter ignores it.
+   A PING gets its t0, and a PONG gets its t2, at the moment that the transport takes the message. Neither
+   one gets that value at the moment that this code puts the message in the queue. Thus the drain time of
+   a queue that holds a full IR message does not enter the measurement.
+
+   The error does not have to be small, and this is the reason. The error is one constant for each latch,
+   thus each edge of one message gets the same shift and the space between the edges stays exact. A
+   different message gets a different shift, and each message decodes on its own. Thus the only
+   requirement is that the error stays well inside IR_LINK_PLAYOUT_DELAY_US. */
+#define IR_LINK_SYNC_WINDOW 8u
+
+/* The interval between the PING messages of this instance.
+   The interval must be short enough that the window above stays current against the drift between two
+   crystals, and long enough that the traffic is insignificant next to a real IR message. This value
+   gives a window that covers 4 seconds, and 2 messages of 16 bytes for each second.
+   A PING and a PONG are not edge traffic. Thus they must never call note_edge_activity: that function
+   drives the idle test of IR_LINK_OFFSET_RELATCH_IDLE_US, and keepalive traffic that marked the link
+   busy would stop each later latch. */
+#define IR_LINK_PING_INTERVAL_US 500000ull
+
+/* The time after which this code abandons a PING that has no PONG, and sends a new one.
+   Without this limit, one lost answer would stop the measurement for the life of the link. */
+#define IR_LINK_PING_TIMEOUT_US 5000000ull
+
 /* One message of 16 bytes for each edge, with kind = IR_WIRE_KIND_EDGE.
    A handshake at connect time uses kind = IR_WIRE_KIND_HELLO.
-   A HELLO message never gets to psemu_ir_push_rx_edge.
-   Its only function is to find a magic-number or version difference at connect time. Without it, the
+   The clock measurement above uses kind = IR_WIRE_KIND_PING and kind = IR_WIRE_KIND_PONG.
+   Only an EDGE message gets to psemu_ir_push_rx_edge.
+   The function of HELLO is to find a magic-number or version difference at connect time. Without it, the
    code finds the difference only at the first real IR traffic.
    Each received message contains the magic number and the version, and this code tests both.
    A difference shows that the two instances execute incompatible builds. Thus this code closes the
-   link and reports the reason. */
+   link and reports the reason.
+
+   This code keeps one PING in progress at most. Thus a PING needs no sequence number: a PONG answers the
+   one PING that has no answer. A PONG that arrives with no PING in progress is a duplicate, and this code
+   discards it.
+
+   A message is 24 bytes, because a PONG holds two timestamps. The second field costs 8 bytes for each
+   edge, which is approximately 5kB for one IR message of 658 edges. That cost buys the removal of the
+   largest term in the offset error, which the measurement above gives as 23336us. */
 #define IR_WIRE_MAGIC 0x52494B50u /* 'PKIR' */
-#define IR_WIRE_VERSION 1u
+/* Version 2 adds PING and PONG. A build that speaks version 1 has no clock measurement, thus it would
+   place each edge of a peer on a different machine minutes away from the correct time. The HELLO test
+   rejects that build at connect time, and it reports the reason. */
+#define IR_WIRE_VERSION 2u
 #define IR_WIRE_KIND_EDGE 0u
 #define IR_WIRE_KIND_HELLO 1u
+#define IR_WIRE_KIND_PING 2u
+#define IR_WIRE_KIND_PONG 3u
 
 #pragma pack(push, 1)
 typedef struct ir_wire_message {
@@ -120,7 +192,15 @@ typedef struct ir_wire_message {
     uint16_t version;
     uint8_t level;
     uint8_t kind;
-    uint64_t timestamp_us; /* absolute host wall-clock microseconds. This field has no meaning in a HELLO message. */
+    /* Absolute host wall-clock microseconds, on the clock of the sender.
+       EDGE: the time that the sender made the edge.
+       PING: the time that the transport took the message. This is t0 above.
+       PONG: the time that the answering instance read the PING. This is t1 above.
+       HELLO: this field has no meaning. */
+    uint64_t timestamp_us;
+    /* PONG: the time that the transport took the answer, on the clock of the answering instance. This is
+       t2 above. This field is 0 for each other kind. */
+    uint64_t timestamp2_us;
 } ir_wire_message_t;
 #pragma pack(pop)
 
@@ -159,8 +239,33 @@ typedef struct ir_link {
        With a latched offset, the same transfer completes in both directions. See the transfer mode of
        frontends/desktop/ir_link_selftest.c. */
     int64_t wall_minus_core_us;
+    /* The wall clock of the peer, minus the wall clock of this instance. See IR_LINK_SYNC_WINDOW above.
+       This code latches this term together with wall_minus_core_us, and it holds both for the same
+       duration. The latch takes the term from the sample window below. */
+    int64_t peer_wall_minus_local_wall_us;
     int clock_offset_latched;
     uint64_t last_edge_wall_us; /* the time of the last edge on this link, for the idle test above */
+
+    /* The sample window of the clock measurement. */
+    struct {
+        int64_t offset_us;
+        int64_t rtt_us;
+    } sync_samples[IR_LINK_SYNC_WINDOW];
+    uint32_t sync_sample_head;
+    uint32_t sync_sample_count;
+    uint64_t ping_sent_wall_us; /* t0 of the PING that has no PONG. It holds the queue time until the
+                                   transport takes the message, and then the send time. */
+    int ping_outstanding;
+    uint64_t last_ping_wall_us; /* when this instance last put a PING in the queue */
+    int64_t last_rtt_us;        /* the newest sample, for the diagnostic status line */
+    int64_t last_offset_us;
+    /* A test hook. Each wall-clock read of this link adds this value, thus one link can operate on a
+       clock that is hours away from the clock of its peer. Two processes on one machine always share a
+       wall clock, thus without this hook no local test can show whether the code measures the offset of
+       the peer or ignores it: the correct answer and the answer of a build with no measurement are both
+       0. The desktop frontend never writes this field, and it stays 0 there.
+       This is permanent test equipment, in the same manner as psemu_ir_trace_enabled in core/src/ir.h. */
+    int64_t test_wall_offset_us;
 
     /* Simple counters. They give diagnostic data for a link that connects but carries no useful data.
        They are inexpensive, thus they operate always. They are the only method to tell "the peer sent

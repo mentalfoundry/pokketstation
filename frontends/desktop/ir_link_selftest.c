@@ -3,16 +3,25 @@
    It is not part of the automatic CTest suite.
    tests/ir_test.c tests the state machine in core/src/ir.c, with no transport.
 
-   Two modes need no BIOS and no save state, thus they run at any time:
+   Three modes need no BIOS and no save state, thus they run at any time:
 
      ir_link_selftest --bytes [total]
-     ir_link_selftest --burst [edges]
+     ir_link_selftest --burst [edges] [injected clock offset in us]
+     ir_link_selftest --sync  [seconds] [injected clock offset in us]
 
    --bytes tests the transport alone. Both endpoints send the same number of bytes at the same time, in
    uneven chunks, and each byte must arrive one time and in order. This mode covers the read buffer, the
    partial-write path, and a concurrent read and write on one handle.
    --burst tests ir_link.c with a group of edges near the size of a real IR message. The single-edge
    mode moves one edge, thus it cannot show a lost message or a message in the incorrect order.
+   --sync tests the measurement of the offset between the two wall clocks.
+
+   Both --burst and --sync take an injected clock offset, which they give to the client side through
+   test_wall_offset_us (see ir_link.h). Two processes on one machine always share a wall clock. Thus
+   without that hook, a local test cannot separate "the code measured an offset of 0 correctly" from "the
+   code has no measurement": both give the same result. With an injected offset of one hour, a build with
+   no measurement fails by one hour. --sync confirms that the estimator reports the injected value, and
+   --burst confirms that the placement of each edge uses it.
 
    This tool operates two ir_link_t endpoints, a host and a client, on a real named pipe in one process.
    It writes an edge to the IR TX registers of one psemu_t instance.
@@ -345,6 +354,140 @@ static int run_role(int is_host, const char *bios_path, const char *app_path, co
     return holds_peer ? 0 : 1;
 }
 
+/* The limit on the error of one offset sample, in microseconds.
+
+   A measurement gives this limit, and the pump interval is the mechanism. ir_link_pump runs one time for
+   each frame, at intervals of approximately 31ms. A message that arrives between two pump calls waits
+   until the next call. Thus one direction of a round trip holds up to one full pump interval of delay
+   that the other direction does not hold, and one half of that difference is error.
+   A run of this mode reports the legs directly. The side that pumps second reads the PING of its peer
+   after approximately 15us, and the answer then waits for the next pump call of the initiator:
+   fwd=4us with rev=42796us is one measured sample. The turnaround of the peer (t2 - t1) measures 1us to
+   3us, thus the four-timestamp form has nothing to remove in that condition. It still earns its place,
+   because the turnaround is not small while a queue with a full IR message drains.
+   The largest error over a run of 8 seconds measured 22879us. This limit is near three times that value.
+   Thus it reports a mechanism that stopped working, and it does not report normal variation.
+
+   The error does not need to be smaller. It is one constant for each latch, thus each edge of one message
+   gets the same shift and only the arrival of the full group moves. IR_LINK_PLAYOUT_DELAY_US is 250000us,
+   which is more than three times this limit. */
+#define SYNC_OFFSET_ERROR_LIMIT_US 60000
+
+/* The clock measurement of ir_link.c, on the local pipe.
+
+   Two processes on one machine always read the same wall clock. Thus a local test has no true offset to
+   find, and "the code measured 0 correctly" and "the code has no measurement at all" give the same
+   result. This mode uses test_wall_offset_us (see ir_link.h) to put one link on a clock that is a known
+   distance away. The estimator must then report that distance, with the sign that belongs to each side.
+   A build that ignores the clock of its peer reports 0 and fails.
+
+   This mode also confirms that a link reaches IR_LINK_CONNECTED, which needs one completed round trip,
+   and that it keeps collecting samples after that. */
+static int run_sync(long seconds, int64_t injected_offset_us) {
+    ir_link_t host_link, client_link;
+    psemu_t *ps_a = psemu_create();
+    psemu_t *ps_b = psemu_create();
+    int64_t host_worst = 0, client_worst = 0;
+    int64_t host_max_rtt = 0, client_max_rtt = 0;
+    unsigned long host_samples = 0, client_samples = 0;
+    int64_t host_last = 0, client_last = 0;
+    int64_t host_prev_rtt = 0, client_prev_rtt = 0;
+    long frames = seconds * 32; /* the desktop loop renders approximately 32 frames for each second */
+    long f;
+    int ok = 1;
+
+    ir_link_init(&host_link);
+    ir_link_init(&client_link);
+    /* The client operates on a clock that is injected_offset_us ahead of the clock of the host. Thus the
+       host must measure +injected_offset_us for its peer, and the client must measure the negative of
+       that value. */
+    client_link.test_wall_offset_us = injected_offset_us;
+    if (!ir_link_host(&host_link, SELFTEST_PIPE_NAME)) {
+        fprintf(stderr, "ir_link_host failed: %s\n", ir_link_status_text(&host_link));
+        return 1;
+    }
+    ir_link_connect(&client_link, SELFTEST_PIPE_NAME);
+
+    for (f = 0; f < frames; f++) {
+        ir_link_pump(&host_link, ps_a);
+        ir_link_pump(&client_link, ps_b);
+        if (host_link.state == IR_LINK_ERROR || client_link.state == IR_LINK_ERROR) {
+            fprintf(stderr, "link fault: host=%s client=%s\n", ir_link_status_text(&host_link),
+                ir_link_status_text(&client_link));
+            return 1;
+        }
+        /* Count each new sample, and keep the largest error and the largest round trip. The error of a
+           sample is its distance from the offset that this test injected. */
+        if (host_link.last_rtt_us != 0 &&
+            (host_link.last_offset_us != host_last || host_link.last_rtt_us != host_prev_rtt)) {
+            int64_t error = host_link.last_offset_us - injected_offset_us;
+            host_last = host_link.last_offset_us;
+            host_prev_rtt = host_link.last_rtt_us;
+            host_samples++;
+            if (error < 0) {
+                error = -error;
+            }
+            if (error > host_worst) {
+                host_worst = error;
+            }
+            if (host_link.last_rtt_us > host_max_rtt) {
+                host_max_rtt = host_link.last_rtt_us;
+            }
+        }
+        if (client_link.last_rtt_us != 0 &&
+            (client_link.last_offset_us != client_last || client_link.last_rtt_us != client_prev_rtt)) {
+            int64_t error = client_link.last_offset_us + injected_offset_us;
+            client_last = client_link.last_offset_us;
+            client_prev_rtt = client_link.last_rtt_us;
+            client_samples++;
+            if (error < 0) {
+                error = -error;
+            }
+            if (error > client_worst) {
+                client_worst = error;
+            }
+            if (client_link.last_rtt_us > client_max_rtt) {
+                client_max_rtt = client_link.last_rtt_us;
+            }
+        }
+        Sleep(31); /* what the desktop loop does after rendering each frame */
+    }
+
+    printf("injected offset: the clock of the client is %lldus ahead of the clock of the host\n",
+        (long long)injected_offset_us);
+    printf("host  state=%s samples=%lu last offset=%lldus worst error=%lldus max rtt=%lldus\n",
+        ir_link_status_text(&host_link), host_samples, (long long)host_link.last_offset_us, (long long)host_worst,
+        (long long)host_max_rtt);
+    printf("client state=%s samples=%lu last offset=%lldus worst error=%lldus max rtt=%lldus\n",
+        ir_link_status_text(&client_link), client_samples, (long long)client_link.last_offset_us,
+        (long long)client_worst, (long long)client_max_rtt);
+
+    if (host_link.state != IR_LINK_CONNECTED || client_link.state != IR_LINK_CONNECTED) {
+        fprintf(stderr, "FAIL: a link did not leave IR_LINK_SYNCING, thus no round trip completed\n");
+        ok = 0;
+    }
+    if (host_samples < 2 || client_samples < 2) {
+        fprintf(stderr, "FAIL: the measurement stopped after the first sample\n");
+        ok = 0;
+    }
+    if (host_worst > SYNC_OFFSET_ERROR_LIMIT_US || client_worst > SYNC_OFFSET_ERROR_LIMIT_US) {
+        fprintf(stderr, "FAIL: the estimator did not recover the injected offset within %dus\n",
+            (int)SYNC_OFFSET_ERROR_LIMIT_US);
+        ok = 0;
+    }
+
+    ir_link_disconnect(&host_link);
+    ir_link_disconnect(&client_link);
+    psemu_destroy(ps_a);
+    psemu_destroy(ps_b);
+    if (!ok) {
+        return 1;
+    }
+    printf("PASS: the estimator recovered a clock offset of %lldus, with the sign of each side\n",
+        (long long)injected_offset_us);
+    return 0;
+}
+
 /* The byte pattern of the fidelity mode below. It is a function of the index only, thus neither side
    has to keep a copy of the data that it sent. */
 static uint8_t stream_byte(unsigned long index) {
@@ -456,15 +599,37 @@ static int run_byte_fidelity(unsigned long total) {
    ir_link.c tests that value for each message that it assembles. Thus a boundary that moves by one byte
    puts the link into IR_LINK_ERROR immediately, and this mode reports that state.
    The gaps between the edges are uneven, and the count is near the count of a real message. */
-static int run_burst(unsigned long edge_count) {
+#define BURST_EDGES_PER_FRAME 65u
+static int run_burst(unsigned long edge_count, int64_t injected_offset_us) {
     ir_link_t host_link, client_link;
     psemu_t *ps_tx = psemu_create();
     psemu_t *ps_rx = psemu_create();
     unsigned long i;
+    uint64_t span_cycles = 0;
+    int64_t span_us = 0;
     int ok = 1;
+
+    /* Advance the IR clock of the receiver before the link exists.
+       wall_to_local_us holds a result of less than zero at zero. With an IR clock of 0 on the receiver,
+       each edge of this group converts to a time before that clock and clamps to the same value. Every
+       lead then reads exactly IR_LINK_PLAYOUT_DELAY_US, whatever the offset of the peer clock is, and the
+       test of the lead below shows nothing. A clock that already holds 2 seconds keeps each conversion
+       above the clamp. Thus a wrong offset moves the lead, and the test can see it.
+       The queue of the receiver is empty at this point, thus these calls release no edge. */
+    {
+        int t;
+        for (t = 0; t < 2000; t++) {
+            ir_tick(&ps_rx->ir, &ps_rx->intc, 1056u); /* PSEMU_ASSUMED_CPU_HZ / 1000, thus 1ms for each call */
+        }
+    }
 
     ir_link_init(&host_link);
     ir_link_init(&client_link);
+    /* The receiving side operates on a clock that is this far from the clock of the sender. A count of the
+       edges and an order of the levels cannot show whether the code applies the measured offset: each
+       edge still reaches the queue with the incorrect offset. The test of the lead below is the check that
+       shows it. See test_wall_offset_us in ir_link.h. */
+    client_link.test_wall_offset_us = injected_offset_us;
     if (!ir_link_host(&host_link, SELFTEST_PIPE_NAME)) {
         fprintf(stderr, "ir_link_host failed: %s\n", ir_link_status_text(&host_link));
         return 1;
@@ -479,14 +644,26 @@ static int run_burst(unsigned long edge_count) {
     psemu_bus_write32(&ps_tx->bus, IRDA_MODE, TX_ACTIVE_MODE);
     psemu_bus_write32(&ps_rx->bus, IRDA_MODE, RX_ACTIVE_MODE);
 
-    /* Make the full group before any pump call. The frontend also collects the edges of one frame and
-       then relays them together.
-       The gaps are 300 and 600 cycles. Both are larger than IR_TX_FALL_STRETCH_CYCLES (200, in ir.c),
-       thus a stretched falling edge stays before the pulse that follows it. */
+    /* Make the group across several pump calls, in the manner of the frontend. A real sender makes
+       approximately 65 edges for each frame, and it relays them at the end of that frame.
+       To make the full group before any pump call gives each edge an age of the full length of the group.
+       That length is 265ms at these gaps, and the playout buffer plans 250000us. Thus the earliest edges
+       arrive late. That result is a property of such a test and not of the transport, and a measurement
+       shows it: 57 of 700 edges late, with the earliest lead at -21409us.
+       The gaps are 300 and 600 cycles. Both are larger than IR_TX_FALL_STRETCH_CYCLES (200, in ir.c), thus
+       a stretched falling edge stays before the pulse that follows it. */
     for (i = 0; i < edge_count; i++) {
+        uint32_t gap = (i % 3u == 0u) ? 600u : 300u;
         psemu_bus_write32(&ps_tx->bus, IRDA_DATA, (i & 1u) ? 0u : IR_DATA_LED);
-        ir_tick(&ps_tx->ir, &ps_tx->intc, (i % 3u == 0u) ? 600u : 300u);
+        ir_tick(&ps_tx->ir, &ps_tx->intc, gap);
+        span_cycles += gap;
+        if ((i + 1u) % BURST_EDGES_PER_FRAME == 0u) {
+            ir_link_pump(&host_link, ps_tx);
+            ir_link_pump(&client_link, ps_rx);
+            Sleep(31); /* what the desktop loop does after rendering each frame */
+        }
     }
+    span_us = (int64_t)((span_cycles * 1000000ull) / (uint64_t)PSEMU_ASSUMED_CPU_HZ);
 
     /* This mode never calls ir_tick on ps_rx. Thus no edge becomes due, and rx_queue holds the full
        group for the comparison below. */
@@ -501,8 +678,9 @@ static int run_burst(unsigned long edge_count) {
 
     printf("host  state=%s tx=%lu drop=%lu\n", ir_link_status_text(&host_link), host_link.edges_sent,
         host_link.dropped_tx);
-    printf("client state=%s rx=%lu queued=%lu\n", ir_link_status_text(&client_link), client_link.edges_received,
-        (unsigned long)ps_rx->ir.rx_queue.count);
+    printf("client state=%s rx=%lu queued=%lu lead min=%lldus max=%lldus late=%lu\n",
+        ir_link_status_text(&client_link), client_link.edges_received, (unsigned long)ps_rx->ir.rx_queue.count,
+        (long long)client_link.min_lead_us, (long long)client_link.max_lead_us, client_link.late_edges);
 
     if (host_link.state != IR_LINK_CONNECTED || client_link.state != IR_LINK_CONNECTED) {
         fprintf(stderr, "FAIL: the link left the connected state during the group\n");
@@ -514,6 +692,27 @@ static int run_burst(unsigned long edge_count) {
     }
     if (client_link.edges_received != edge_count) {
         fprintf(stderr, "FAIL: the receiver got %lu of %lu edges\n", client_link.edges_received, edge_count);
+        ok = 0;
+    }
+    /* The lead is the time by which an arriving edge is scheduled ahead of the local IR clock of the
+       receiver. This mode calls ir_tick on the receiver only before the link exists, thus the clock of the
+       receiver holds still while the group arrives. The emulated clock of the sender does advance, by
+       span_us across the group. Thus the lead of the first edge is near IR_LINK_PLAYOUT_DELAY_US, and each
+       later edge adds its part of span_us. A measurement of 700 edges gives 221027us to 485989us, against
+       a planned 250000us and a span of 265000us.
+       The limit must hold span_us, because a larger group gives larger leads for that reason alone. A
+       group of 4000 edges measures 1739203us at the end, and that value is correct.
+
+       This is the check that needs the measured offset of the peer clock. Without that offset, the
+       timestamp of each edge is wrong by the full distance between the two clocks, and one hour of error
+       is far outside this window in one direction or the other. A mutation test confirms it: with the
+       offset term removed and one hour injected, all 700 edges arrive late, with each lead at -1750000us.
+       A count of the edges and an order of the levels both stay correct in that condition, thus neither
+       one can take the place of this check. */
+    if (client_link.min_lead_us <= 0 || client_link.late_edges != 0 ||
+        client_link.max_lead_us > (int64_t)IR_LINK_PLAYOUT_DELAY_US + span_us + 250000) {
+        fprintf(stderr, "FAIL: the receiver placed the group outside the playout buffer (span=%lldus)\n",
+            (long long)span_us);
         ok = 0;
     }
     if ((unsigned long)ps_rx->ir.rx_queue.count != edge_count) {
@@ -557,7 +756,12 @@ int main(int argc, char **argv) {
         return run_byte_fidelity(argc >= 3 ? strtoul(argv[2], NULL, 10) : 262144ul);
     }
     if (argc >= 2 && strcmp(argv[1], "--burst") == 0) {
-        return run_burst(argc >= 3 ? strtoul(argv[2], NULL, 10) : 700ul);
+        return run_burst(argc >= 3 ? strtoul(argv[2], NULL, 10) : 700ul, argc >= 4 ? _atoi64(argv[3]) : 0ll);
+    }
+    if (argc >= 2 && strcmp(argv[1], "--sync") == 0) {
+        /* One hour by default. A real pair of machines with no time service can differ by that much, and
+           a value that large cannot come from the variation in the transit time. */
+        return run_sync(argc >= 3 ? atol(argv[2]) : 4, argc >= 4 ? _atoi64(argv[3]) : 3600000000ll);
     }
 
     if (argc >= 5 && (strcmp(argv[1], "--host") == 0 || strcmp(argv[1], "--client") == 0)) {
