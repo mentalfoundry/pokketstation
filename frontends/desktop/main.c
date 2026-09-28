@@ -2046,7 +2046,7 @@ static void show_about(menu_context_t *ctx) {
     DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_ABOUT), ctx->hwnd, about_dialog_proc, 0);
 }
 
-/* The handlers for IR Link > Host Session, Connect, and Disconnect.
+/* The handlers for IR Link > Host Local Session, Connect Local Session, and Disconnect.
    These handlers use one fixed pipe name, IR_LINK_DEFAULT_PIPE_NAME. They do not use a dialog that asks
    for a name. One fixed name is the simplest method that operates for two instances on one machine.
    See ir_link.h for the transport. */

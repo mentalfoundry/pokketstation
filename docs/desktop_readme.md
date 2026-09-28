@@ -61,8 +61,8 @@ Two separate copies of `pokketstation.exe` can exchange real IR signals, on one 
 
 **To connect two copies on one machine:**
 1. Start `pokketstation.exe` two times. For example, execute it one time, and then start it again with a double click, or start a second copy from a terminal. You then have two separate windows.
-2. In one window, select **IR Link > Host Session**. The title bar shows "IR - Waiting...".
-3. In the other window, select **IR Link > Connect**. The title bar shows "IR - Connecting..." until the two copies find each other, which is usually immediate. Both title bars then show "IR - Connected".
+2. In one window, select **IR Link > Host Local Session**. The title bar shows "IR - Waiting...".
+3. In the other window, select **IR Link > Connect Local Session**. The title bar shows "IR - Connecting..." until the two copies find each other, which is usually immediate. Both title bars then show "IR - Connected".
 4. Use each copy normally. The IR port operations of the loaded app now reach the other copy.
 5. **IR Link > Disconnect** ends the session, from either side, at any time.
 
@@ -74,13 +74,13 @@ Two separate copies of `pokketstation.exe` can exchange real IR signals, on one 
 5. Use each copy normally, and **IR Link > Disconnect** ends the session from either side.
 
 **Important data:**
-- The two local items, Host Session and Connect, always use the same known local connection. They do not ask for a name. Only one connected pair can be active on a machine at one time.
+- The two local items, Host Local Session and Connect Local Session, always use the same known local connection. They do not ask for a name. Only one connected pair can be active on a machine at one time.
 - This app keeps the last address that you entered, and the port that you listen on, in `settings.cfg`. Thus a second session needs no retyping.
 - Across the internet, the machine that hosts needs a forwarded port on its router. On one local network no such step is necessary. A port that a router does not forward gives "IR - Connecting..." on the other machine and nothing more.
 - The network link accepts a connection from any address that can reach the port. There is no password. Use it on a network that you trust, or forward the port only while a session is active.
 - A network link adds the time of the network to the IR timing. On a local network that addition is small. Across the internet it is not, and no test of this project measures whether a real app tolerates it. Please report the result if you try it.
 - An address can be an IPv4 address, an IPv6 address in brackets such as `[fe80::1]:27411`, or a host name. The machine that hosts accepts both address families on one port.
-- Three actions end an active IR link automatically: a load of a different BIOS, app, or card; a press of **Reset**; and a **Load State** operation. All three actions reset the IR state of the emulator. Thus a link that stays connected through one of them loses synchronization with the other copy. Connect again through **IR Link > Connect** or **Host Session** after such an action, if you still need the link.
+- Three actions end an active IR link automatically: a load of a different BIOS, app, or card; a press of **Reset**; and a **Load State** operation. All three actions reset the IR state of the emulator. Thus a link that stays connected through one of them loses synchronization with the other copy. Connect again through the **IR Link** menu after such an action, if you still need the link.
 - The IR timing is an inference. No test against real hardware confirms it. Two details in particular are inferences: the quantity of filtering that this emulator applies to a noisy signal, and the data that a receiving app reads during a transfer. No trace of an app in the test set of this project uses IR. If an app operates differently over the IR link than on real hardware, please report that condition. See [hardware-notes.md](hardware-notes.md#ir--ir-link) for the technical detail.
 
 ## Save write-back

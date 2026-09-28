@@ -515,7 +515,7 @@ A disassembly gives these states, at `field+0x28`. `tools/ir_probe.c` uses them 
 
 ### The IR link between two processes
 
-`frontends/desktop/ir_link.h` and `ir_link.c` hold the two-*process* part of this function, for Windows only. They relay edges between two independent `pokketstation.exe` instances. The `IR Link` menu has Host Session, Connect, and Disconnect. A test confirms that the link operates between two real `pokketstation.exe` instances. That test is the only important test here, because no single-process test can find the three properties below.
+`frontends/desktop/ir_link.h` and `ir_link.c` hold the two-*process* part of this function, for Windows only. They relay edges between two independent `pokketstation.exe` instances. The `IR Link` menu has Host Local Session, Connect Local Session, Host Over Network, Connect Over Network, and Disconnect. A test confirms that the link operates between two real `pokketstation.exe` instances. That test is the only important test here, because no single-process test can find the three properties below.
 
 `ir_transport.h` separates the two layers. It gives a byte stream that never blocks. `ir_transport_pipe.c` implements that stream on a local named pipe, for two processes on one machine, and `ir_transport_tcp.c` implements it on TCP, for two machines. `ir_link.c` holds each property that follows: the wire messages, the playout buffer, the clock conversion, and the counters. Those properties are the same for each transport, thus they are in one place. A transport keeps no message boundary, thus `ir_link.c` collects the bytes of one wire message before it uses that message. The named pipe is a byte pipe (`PIPE_TYPE_BYTE`) for this reason, which is the same model that a socket gives.
 

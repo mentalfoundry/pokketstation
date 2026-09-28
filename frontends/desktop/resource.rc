@@ -99,8 +99,8 @@ BEGIN
            ellipsis. The second pair is the network link, which must ask for a
            port or for the address of a peer. Disconnect ends a link of either
            kind. */
-        MENUITEM "&Host Session", ID_IR_HOST
-        MENUITEM "&Connect", ID_IR_CONNECT
+        MENUITEM "&Host Local Session", ID_IR_HOST
+        MENUITEM "&Connect Local Session", ID_IR_CONNECT
         MENUITEM SEPARATOR
         MENUITEM "Host Over &Network...", ID_IR_HOST_NET
         MENUITEM "Connect Over Net&work...", ID_IR_CONNECT_NET
