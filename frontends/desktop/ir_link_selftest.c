@@ -705,8 +705,8 @@ static int run_burst(unsigned long edge_count, int64_t injected_offset_us) {
         Sleep(1);
     }
 
-    printf("host  state=%s tx=%lu drop=%lu\n", ir_link_status_text(&host_link), host_link.edges_sent,
-        host_link.dropped_tx);
+    printf("host  state=%s tx=%lu drop=%lu transport writes=%lu\n", ir_link_status_text(&host_link),
+        host_link.edges_sent, host_link.dropped_tx, host_link.transport_writes);
     printf("client state=%s rx=%lu queued=%lu lead min=%lldus max=%lldus late=%lu\n",
         ir_link_status_text(&client_link), client_link.edges_received, (unsigned long)ps_rx->ir.rx_queue.count,
         (long long)client_link.min_lead_us, (long long)client_link.max_lead_us, client_link.late_edges);

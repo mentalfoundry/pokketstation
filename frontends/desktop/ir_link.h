@@ -274,6 +274,11 @@ typedef struct ir_link {
     unsigned long edges_sent;
     unsigned long edges_received;
     unsigned long dropped_tx;
+    /* The number of calls into the transport that took data. One IR message is several hundred edges,
+       thus a transport that takes one wire message for each call needs several hundred system calls for
+       one message, and each one goes on the network as its own small packet. This counter gives that
+       number directly. See poll_write in ir_link.c. */
+    unsigned long transport_writes;
     /* While this flag is set, the connected status line contains the counters above. Thus the
        counters get to the window title. This code always keeps the counters; only their display is
        optional. The flag is off until the frontend sets it (ir_link_diagnostics in settings.cfg),

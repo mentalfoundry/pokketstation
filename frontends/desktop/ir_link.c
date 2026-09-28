@@ -321,17 +321,63 @@ static int poll_read(ir_link_t *link, psemu_t *ps) {
     return 1;
 }
 
-/* Offers the message at the head of the queue to the transport. A transport can take part of a
-   message, thus write_offset records the part that it already took.
-   Returns 1 if the full message went to the transport, 0 if the transport took no more data. */
+/* Gives the number of messages at the head of the queue that can go to the transport in one call.
+
+   A group of edges is the hot path of this file. One call for each 24-byte message needs several hundred
+   calls into the operating system for one IR message, and on a network each of those calls also becomes
+   its own packet, with a header that is larger than the message itself. A run of messages in one call
+   removes both costs. A measurement of 4000 edges gives 4011 calls with one message for each call.
+
+   A run stops at three places:
+   - the end of the array. The queue is a ring, and one call needs one continuous block.
+   - a PING or a PONG that is not at the head. poll_write gives those two kinds their timestamp at the
+     moment that the transport takes the message, and a message inside a block has no such moment.
+   - a PING or a PONG at the head. It goes alone, for that same reason. This happens two times for each
+     second, thus the cost of one extra call is insignificant. */
+static uint32_t writable_run(const ir_link_t *link) {
+    uint32_t run = IR_LINK_WRITE_QUEUE_CAPACITY - link->write_head;
+    uint8_t head_kind;
+    uint32_t i;
+    if (run > link->write_count) {
+        run = link->write_count;
+    }
+    if (run == 0) {
+        return 0;
+    }
+    head_kind = link->write_queue[link->write_head].kind;
+    if (head_kind == IR_WIRE_KIND_PING || head_kind == IR_WIRE_KIND_PONG) {
+        return 1;
+    }
+    for (i = 1; i < run; i++) {
+        uint8_t kind = link->write_queue[link->write_head + i].kind;
+        if (kind == IR_WIRE_KIND_PING || kind == IR_WIRE_KIND_PONG) {
+            return i;
+        }
+    }
+    return run;
+}
+
+/* Offers a run of messages at the head of the queue to the transport. A transport can take part of that
+   run, and it can stop in the middle of a message. write_offset records the part of the message at the
+   head that the transport already took, thus only that one message can be incomplete.
+   Returns 1 if at least one full message went to the transport, and 0 if the transport took no more
+   data. */
 static int poll_write(ir_link_t *link) {
+    uint32_t run = writable_run(link);
     ir_wire_message_t *head = &link->write_queue[link->write_head];
-    const uint8_t *bytes;
-    size_t want = sizeof(ir_wire_message_t) - link->write_offset;
+    const uint8_t *bytes = (const uint8_t *)head;
+    size_t want;
+    size_t got;
+    uint32_t advanced;
+    if (run == 0) {
+        return 0;
+    }
     /* A PING and a PONG get their timestamp here, and not at the moment that this code puts them in the
        queue. The queue can hold a full IR message of several hundred edges, and the time to drain it
        would become part of the measured round trip. The first byte of the message has not left yet, thus
-       this point is the last moment at which the value can change. */
+       this point is the last moment at which the value can change.
+       writable_run keeps each of those two kinds at the head of its own call, thus this test covers each
+       message that needs a timestamp. */
     if (link->write_offset == 0) {
         if (head->kind == IR_WIRE_KIND_PING) {
             uint64_t now = link_wall_us_now(link);
@@ -342,20 +388,21 @@ static int poll_write(ir_link_t *link) {
             head->timestamp2_us = link_wall_us_now(link);
         }
     }
-    bytes = (const uint8_t *)head;
-    size_t got = ir_transport_send(&link->transport, bytes + link->write_offset, want);
+    want = (size_t)run * sizeof(ir_wire_message_t) - link->write_offset;
+    got = ir_transport_send(&link->transport, bytes + link->write_offset, want);
+    if (got != 0) {
+        link->transport_writes++;
+    }
     if (link->transport.state != IR_TRANSPORT_CONNECTED) {
         adopt_transport_error(link);
         return 0;
     }
     link->write_offset += (uint32_t)got;
-    if (link->write_offset < sizeof(ir_wire_message_t)) {
-        return 0;
-    }
-    link->write_offset = 0;
-    link->write_head = (link->write_head + 1u) % IR_LINK_WRITE_QUEUE_CAPACITY;
-    link->write_count--;
-    return 1;
+    advanced = link->write_offset / (uint32_t)sizeof(ir_wire_message_t);
+    link->write_offset %= (uint32_t)sizeof(ir_wire_message_t);
+    link->write_head = (link->write_head + advanced) % IR_LINK_WRITE_QUEUE_CAPACITY;
+    link->write_count -= advanced;
+    return advanced != 0;
 }
 
 static void drain_tx_edges(ir_link_t *link, psemu_t *ps) {
