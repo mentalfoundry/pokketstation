@@ -111,19 +111,31 @@ static void test_transfer_shifts_the_held_byte_out(void) {
     printf("test_transfer_shifts_the_held_byte_out OK\n");
 }
 
+/* COM_STAT2, COM_CTRL1, COM_CTRL2 and INT_COM come from a measurement on real hardware: screen 15 of
+   pk_timing_bench. See "What real hardware shows in COM_STAT2" in docs/hardware-notes.md. */
+
 static void test_ready_bit_reports_an_arrived_byte(void) {
     psemu_t *ps = psemu_create();
 
+    /* With COM_CTRL1 = 1, a complete byte sets Ready and requests INT_COM. */
+    psemu_bus_write32(&ps->bus, COM_CTRL1, 0x01u);
     assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0u);
-
     com_begin_transfer(&ps->com, &ps->intc, 0x52u);
-    assert((psemu_bus_read32(&ps->bus, COM_STAT2) & COM_STAT2_READY) != 0u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == COM_STAT2_READY);
+    assert((ps->intc.hold & INT_COM) != 0u);
+    assert((ps->intc.status & INT_COM) != 0u);
+
+    /* A READ OF COM_DATA DOES NOT CLEAR READY. Real hardware keeps it set after that read. */
+    assert(psemu_bus_read32(&ps->bus, COM_DATA) == 0x52u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == COM_STAT2_READY);
     assert((ps->intc.hold & INT_COM) != 0u);
 
-    /* A read of COM_DATA consumes the byte. The Ready bit and the interrupt request both clear. */
-    (void)psemu_bus_read32(&ps->bus, COM_DATA);
+    /* COM_CTRL2 = 1 clears Ready, and the request ends. The kernel writes this straight after each read
+       of Ready that gives 1. */
+    psemu_bus_write32(&ps->bus, COM_CTRL2, 0x01u);
     assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0u);
     assert((ps->intc.hold & INT_COM) == 0u);
+    assert((ps->intc.status & INT_COM) == 0u);
 
     com_end_transfer(&ps->com, &ps->intc);
     psemu_destroy(ps);
@@ -133,14 +145,13 @@ static void test_ready_bit_reports_an_arrived_byte(void) {
 static void test_acknowledge_ends_the_exchange_without_a_data_read(void) {
     psemu_t *ps = psemu_create();
 
-    /* A trace of a real BIOS found this case. No other event can replace it. The kernel handles a
-       full command inside one FIQ. It polls COM_STAT2 for each byte after the first byte. The data
-       phase of a command receives only dummy bytes. Thus the kernel never reads COM_DATA during that
-       phase. The Ready bit must still clear at the acknowledge.
-       Without this behavior, the poll loop of the kernel read a byte that never arrived. It then ran
-       through the remainder of the command inside one exchange. */
+    /* A trace of a real BIOS found this case. The kernel handles a full command inside one FIQ. The
+       write path polls COM_STAT1 bit 0 for each data byte, at 0x040015D6, and the data phase receives
+       only dummy bytes, thus the kernel never reads COM_DATA there. COM_STAT1 bit 0 must clear at the
+       acknowledge. Ready in COM_STAT2 is different: only COM_CTRL2 clears it. */
+    psemu_bus_write32(&ps->bus, COM_CTRL1, 0x01u);
     com_begin_transfer(&ps->com, &ps->intc, 0x00u);
-    assert((psemu_bus_read32(&ps->bus, COM_STAT2) & COM_STAT2_READY) != 0u);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) != 0u);
     assert(com_transfer_acked(&ps->com) == 0);
 
     /* The kernel drives the data line, and then it pulls /ACK LOW. This is the sequence that the
@@ -150,15 +161,110 @@ static void test_acknowledge_ends_the_exchange_without_a_data_read(void) {
     psemu_bus_write32(&ps->bus, COM_MODE, COM_MODE_OUT_ENABLE | COM_MODE_ACK_LOW);
     assert(com_transfer_acked(&ps->com) == 1);
 
-    /* No read of COM_DATA occurred, and the Ready bit is clear. */
-    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0u);
-    assert((ps->intc.hold & INT_COM) == 0u);
+    /* No read of COM_DATA occurred, and COM_STAT1 bit 0 is clear. Ready stays. */
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) == 0u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == COM_STAT2_READY);
 
     com_end_transfer(&ps->com, &ps->intc);
     assert(com_transfer_acked(&ps->com) == 0);
 
     psemu_destroy(ps);
     printf("test_acknowledge_ends_the_exchange_without_a_data_read OK\n");
+}
+
+/* A read of COM_STAT2 shows only the events that COM_CTRL1 selects, and only those events request
+   INT_COM. Real hardware, with both events set:
+   COM_CTRL1 0 -> 0, 1 -> bit 0, 2 -> bit 1, 3 -> both. */
+static void test_ctrl1_selects_the_events_of_stat2(void) {
+    static const uint32_t expect[4] = {0u, 1u, 2u, 3u};
+    uint32_t c;
+    for (c = 0; c < 4u; c++) {
+        psemu_t *ps = psemu_create();
+        psemu_bus_write32(&ps->bus, COM_CTRL1, c);
+        psemu_com_set_selected(ps, 1);
+        com_begin_transfer(&ps->com, &ps->intc, 0x81u);
+        assert(psemu_bus_read32(&ps->bus, COM_STAT2) == expect[c]);
+        assert(((ps->intc.hold & INT_COM) != 0u) == (c != 0u));
+        assert(((ps->intc.status & INT_COM) != 0u) == (c != 0u));
+        psemu_destroy(ps);
+    }
+    printf("test_ctrl1_selects_the_events_of_stat2 OK\n");
+}
+
+/* The selection sets COM_STAT2 bit 1. With COM_CTRL1 = 2, which the kernel writes while it waits, the
+   interrupt comes at the selection, before the first byte. Ready then sets at the byte, and it shows
+   only when COM_CTRL1 selects it. Real hardware gives this order: INT_COM at the selection, and Ready
+   53 to 62us later. */
+static void test_the_selection_requests_the_interrupt_before_the_byte(void) {
+    psemu_t *ps = psemu_create();
+
+    psemu_bus_write32(&ps->bus, COM_CTRL1, 0x02u);
+    assert((ps->intc.hold & INT_COM) == 0u);
+
+    psemu_com_set_selected(ps, 1);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0x02u);
+    assert((ps->intc.hold & INT_COM) != 0u);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) == 0u);
+
+    /* The byte: COM_STAT1 bit 0 sets, whatever COM_CTRL1 holds. Ready is set, but COM_CTRL1 = 2 does
+       not show it. */
+    com_begin_transfer(&ps->com, &ps->intc, 0x81u);
+    assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) != 0u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0x02u);
+    psemu_bus_write32(&ps->bus, COM_CTRL1, 0x03u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0x03u);
+
+    com_end_transfer(&ps->com, &ps->intc);
+    psemu_destroy(ps);
+    printf("test_the_selection_requests_the_interrupt_before_the_byte OK\n");
+}
+
+/* COM_CTRL2 = 3 clears both events. HOLD latches at the start of a request: an acknowledge in the
+   interrupt controller while the request continues leaves HOLD at 0, and INT_INPUT keeps the level. A
+   new request after the end of the old one latches HOLD again. Real hardware gives both facts: an
+   acknowledge while selected events stay set leaves HOLD at 0 through more accesses, and a write of
+   COM_CTRL2 = 3 makes both bits read 0. See pk_timing_bench/VERIFICATION.md, screen 15. */
+static void test_ctrl2_clears_the_events_and_hold_latches_at_a_new_request(void) {
+    psemu_t *ps = psemu_create();
+
+    psemu_bus_write32(&ps->bus, COM_CTRL1, 0x03u);
+    psemu_com_set_selected(ps, 1);
+    com_begin_transfer(&ps->com, &ps->intc, 0x81u);
+    assert((ps->intc.hold & INT_COM) != 0u);
+
+    /* An acknowledge clears HOLD. The request continues, and HOLD stays 0. */
+    psemu_bus_write32(&ps->bus, PSEMU_INTC_BASE + 0x10u, INT_COM);
+    assert((ps->intc.hold & INT_COM) == 0u);
+    assert((ps->intc.status & INT_COM) != 0u);
+    psemu_com_set_selected(ps, 0);
+    psemu_com_set_selected(ps, 1);
+    com_begin_transfer(&ps->com, &ps->intc, 0x81u);
+    assert((ps->intc.hold & INT_COM) == 0u);
+
+    /* COM_CTRL2 = 1 clears Ready only. The selection event keeps the request. */
+    psemu_bus_write32(&ps->bus, COM_CTRL2, 0x01u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0x02u);
+    assert((ps->intc.status & INT_COM) != 0u);
+
+    /* COM_CTRL2 = 3 clears both, and the request ends. */
+    psemu_bus_write32(&ps->bus, COM_CTRL2, 0x03u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0u);
+    assert((ps->intc.status & INT_COM) == 0u);
+
+    /* A new event is a new request, and HOLD latches. */
+    psemu_com_set_selected(ps, 0);
+    psemu_com_set_selected(ps, 1);
+    assert((ps->intc.hold & INT_COM) != 0u);
+
+    /* COM_CTRL1 = 0 ends the request without a clear of the events. The kernel writes this first at
+       the end of each command. */
+    psemu_bus_write32(&ps->bus, COM_CTRL1, 0x00u);
+    assert((ps->intc.hold & INT_COM) == 0u);
+    assert((ps->intc.status & INT_COM) == 0u);
+
+    com_end_transfer(&ps->com, &ps->intc);
+    psemu_destroy(ps);
+    printf("test_ctrl2_clears_the_events_and_hold_latches_at_a_new_request OK\n");
 }
 
 static void test_sel_release_sets_the_end_of_command_bit(void) {
@@ -203,15 +309,15 @@ static void test_sel_release_sets_the_end_of_command_bit(void) {
 static void test_stat1_bit0_follows_an_arrived_byte(void) {
     psemu_t *ps = psemu_create();
 
-    /* The write path of the kernel polls COM_STAT1 in place of COM_STAT2, at 0x040015D6. Thus bit 0
-       must give the same condition as the Ready bit of COM_STAT2. A bit that stays clear stops that
-       path after one data byte. A bit that stays set makes the kernel read one byte many times, and
-       Write Sector then answers 0x4E. */
+    /* The write path of the kernel polls COM_STAT1 in place of COM_STAT2, at 0x040015D6. A bit that
+       stays clear stops that path after one data byte. A bit that stays set makes the kernel read one
+       byte many times, and Write Sector then answers 0x4E. On real hardware COM_CTRL1 does not mask
+       this bit: here COM_CTRL1 is 0, and the bit still sets. */
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) == 0u);
 
     com_begin_transfer(&ps->com, &ps->intc, 0x5Au);
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) != 0u);
-    assert((psemu_bus_read32(&ps->bus, COM_STAT2) & COM_STAT2_READY) != 0u);
+    assert(psemu_bus_read32(&ps->bus, COM_STAT2) == 0u);
 
     (void)psemu_bus_read32(&ps->bus, COM_DATA);
     assert((psemu_bus_read32(&ps->bus, COM_STAT1) & 1u) == 0u);
@@ -493,6 +599,9 @@ int main(void) {
     test_acknowledge_ends_the_exchange_without_a_data_read();
     test_sel_release_sets_the_end_of_command_bit();
     test_stat1_bit0_follows_an_arrived_byte();
+    test_ctrl1_selects_the_events_of_stat2();
+    test_the_selection_requests_the_interrupt_before_the_byte();
+    test_ctrl2_clears_the_events_and_hold_latches_at_a_new_request();
     test_com_transfer_reasserts_select_on_entry();
     test_transfer_and_select_drop_deasserts_select_and_sets_latch();
     test_transfer_and_select_drop_during_byte_sets_latch_while_byte_is_pending();

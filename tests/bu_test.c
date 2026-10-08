@@ -285,6 +285,16 @@ static void test_a_timed_transfer_reports_the_cost_of_each_answer(void) {
    ticks are 13,312,640 units. A PS1 cannot send the next byte in less time than this. */
 #define PS1_BYTE_UNITS ((1088ull * 13312640ull) / 441ull)
 
+/* The time from the selection to the end of the first byte, in units. See PSEMU_COM_SELECT_LEAD_CYCLES. */
+#define SELECT_LEAD_UNITS ((uint64_t)PSEMU_COM_SELECT_LEAD_CYCLES * PSEMU_TIME_PER_REFERENCE_CYCLE)
+
+/* Selects the device the way a PS1 does: the hold of /SEL, and then the time until the first byte is
+   complete. The kernel takes its interrupt at the hold. */
+static void select_like_a_ps1(psemu_t *ps) {
+    psemu_com_set_selected(ps, 1);
+    (void)psemu_run_time(ps, SELECT_LEAD_UNITS);
+}
+
 /* The budget for one answer, in units: the default budget of psemu_com_transfer. */
 #define ANSWER_BUDGET_UNITS ((uint64_t)PSEMU_COM_DEFAULT_TIMEOUT_CYCLES * PSEMU_TIME_PER_REFERENCE_CYCLE)
 
@@ -312,9 +322,10 @@ static int same_machine(const psemu_t *a, const psemu_t *b) {
 }
 
 /* psemu_run_time_to_ack stops after the instruction that acknowledges the byte, thus its return value
-   is the exact time of the answer. This test sends Get ID with the gap of a real PS1 between the
-   bytes, and the time of each answer must be less than the poll step of psemu_com_transfer_timed (64
-   reference cycles). The last byte has no acknowledge, and the run then ends at the budget. */
+   is the exact time of the answer. This test selects the device as a PS1 does, and sends Get ID with
+   the gap of a real PS1 between the bytes. The time of each answer must be less than the poll step of
+   psemu_com_transfer_timed (64 reference cycles). The last byte has no acknowledge, and the run then
+   ends at the budget. */
 static void test_the_time_to_ack_is_the_exact_time_of_the_answer(void) {
     mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
     const uint8_t send[10] = {0x81u, 0x53u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
@@ -323,6 +334,7 @@ static void test_the_time_to_ack_is_the_exact_time_of_the_answer(void) {
     unsigned i;
 
     assert(m != NULL);
+    select_like_a_ps1(m->ps);
     for (i = 0; i < 10u; i++) {
         reply[i] = psemu_com_send(m->ps, send[i]);
         cost[i] = psemu_run_time_to_ack(m->ps, ANSWER_BUDGET_UNITS);
@@ -426,6 +438,35 @@ static void test_split_runs_give_the_same_machine(void) {
     printf("test_split_runs_give_the_same_machine OK\n");
 }
 
+/* A selection with no byte for the device leaves the kernel ready. A PS1 selects the port also to
+   read the controller, and the device sees that selection. The selection starts the FIQ of the kernel
+   (see PSEMU_COM_SELECT_LEAD_CYCLES), the kernel waits for the release, and it then ends the command.
+   The next command must answer. */
+static void test_a_selection_with_no_byte_leaves_the_kernel_ready(void) {
+    mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+    uint8_t reply[10];
+    size_t n, id;
+    unsigned i;
+
+    assert(m != NULL);
+    for (i = 0; i < 5u; i++) {
+        psemu_com_set_selected(m->ps, 1);
+        (void)psemu_run(m->ps, 500u);
+        psemu_com_set_selected(m->ps, 0);
+        mock_ps1_run_frames(m, 1u);
+    }
+
+    n = mock_ps1_get_id(m, reply);
+    mock_ps1_end_command(m);
+    print_stream("Get ID after 5 selections with no byte", reply, n);
+    id = mock_ps1_find_id_pair(reply, n);
+    assert(id != MOCK_PS1_NOT_FOUND && id + 8u <= n);
+    assert(reply[id + 4u] == 0x04u && reply[id + 7u] == 0x80u);
+
+    mock_ps1_close(m);
+    printf("test_a_selection_with_no_byte_leaves_the_kernel_ready OK\n");
+}
+
 int main(void) {
     mock_ps1_t *m;
     const char *path = bios_path();
@@ -451,6 +492,7 @@ int main(void) {
     test_a_timed_transfer_reports_the_cost_of_each_answer();
     test_the_time_to_ack_is_the_exact_time_of_the_answer();
     test_split_runs_give_the_same_machine();
+    test_a_selection_with_no_byte_leaves_the_kernel_ready();
 
     mock_ps1_close(m);
     printf("bu_test: all tests OK\n");

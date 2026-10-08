@@ -45,9 +45,31 @@ void com_init(com_t *com) {
     com->tx_shifted = COM_REPLY_IDLE;
     com->rx_ready = 0;
     com->ack_asserted = 0;
+    com->stat2_events = 0u;
+    com->irq_level = 0;
     com->selected = 0;
     com->sel_drop_latch = 0;
     com->docked = 0;
+}
+
+/* Sets INT_COM from stat2_events and COM_CTRL1. Call this after each change of either one.
+
+   The request is a level: stat2_events & COM_CTRL1 is not 0. INT_INPUT (STATUS) shows that level.
+   HOLD latches when the request starts, and it clears when the request ends. An acknowledge in the
+   interrupt controller clears HOLD only, thus HOLD stays 0 until a new request starts. intc_set_line
+   gives exactly this, because INT_COM is in INT_STATUS_MASK and in INT_LEVEL_MASK (intc.h).
+
+   Two facts give this. On real hardware, an acknowledge while selected events stay set leaves HOLD at
+   0, also through more accesses (screen 15 of pk_timing_bench, see VERIFICATION.md). The J110 kernel
+   acknowledges INT_COM only in its link setup at docking, and never during a command, and its FIQ
+   handler does not start again after a command: at the end of a command it writes COM_CTRL1 = 0 and
+   then COM_CTRL2 = 3, which end the request. */
+static void com_update_irq(com_t *com, struct intc *intc) {
+    int level = (com->stat2_events & com->ctrl1 & 3u) != 0u;
+    if (level != com->irq_level) {
+        intc_set_line(intc, INT_COM, level);
+        com->irq_level = level;
+    }
 }
 
 /* A SIDE EFFECT OF A READ MUST OCCUR ON ONE BYTE LANE ONLY, AND THAT LANE MUST BE THE LANE THAT
@@ -63,6 +85,8 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
     uint32_t shift = (offset % 4u) * 8u;
     uint32_t value;
 
+    (void)intc; /* a read changes no interrupt request. See com_update_irq. */
+
     switch (word_index) {
     case 0:
         value = com->mode;
@@ -73,8 +97,9 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
            BIT 1 REPORTS A RELEASE OF THE /SEL LINE. That release is the end of one command. The
            kernel waits for this bit after the last byte, at 0x040007B8 in the J110 revision.
 
-           BIT 0 REPORTS AN ARRIVED BYTE. It gives the same condition as the Ready bit of COM_STAT2.
-           The write path of the kernel polls this register in place of COM_STAT2, at 0x040015D6.
+           BIT 0 REPORTS AN ARRIVED BYTE. The write path of the kernel polls this register in place
+           of COM_STAT2, at 0x040015D6. On real hardware COM_CTRL1 does not mask this bit, and it
+           clears before the next access. A read of COM_DATA and the acknowledge clear it here.
 
            A READ OF THIS REGISTER DOES NOT CLEAR BIT 1. The bit stays set for the full time that the
            PS1 holds the line released. com_set_selected clears it at the next hold. See
@@ -82,26 +107,23 @@ uint32_t com_read(com_t *com, struct intc *intc, uint32_t offset) {
         value = com->stat1 | (com->rx_ready ? 1u : 0u) | (com->sel_drop_latch ? COM_STAT1_ERROR : 0u);
         break;
     case 2:
-        /* A read of COM_DATA takes the byte that the PS1 sent.
+        /* A read of COM_DATA takes the byte that the PS1 sent. It clears COM_STAT1 bit 0.
 
-           THIS READ CLEARS THE READY BIT OF COM_STAT2. IT ALSO CLEARS THE COM INTERRUPT REQUEST.
-           The kernel answers one byte for each interrupt. The interrupt lines of this emulator are
-           level-triggered (see intc.h), thus INT_COM must clear here. Without this clear the FIQ
-           handler starts again immediately, and it processes the remainder of the command inside one
-           exchange.
+           IT DOES NOT CLEAR THE READY BIT OF COM_STAT2, AND IT DOES NOT CHANGE INT_COM. Real hardware
+           keeps Ready set after this read. The kernel clears Ready with COM_CTRL2 = 1.
 
            ONLY THE LOW BYTE LANE TAKES THE BYTE. See the note on side effects above. */
         value = com->rx_data;
         if (shift == 0u) {
             com->rx_ready = 0;
-            intc_set_line(intc, INT_COM, 0);
         }
         break;
     case 4:
         value = com->ctrl1;
         break;
     case 5:
-        value = com->rx_ready ? COM_STAT2_READY : 0u;
+        /* Only the events that COM_CTRL1 selects. */
+        value = com->stat2_events & com->ctrl1 & 3u;
         break;
     case 6:
         value = com->ctrl2;
@@ -170,17 +192,22 @@ void com_write(com_t *com, struct intc *intc, uint32_t offset, uint32_t value) {
            byte, and this device gave its reply. The signal is the end of one byte exchange. This
            code records the event, and it does not follow the level.
 
-           THE ACKNOWLEDGE ALSO CLEARS THE READY BIT OF COM_STAT2. The exchange is complete at this
-           point, and the shift register then waits for 8 new bits. Ready reports the arrival of
-           those bits, thus Ready must read 0 until they arrive.
-
-           A read of COM_DATA is not sufficient on its own. The kernel handles a full command inside
-           one FIQ, and it polls COM_STAT2 for each byte after the first byte. That poll is at
-           0x04001592 in the J110 revision. The data phase of a command sends bytes and receives only
-           dummy bytes, thus the kernel never reads COM_DATA during that phase. */
+           THE ACKNOWLEDGE ALSO CLEARS COM_STAT1 BIT 0. The write path of the kernel polls that bit
+           for the next byte, at 0x040015D6, and the data phase of a command never reads COM_DATA.
+           Ready in COM_STAT2 is different: the kernel clears it with COM_CTRL2. */
         com->ack_asserted = 1;
         com->rx_ready = 0;
-        intc_set_line(intc, INT_COM, 0);
+    }
+
+    if (word_index == 4u) {
+        /* COM_CTRL1 selects the events that request INT_COM. */
+        com_update_irq(com, intc);
+    } else if (word_index == 6u) {
+        /* A write of 1 to a bit of COM_CTRL2 clears the same event. Hardware confirms this for a write
+           of 3. The kernel writes 1 straight after each read of Ready that gives 1 (0x040010A2,
+           0x04000808, 0x0400159C in J110), and 3 at the end of a command. */
+        com->stat2_events &= ~(byte & 3u);
+        com_update_irq(com, intc);
     }
 }
 
@@ -195,14 +222,18 @@ void com_set_docked(com_t *com, struct intc *intc, int docked) {
     intc_set_level_and_pulse(intc, INT_IOP, com->docked);
 }
 
-void com_set_selected(com_t *com, int selected) {
+void com_set_selected(com_t *com, struct intc *intc, int selected) {
     int now = selected ? 1 : 0;
     if (com->selected && !now) {
         /* The PS1 released the line. This is the end of one command. */
         com->sel_drop_latch = 1;
     } else if (!com->selected && now) {
-        /* The PS1 holds the line again. This is the start of the next command. */
+        /* The PS1 holds the line again. This is the start of the next command. It sets COM_STAT2
+           bit 1. With COM_CTRL1 = 2, which the kernel writes while it waits, this event starts the
+           FIQ handler before the first byte is complete. */
         com->sel_drop_latch = 0;
+        com->stat2_events |= 2u;
+        com_update_irq(com, intc);
     }
     com->selected = now;
 }
@@ -215,6 +246,7 @@ void com_begin_transfer(com_t *com, struct intc *intc, uint8_t data_in) {
     com->rx_data = data_in;
     com->rx_ready = 1;
     com->ack_asserted = 0;
+    com->stat2_events |= COM_STAT2_READY;
 
     if (psemu_com_trace_enabled) {
         printf("[com trace] --- transfer begin, data_in=0x%02X, shifting out 0x%02X ---\n", (unsigned)data_in,
@@ -222,8 +254,9 @@ void com_begin_transfer(com_t *com, struct intc *intc, uint8_t data_in) {
     }
 
     /* INT_COM is FIQ source bit 6. The FIQ handler of the kernel processes this source. It does this
-       before it calls the FIQ callback of an app. See intc.h and the top comment of com.h. */
-    intc_set_line(intc, INT_COM, 1);
+       before it calls the FIQ callback of an app. See intc.h and the top comment of com.h. Ready
+       requests it only if COM_CTRL1 selects bit 0. */
+    com_update_irq(com, intc);
 }
 
 int com_transfer_acked(const com_t *com) {
@@ -239,7 +272,7 @@ void com_end_transfer(com_t *com, struct intc *intc) {
         printf("[com trace] --- transfer end, acked=%d reply=0x%02X ---\n", com->ack_asserted,
             (unsigned)com_take_reply(com));
     }
-    intc_set_line(intc, INT_COM, 0);
+    (void)intc;
     com->rx_ready = 0;
     com->ack_asserted = 0;
 }

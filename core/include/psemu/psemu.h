@@ -537,8 +537,25 @@ int psemu_com_is_enabled(const psemu_t *ps);
 
    The usual sequence for one command is a call to psemu_com_transfer for each byte, and then a call
    to psemu_com_set_selected(ps, 0). Run the machine for a short time after the release, so the
-   kernel can leave its wait and make its command state ready again. */
+   kernel can leave its wait and make its command state ready again.
+
+   THE HOLD IS AN EVENT FOR THE KERNEL. While the kernel waits for a command, the hold requests its
+   interrupt, and the kernel then polls for the first byte. Real hardware measures this. Thus a host
+   that sends bytes with psemu_com_send holds the line here, at the time that the PS1 selects the
+   device, and gives the first byte later. See PSEMU_COM_SELECT_LEAD_CYCLES. */
 void psemu_com_set_selected(psemu_t *ps, int selected);
+
+/* The time from the selection of the device to the end of the first byte of a command, in reference
+   cycles, as a PS1 gives it. psemu_com_transfer and psemu_com_transfer_timed run the machine for this
+   time between the hold of /SEL and the first byte, if the line was not held.
+
+   Screen 15 of pk_timing_bench measures this time on real hardware, against the memory card driver
+   of a PS1: 53 to 62us. 66 reference cycles are 62.5us.
+
+   THE KERNEL NEEDS A GAP. Its FIQ handler starts at the selection, and it writes COM_CTRL2 = 1 to
+   clear an old Ready before it polls for the byte. A byte that is complete at the selection is
+   cleared by that write, and the kernel then answers nothing. */
+#define PSEMU_COM_SELECT_LEAD_CYCLES 66u
 
 /* Exchanges one byte with the PS1.
    `data_in` is the byte from the PS1. This function writes the reply of the device to
@@ -558,19 +575,18 @@ void psemu_com_set_selected(psemu_t *ps, int selected);
    PSEMU_COM_DEFAULT_TIMEOUT_CYCLES is a sufficient budget for `timeout_cycles` in the docked
    condition. A caller can supply a larger value.
 
-   The `wait` mode of tools/com_probe.c measured the cost of one answer against a real J110 dump. The
-   first byte of a command costs 46 reference cycles, because the kernel must take the FIQ. Each byte
-   after the first byte costs 14 to 30 cycles, because the kernel already polls COM_STAT2 inside that
-   same FIQ. Thus 46 cycles is the worst measured answer. That is approximately 174 CPU cycles.
+   The `wait` mode of tools/com_probe.c measures the cost of one answer against a real J110 dump. The
+   kernel takes its FIQ at the selection, before the first byte (see PSEMU_COM_SELECT_LEAD_CYCLES),
+   and it polls COM_STAT2 inside that FIQ for each byte. Thus each answer, also the first one, costs
+   only the work of that one byte, a few tens of reference cycles.
 
    THIS COST SCALES WITH CLK_MODE. That measurement used CLK_MODE 7 (3,997,696Hz), and the kernel
    selects that mode when it enables communication in the docked condition. The budget here is in
    PSEMU_ASSUMED_CPU_HZ reference cycles (1,056,000Hz). Thus a slower clock makes the same work cost
    more reference cycles.
 
-   This value is approximately 178 times the worst measured answer at the docked clock. An app that
-   slows the clock far below the docked clock while it is docked can need a larger budget from the
-   caller.
+   This value is more than 100 times a measured answer at the docked clock. An app that slows the
+   clock far below the docked clock while it is docked can need a larger budget from the caller.
 
    Do not make this value very large. A command gives no acknowledge for its last byte, because the
    command is complete at that point. Thus every command reaches this budget one time, and the
@@ -585,7 +601,8 @@ int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t
    After an acknowledge, the number is the time from the arrival of the byte to the acknowledge, to
    the resolution of the step that this function uses to poll. That resolution is 64 reference
    cycles. Thus the number is the measured cost of the answer, and it is never smaller than the true
-   cost. Without an acknowledge, the number is the full budget that ran.
+   cost. Without an acknowledge, the number is the full budget that ran. For the first byte of a
+   command, the number also includes PSEMU_COM_SELECT_LEAD_CYCLES, which ran before the byte.
 
    `cycles_out` accepts NULL. */
 int psemu_com_transfer_timed(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles,
@@ -595,9 +612,14 @@ int psemu_com_transfer_timed(psemu_t *ps, uint8_t data_in, uint8_t *data_out, ui
    psemu_com_transfer and psemu_com_transfer_timed do the two parts in one call, and they stop the
    run only at a poll step.
 
-   psemu_com_send gives one byte from the PS1 to the machine at the time of its clock, and it holds
-   the /SEL line. It returns the byte that moves out in the same exchange. The kernel wrote that byte
-   before this exchange, thus it does not depend on the run that follows. This function runs nothing.
+   psemu_com_send gives one byte from the PS1 to the machine at the time of its clock. It returns the
+   byte that moves out in the same exchange. The kernel wrote that byte before this exchange, thus it
+   does not depend on the run that follows. This function runs nothing.
+
+   The host holds /SEL with psemu_com_set_selected at the time that the PS1 selects the device, which
+   is before the first byte. psemu_com_send holds the line if the host did not, at the time of the
+   byte. The kernel then misses that byte, as it would on real hardware if a byte were complete at the
+   selection. See PSEMU_COM_SELECT_LEAD_CYCLES.
 
    psemu_run_time_to_ack then runs the machine like psemu_run_time. It also stops after the instruction
    that acknowledges the byte. psemu_com_acked tells which condition stopped the run. Thus the return

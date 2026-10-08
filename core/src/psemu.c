@@ -716,12 +716,13 @@ int psemu_com_is_enabled(const psemu_t *ps) {
 #define COM_POLL_CHUNK_CYCLES 64u
 
 void psemu_com_set_selected(psemu_t *ps, int selected) {
-    com_set_selected(&ps->com, selected);
+    com_set_selected(&ps->com, &ps->intc, selected);
 }
 
 uint8_t psemu_com_send(psemu_t *ps, uint8_t data_in) {
-    /* A byte can only arrive while the PS1 holds the /SEL line. See psemu_com_transfer_timed. */
-    com_set_selected(&ps->com, 1);
+    /* A byte can only arrive while the PS1 holds the /SEL line. A caller that did not hold it gets the
+       hold now, at the same time as the byte. See psemu_com_send in psemu/psemu.h. */
+    com_set_selected(&ps->com, &ps->intc, 1);
     com_begin_transfer(&ps->com, &ps->intc, data_in);
     return com_take_reply(&ps->com);
 }
@@ -750,6 +751,16 @@ static uint32_t run_to_ack(psemu_t *ps, uint32_t cycles) {
     return ran;
 }
 
+/* A byte that starts a command comes after the selection, as it does from a PS1. See
+   PSEMU_COM_SELECT_LEAD_CYCLES. Returns the reference cycles that ran. */
+static uint32_t select_before_byte(psemu_t *ps) {
+    if (ps->com.selected) {
+        return 0u;
+    }
+    com_set_selected(&ps->com, &ps->intc, 1);
+    return ps->has_bios ? psemu_run(ps, PSEMU_COM_SELECT_LEAD_CYCLES) : 0u;
+}
+
 int psemu_com_acked(const psemu_t *ps) {
     return com_transfer_acked(&ps->com);
 }
@@ -763,12 +774,13 @@ int psemu_com_transfer_timed(psemu_t *ps, uint8_t data_in, uint8_t *data_out, ui
     uint32_t ran;
     int acked;
 
-    /* A byte can only arrive while the PS1 holds the /SEL line. A caller that never sets the
-       line still gets a working transfer, because this call holds it. The caller keeps the duty to
-       release the line at the end of a command. See psemu_com_set_selected. */
-    com_set_selected(&ps->com, 1);
+    /* A byte can only arrive while the PS1 holds the /SEL line. A caller that never sets the line still
+       gets a working transfer, because this call holds it, and the byte then comes after the
+       selection. The caller keeps the duty to release the line at the end of a command. See
+       psemu_com_set_selected. */
+    ran = select_before_byte(ps);
     com_begin_transfer(&ps->com, &ps->intc, data_in);
-    ran = run_to_ack(ps, timeout_cycles);
+    ran += run_to_ack(ps, timeout_cycles);
 
     acked = com_transfer_acked(&ps->com);
     if (data_out) {
@@ -785,16 +797,16 @@ int psemu_com_transfer_and_select_drop(psemu_t *ps, uint8_t data_in, uint8_t *da
                                        uint32_t timeout_cycles) {
     int acked;
 
-    /* Assert SELECT before the transfer so the BIOS sees the line in the held state at the
-       start of this byte. com_set_selected is a no-op when SELECT is already held (1 -> 1). */
-    com_set_selected(&ps->com, 1);
+    /* Hold SELECT before the byte, as psemu_com_transfer does, so the kernel sees the line in the held
+       state at the start of this byte. */
+    (void)select_before_byte(ps);
     com_begin_transfer(&ps->com, &ps->intc, data_in);
 
     /* Drop /SEL before running any cycles. The byte is in the COM buffer (com_begin_transfer
        set COM_STAT2 ready). The FIQ's internal poll loop will read the byte, call the app
        callback, and then check sel_drop_latch. sel_drop_latch is 1 at that check because
        we set it here, before the FIQ executes any of those instructions. */
-    com_set_selected(&ps->com, 0);
+    com_set_selected(&ps->com, &ps->intc, 0);
 
     (void)run_to_ack(ps, timeout_cycles);
 

@@ -61,8 +61,10 @@
    in INT_INPUT directly: "IRQ Docked (0=Undocked, 1=Docked to PSX)". That map also records a
    necessary read of this live level during a communication transfer. That read finds an undock event
    while the transfer is in progress. Only a level in STATUS can supply that reading.
-   See com_set_docked in core/src/com.c, and docs/hardware-notes.md, "Communication port". */
-#define INT_STATUS_MASK 0x00001A1Fu
+   See com_set_docked in core/src/com.c, and docs/hardware-notes.md, "Communication port".
+   INT_COM (bit 6) is the request of the COM block. Screen 15 of pk_timing_bench reads it in
+   INT_INPUT on real hardware, together with HOLD. See com_update_irq in core/src/com.c. */
+#define INT_STATUS_MASK 0x00001A5Fu
 
 /* The sources whose STATUS bit is a continuous signal level, and not a latched request.
    An acknowledge write does NOT clear these bits.
@@ -87,7 +89,7 @@
    the transition. It then reads the level again to find the new direction. An acknowledge that
    clears the level makes each dock event read back as an undock event. */
 #define INT_LEVEL_MASK                                                                                             \
-    (INT_IRDA | INT_IOP | INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP)
+    (INT_IRDA | INT_IOP | INT_COM | INT_BTN_ACTION | INT_BTN_RIGHT | INT_BTN_LEFT | INT_BTN_DOWN | INT_BTN_UP)
 
 typedef struct intc {
     uint32_t hold;

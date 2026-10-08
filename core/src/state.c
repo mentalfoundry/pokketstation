@@ -260,6 +260,8 @@ static void state_visit(psemu_t *ps, st_t *s) {
     st_flag(s, &ps->com.selected);
     st_flag(s, &ps->com.sel_drop_latch);
     st_flag(s, &ps->com.docked);
+    st_u32(s, &ps->com.stat2_events);
+    st_flag(s, &ps->com.irq_level);
 
     /* IR. */
     st_u32(s, &ps->ir.mode);

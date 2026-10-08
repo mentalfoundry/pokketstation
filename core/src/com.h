@@ -21,9 +21,9 @@ struct intc;
    | +0x00 | COM_MODE  | bit0 Data Output Enable. bit1 /ACK Output Level (1 = drive LOW). bit2 unknown. |
    | +0x04 | COM_STAT1 | bit0 a byte arrived. bit1 the PS1 released /SEL. See selected below. |
    | +0x08 | COM_DATA  | bits 0 to 7. A read gets the byte from the PS1. A write sends a byte to the PS1. |
-   | +0x10 | COM_CTRL1 | bit0 and bit1 unknown. The observed values are 0, 2, and 3. |
-   | +0x14 | COM_STAT2 | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. |
-   | +0x18 | COM_CTRL2 | bit0 and bit1 unknown. The observed values are 1 and 3. |
+   | +0x10 | COM_CTRL1 | bit0 and bit1 select the bits of COM_STAT2 that a read shows and that request INT_COM. |
+   | +0x14 | COM_STAT2 | bit0 Ready: a byte is complete. bit1: the PS1 selected the device. Both stay set. |
+   | +0x18 | COM_CTRL2 | A write of 1 to a bit clears the same bit of COM_STAT2. |
 
    A published register map is the source of this layout. That map is community reverse engineering.
    It is not a manufacturer specification. The map marks the function of the CTRL1 bits and the CTRL2
@@ -32,6 +32,20 @@ struct intc;
 
    The two COM_STAT1 bits above do not come from that map. The map names bit 1 "Error flag", and it
    marks bit 0 as unknown. A trace of a real BIOS gives both meanings. See tools/com_probe.c.
+
+   COM_CTRL1, COM_STAT2 AND COM_CTRL2 COME FROM A MEASUREMENT ON REAL HARDWARE. Screen 15 of
+   pk_timing_bench logs the status bits while a PS1 accesses the slot. See "What real hardware shows
+   in COM_STAT2" in docs/hardware-notes.md. In short:
+
+   - Two events stay set in stat2_events. Bit 1 sets when the PS1 selects the device. Bit 0 (Ready)
+     sets when a byte is complete, approximately 60us after the selection for the first byte.
+   - A read of COM_STAT2 gives stat2_events & COM_CTRL1. A write to COM_CTRL2 clears the bits that it
+     gives. Hardware confirms the clear for a write of 3. A read of COM_DATA does not clear Ready.
+   - INT_COM is requested while stat2_events & COM_CTRL1 is not 0. INT_INPUT shows that request as a
+     level. HOLD latches when the request starts, and it clears when the request ends.
+
+   The kernel waits with COM_CTRL1 = 2, thus its FIQ handler starts at the selection, before the
+   first byte is complete. The handler then polls Ready for that byte. See com_update_irq in com.c.
 
    BIT 1 IS A LEVEL. It stays set for the full time that the PS1 holds the /SEL line released. A read
    of COM_STAT1 does not clear it, and com_set_selected clears it at the next hold. A bit that clears
@@ -94,8 +108,15 @@ typedef struct com {
 
     /* The state of one byte exchange. com_begin_transfer sets rx_ready. It also copies tx_data into
        tx_shifted and clears ack_asserted. The FIQ handler of the kernel then answers. */
-    int rx_ready;     /* COM_STAT2 bit 0. A byte arrived. The kernel did not read the byte yet. */
+    int rx_ready;     /* COM_STAT1 bit 0. A byte arrived. A read of COM_DATA or the acknowledge clears it. */
     int ack_asserted; /* The kernel drove /ACK LOW through COM_MODE bit 1. */
+
+    /* The two events behind COM_STAT2: bit 0 a byte is complete (Ready), bit 1 the PS1 selected the
+       device. Each one stays set until a write to COM_CTRL2 clears it. COM_CTRL1 selects the events
+       that a read shows and that request INT_COM. */
+    uint32_t stat2_events;
+    /* The INT_COM request as com_update_irq last set it: stat2_events & COM_CTRL1 is not 0. */
+    int irq_level;
 
     /* The /SEL line of the connector. The PS1 holds this line for the full duration of one command.
        It releases the line between commands.
@@ -142,14 +163,15 @@ void com_set_docked(com_t *com, struct intc *intc, int docked);
 
 /* Sets the /SEL line. `selected` is 0 for released. A nonzero value holds the line.
    A PS1 holds this line for one command, and it releases the line between commands.
-   A release sets COM_STAT1 bit 1, and that bit ends the wait of the kernel. See selected in the
-   structure above. */
-void com_set_selected(com_t *com, int selected);
+   A release sets COM_STAT1 bit 1, and that bit ends the wait of the kernel. A hold sets COM_STAT2
+   bit 1, and that event requests INT_COM if COM_CTRL1 selects it. See selected in the structure
+   above. */
+void com_set_selected(com_t *com, struct intc *intc, int selected);
 
-/* Starts one byte exchange. `data_in` is the byte from the PS1.
-   This function puts the byte at COM_DATA. It sets the Ready bit of COM_STAT2. It then asserts
-   INT_COM. The CPU must execute after this call, because the kernel gives the answer.
-   The caller reads com_transfer_acked for that answer. */
+/* Completes one byte from the PS1. `data_in` is that byte.
+   This function puts the byte at COM_DATA. It sets COM_STAT1 bit 0 and the Ready bit of COM_STAT2.
+   Ready requests INT_COM if COM_CTRL1 selects it. The CPU must execute after this call, because the
+   kernel gives the answer. The caller reads com_transfer_acked for that answer. */
 void com_begin_transfer(com_t *com, struct intc *intc, uint8_t data_in);
 
 /* Returns a nonzero value after the kernel drives /ACK LOW for the exchange in progress.
@@ -161,7 +183,8 @@ int com_transfer_acked(const com_t *com);
    that the kernel wrote in answer to the current byte. See tx_data above. */
 uint8_t com_take_reply(const com_t *com);
 
-/* Ends the exchange. It clears INT_COM and the flags of the exchange.
+/* Ends the exchange. It clears the flags of the exchange. It does not change COM_STAT2 or INT_COM:
+   the kernel clears those itself.
    Call this function after com_transfer_acked returns a nonzero value. Call it also after a
    timeout. */
 void com_end_transfer(com_t *com, struct intc *intc);

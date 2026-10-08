@@ -270,7 +270,13 @@ static int mode_cmd(const char *bios_path, unsigned boot_frames, const uint8_t *
    This mode does not call psemu_com_transfer. That function advances the machine in steps of
    COM_POLL_CHUNK_CYCLES, thus it cannot resolve a cost below one step. This loop advances the
    machine one call at a time, and it counts the cycles until the kernel acknowledges.
-   The result sizes PSEMU_COM_DEFAULT_TIMEOUT_CYCLES. */
+   The result sizes PSEMU_COM_DEFAULT_TIMEOUT_CYCLES.
+
+   After an acknowledge, the machine runs for PS1_BYTE_CYCLES before the next byte. A PS1 sends 8 bits
+   after it sees the acknowledge, thus the next byte cannot be complete sooner. The kernel needs part
+   of that time: after the acknowledge of the first byte it writes COM_CTRL2 = 1 (0x040007E4), which
+   clears Ready, and a byte that is complete before that write is lost. */
+#define PS1_BYTE_CYCLES 34u /* 8 bits at 250kHz is 32us, and one reference cycle is 0.95us */
 static uint32_t measure_one_byte(psemu_t *ps, uint8_t data_in, uint32_t limit, int *out_ack) {
     uint32_t ran = 0;
     com_begin_transfer(&ps->com, &ps->intc, data_in);
@@ -283,13 +289,16 @@ static uint32_t measure_one_byte(psemu_t *ps, uint8_t data_in, uint32_t limit, i
     }
     *out_ack = com_transfer_acked(&ps->com);
     com_end_transfer(&ps->com, &ps->intc);
+    if (*out_ack) {
+        (void)psemu_run(ps, PS1_BYTE_CYCLES);
+    }
     return ran;
 }
 
 static int mode_wait(const char *bios_path, unsigned boot_frames) {
-    /* The Get ID command. The first byte needs a full FIQ entry, because the kernel is idle before
-       it. Each byte after that arrives while the kernel polls COM_STAT2 inside the same FIQ. Thus
-       this one command covers both costs. */
+    /* The Get ID command. The PS1 selects the device first, and that selection starts the FIQ of the
+       kernel. The first byte then arrives while the kernel polls COM_STAT2 inside that FIQ, like each
+       byte after it. See PSEMU_COM_SELECT_LEAD_CYCLES. */
     static const uint8_t GET_ID[] = {0x81u, 0x53u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u, 0x00u};
     psemu_t *ps = boot(bios_path, boot_frames);
     unsigned settled;
@@ -301,6 +310,9 @@ static int mode_wait(const char *bios_path, unsigned boot_frames) {
 
     settled = dock_and_settle(ps, 60);
     printf("communication enabled: %s\n", settled ? "yes" : "NO");
+
+    psemu_com_set_selected(ps, 1);
+    (void)psemu_run(ps, PSEMU_COM_SELECT_LEAD_CYCLES);
 
     printf("\n idx  send  cycles  ack\n");
     for (i = 0; i < sizeof(GET_ID); i++) {
