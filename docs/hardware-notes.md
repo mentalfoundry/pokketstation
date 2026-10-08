@@ -278,9 +278,9 @@ The block is at `0x0C000000`, and it has a span of `0x20`.
 | `+0x0` | `COM_MODE` | bit0 Data Output Enable. bit1 /ACK Output Level (1 = drive LOW). bit2 unknown. |
 | `+0x4` | `COM_STAT1` | bit0 a byte arrived. bit1 the PS1 released /SEL. See "The /SEL line". |
 | `+0x8` | `COM_DATA` | bits 0 to 7. A read gets the byte from the PS1. A write sends a byte to the PS1. |
-| `+0x10` | `COM_CTRL1` | Unknown. The observed values are 0, 2, and 3. |
-| `+0x14` | `COM_STAT2` | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. |
-| `+0x18` | `COM_CTRL2` | Unknown. The observed values are 1 and 3. |
+| `+0x10` | `COM_CTRL1` | Selects the bits of `COM_STAT2` that a read shows. The kernel writes 0, 2, and 3. See "What real hardware shows in `COM_STAT2`". |
+| `+0x14` | `COM_STAT2` | bit0 Ready (0 = Busy, 1 = Ready). The hardware sets the bit after 8 bits. bit1 is a second event of unknown function. A bit reads as 1 only if `COM_CTRL1` selects it. |
+| `+0x18` | `COM_CTRL2` | Unknown. The kernel writes 1 and 3. See "What the kernel writes to `COM_CTRL1` and `COM_CTRL2`". |
 
 The ranges at `+0x0C` and `+0x1C` have no known register. Both ranges read back as 0. A write to them has no effect. `IRDA_MISC` gets the same treatment.
 
@@ -318,13 +318,72 @@ The kernel does these steps for each byte:
 
 Two facts together give this conclusion. The kernel writes FLAG while it processes the `0x81` byte. It writes `0x5A` while it processes the `0x53` byte. The published command table gives the reply to `0x81` as "N/A". It gives the reply to `0x53` as FLAG. A model with immediate replies delivered each byte one position early.
 
-**The Ready bit of `COM_STAT2` clears at a read of `COM_DATA`. It also clears when the kernel drives /ACK LOW.** Both events are true. One event alone is not sufficient.
+**Two different bits report an arrived byte, and they clear in different ways.**
 
-No published source records the acknowledge event. A trace of the `J110` kernel gives it.
+- **`COM_STAT1` bit 0** clears at a read of `COM_DATA`, and when the kernel drives /ACK LOW. The write path of the kernel polls this bit for each data byte (`0x040015D6`). The data phase of a command sends bytes and receives only dummy bytes, thus the kernel never reads `COM_DATA` there, and the acknowledge must clear the bit. No published source records the acknowledge event. A trace of the `J110` kernel gives it. On real hardware `COM_CTRL1` does not mask this bit, and it is clear again before the next access.
+- **Ready (`COM_STAT2` bit 0)** clears only at a write of `COM_CTRL2` with bit 0 set. Real hardware keeps Ready set after a read of `COM_DATA`. The kernel writes `COM_CTRL2 = 1` straight after each read of Ready that gives 1 (`0x040010A2`, `0x04000808`, `0x0400159C`), and after the acknowledge of the first byte (`0x040007E4`), thus its poll at `0x04000800` gives 0 until the next byte. See "What real hardware shows in `COM_STAT2`".
 
-The data-read rule alone is not sufficient. The data phase of a command sends bytes and receives only dummy bytes, thus the kernel never reads `COM_DATA` during that phase. Ready must still clear there. Without that, the poll loop of the kernel reads a byte that never arrived, and it runs through the remainder of the command inside one exchange.
+**A PS1 gives a byte time after each acknowledge.** The kernel writes `COM_CTRL2 = 1` a few instructions after it acknowledges the first byte. A byte that is complete before that write is cleared with the old Ready, and the kernel then waits for a byte that never comes. A real PS1 cannot complete the next byte in that time: it sends 8 bits after it sees the acknowledge, which is approximately 32us. A host that gives bytes must keep that gap. `tools/com_probe.c` does, in its `wait` mode.
 
-The acknowledge rule alone is not sufficient either. At the first byte the kernel acknowledges and then reads `COM_STAT2`, at `0x04000800`. That read must give 0.
+### What the kernel writes to `COM_CTRL1` and `COM_CTRL2`
+
+The function of these two registers is unknown. The time and the value of each write are known. `com_probe <bios> cmd <bytes> --trace` gives them for any command, with the kernel address of each write. The `J110` kernel gives the same sequence for Get ID, Read Sector, and Write Sector, and after an undock and a new dock.
+
+| Condition of the kernel | `COM_CTRL1` | `COM_CTRL2` | Kernel address |
+|---|---|---|---|
+| COM initialization, at docking and at undocking | 0 | 3 | `0x0400073E`, `0x0400074A` |
+| Docked, the end of the initialization | 2 | | `0x0400078C` |
+| FIQ entry, at the first byte of a command | 3 | 1 | `0x04001072`, `0x04001076` |
+| Each byte, when Ready is set | | 1 | `0x040010A2`, `0x04000808`, `0x0400159C` |
+| End of a command, after the release of /SEL | 0, then 2 | 3, between the two | `0x040011DE` to `0x040011F0` |
+| Write Sector only, before the end of the command | 0 | | `0x04000908` |
+
+Thus `COM_CTRL1` is 2 while the docked kernel waits for a command, 3 while it processes a command, and 0 while the device is undocked. The kernel writes `COM_CTRL2 = 1` at each byte, and `COM_CTRL2 = 3` at the start of the initialization and at the end of each command.
+
+**The kernel tests only two status bits in these commands.** These are `COM_STAT1` bit 1 (the release of /SEL) and `COM_STAT2` bit 0 (Ready). The FIQ entry tests them at `0x04001092` and `0x0400109A`, the first-byte path at `0x040007F4` and `0x04000800`, and the loop for each byte at `0x0400158A` and `0x04001592`. Each read of `COM_STAT2` in these traces is one of those three sites, and each one tests bit 0 only. A command that this project did not trace can read the register at a different site.
+
+**Real hardware gives the function of the writes.** `COM_CTRL1` selects the events of `COM_STAT2` that a read shows and that request `INT_COM`, and `COM_CTRL2` clears events. With `COM_CTRL1 = 2` the kernel takes its interrupt at the selection, approximately 60us before the first byte is complete. Its FIQ entry then polls Ready up to 30 times (`0x04001086` to `0x040010A8`), and it leaves the command if no byte comes. See the next section for the measurement.
+
+**This emulator follows that model.** `com_set_selected` sets `COM_STAT2` bit 1 at the hold of /SEL, and `com_begin_transfer` sets Ready at the end of a byte. `com_update_irq` requests `INT_COM` from the events that `COM_CTRL1` selects. A host gives the hold before the first byte: `psemu_com_transfer` runs `PSEMU_COM_SELECT_LEAD_CYCLES` (66 reference cycles, 62.5us) between the two, and a host that uses `psemu_com_send` calls `psemu_com_set_selected` at the time of the selection. Thus the kernel acknowledges the first byte of a command 15 reference cycles after the byte, like each later byte, and not after a FIQ entry. `test_the_time_to_ack_is_the_exact_time_of_the_answer` in `tests/bu_test.c` holds that.
+
+### What real hardware shows in `COM_STAT2`
+
+Screen 15 of `pk_timing_bench` stops the kernel from answering, and it logs each change of the COM status bits while a PS1 accesses the slot. `pk_timing_bench/VERIFICATION.md` records two runs on real hardware. The first run does not clear `COM_STAT2` before a capture, and it uses each value of `COM_CTRL1` two times. The second run writes `COM_CTRL2 = 3` before each capture, and it also logs the raw input bit of `INT_COM` (`INT_INPUT` bit 6). This section gives the facts that those runs show.
+
+**Two events stand behind `COM_STAT2`, and each one stays set until a write clears it.** Bit 1 sets when the PS1 selects the device: it sets in the same sample as the clear of `COM_STAT1` bit 1, which is the selection. Bit 0 (Ready) sets when the first byte is complete, 53 to 62us after the selection, in the same sample as `COM_STAT1` bit 0 or one sample from it. Between two accesses with no clear, both bits stay set.
+
+**A read of `COM_STAT2` shows only the bits that `COM_CTRL1` selects.** Between two accesses with no clear, the first run read these values:
+
+| `COM_CTRL1` | `COM_STAT2` bits 0 and 1 between accesses |
+|---|---|
+| 0 | both 0 |
+| 1 | bit 0 is 1 |
+| 2 | bit 1 is 1 |
+| 3 | both 1 |
+
+Each value gives the same result in both of its captures, and `COM_CTRL1 = 2` gives the same result in a repeated run.
+
+**`COM_CTRL1` also selects the bits that request `INT_COM`.** The HOLD bit and the raw input bit of `INT_COM` set together, and they stay set while the selected bits stay set:
+
+| `COM_CTRL1` | `INT_COM` sets at |
+|---|---|
+| 3 | the selection |
+| 2 | the selection |
+| 1 | Ready, at the end of the first byte |
+
+With `COM_CTRL1 = 2`, which the kernel writes while it waits for a command, the interrupt comes at the selection, approximately 60us before the first byte is complete. The function of the event behind bit 1, other than the selection, is unknown.
+
+**A write of `COM_CTRL2 = 3` clears both bits.** In the second run the bits are 0 before each capture, with `COM_CTRL1 = 3`.
+
+**A read of `COM_DATA` does not clear Ready.** The screen reads `COM_DATA` and then reads `COM_STAT2` at once. With `COM_CTRL1` = 1 or 3 and no clear, Ready is 1 at that read in each capture.
+
+**`COM_STAT1` bit 0 sets 61 to 67us after the selection,** for each value of `COM_CTRL1`. The spread is one sample of the screen, thus it is one time. The PS1 waits after the selection and then sends 8 bits in approximately 32us, thus this agrees with "a byte arrived". `COM_STAT1` bit 1 clears at the selection, and it sets again at the release.
+
+**HOLD latches when the request starts, and it clears when the request ends.** Two facts give this. On real hardware, an acknowledge of `INT_COM` while selected bits stay set leaves HOLD at 0, also through more accesses (the first run). The `J110` kernel acknowledges `INT_COM` in the interrupt controller only in its link setup at docking (`0x0400076C`), and never during a command, and its FIQ handler does not start again after a command. At the end of a command the kernel writes `COM_CTRL1 = 0` and then `COM_CTRL2 = 3`, which end the request. The second fact is from a trace of the kernel, and not from a hardware measurement.
+
+**This gives the design of the kernel.** It waits with `COM_CTRL1 = 2`, thus it enters its FIQ handler at the selection. The handler writes `COM_CTRL2 = 1`, which clears an old Ready, and `COM_CTRL1 = 3`. It then polls Ready up to 30 times (`0x04001086` to `0x040010A8`), because the byte is not complete yet. Thus the `COM_CTRL2 = 1` write comes before the byte, and a model that gives the interrupt at the end of the byte makes that write clear the byte.
+
+This emulator models these facts. See "What the kernel writes to `COM_CTRL1` and `COM_CTRL2`", and the tests `test_ctrl1_selects_the_events_of_stat2`, `test_the_selection_requests_the_interrupt_before_the_byte` and `test_ctrl2_clears_the_events_and_hold_latches_at_a_new_request` in `tests/com_test.c`.
 
 ### The /SEL line
 
@@ -368,13 +427,48 @@ The published register map records a dummy read of this register by the kernel a
 
 `ComFlags` is a word in kernel RAM at `0x0C0`. Bit 9 is "Communication Enabled And Docked". The kernel sets that bit one frame after `psemu_com_set_docked` asserts the docking level. No code answers a command while that bit is clear. `com_probe` reports the word before the transition and after it. The recorded values are `0x00070000` and then `0x0007020F`.
 
+### FLAG marks a new card
+
+**FLAG gives the same lifecycle as the flag of a usual memory card.** FLAG is the byte at kernel RAM `0xF0`, and command `0x58` gives it. The kernel alone sets and clears it:
+
+- FLAG is `0x08` after the device goes into the connector.
+- A Write Sector command clears FLAG to `0x00`. The byte stays `0x00` at each later poll.
+- A removal and a new insertion set FLAG to `0x08` again. `INT_IOP` reports each transition, and the IOP handler of the kernel sets the byte.
+
+A PS1 game uses this flag to find a card change. It writes one frame, usually frame 63, to clear the flag. It then reads FLAG at the start of each later command. A value of `0x08` after that write tells the game that a different card went in, and the game starts its card check again.
+
+**Thus no code outside the kernel may set FLAG after a write.** A model that sets FLAG after each Write Sector makes a game repeat its card check without end: the game writes frame 63, reads `0x08`, and writes frame 63 again. A frontend that must show a removal to the kernel calls `psemu_com_set_docked(ps, 0)`, runs the machine, and then calls `psemu_com_set_docked(ps, 1)`. The kernel then sets FLAG through its own IOP handler.
+
+A game can instruct the user to remove the device and to put it back, and then poll `0x58` until FLAG is `0x08`. That poll waits for a real removal and insertion. A frontend gives that event through the same two calls.
+
+`test_flag_marks_a_new_card` in `tests/bu_test.c` holds the full lifecycle against a real dump: `0x08` after insertion, `0x00` after a write to frame 63 and at a second poll, and `0x08` after a removal and a new insertion.
+
+### The settle budget after a Write Sector
+
+The kernel programs flash after the command ends, and not during the command. Thus a caller gives the machine cycles after it releases the select line. Without those cycles the data does not reach flash.
+
+The budget is small. A measurement against a real `J110` dump gives **256 reference cycles** as the smallest budget that commits the data. One frame is 33000 cycles, thus the budget is under one hundredth of a frame. A data frame and a directory frame need the same budget. `test_write_sector_needs_a_small_settle_budget` in `tests/bu_test.c` holds both bounds: a budget of zero commits nothing, and a budget of 1024 cycles commits the data.
+
+The other budgets in this repository are much larger than the measurement. `FLASH_SETTLE_FRAMES` is 30 frames in `tests/bu_test.c`, and `mock_ps1_open` gives `settle_frames` the value 8. Those values stay as they are. A generous budget keeps each test independent of this measurement.
+
+### The link needs a register-level model
+
+A PS1 reaches the memory card connector from its own kernel. That kernel sends one byte, it reads one byte, and it sets an acknowledge bit for each byte of a command. A published register map of the PS1 is the source of that sequence. The device on the connector answers at the same level. Thus this emulator needs the register-level model in `core/src/com.c`, and each command stays in the kernel of the PocketStation BIOS. See "The protocol is firmware, and not hardware".
+
+A model at the level of a kernel function is not sufficient. The commands `0x5B` and `0x5C` execute a function number from a table in the app file. Only the app holds that code. A model that answers at the level of a function answers no byte, and it reaches no app code.
+
 ### Known open questions
 
 - The purpose of the dummy read of `COM_STAT1` at the end of each transfer is unknown. The published register map records that read. It gives a hardware clear at a read as one candidate reason. Bit 1 is a level (see "The /SEL line"), thus the read has a different purpose. No source in this repository gives that purpose.
-- A bit that clears at a read releases the kernel from `0x040007B8` after a command of one byte. The same bit does not release the kernel after a complete command. This project has no model for that difference.
-- The function of the `COM_CTRL1` bits and the `COM_CTRL2` bits is still unknown. This emulator accepts the writes. It reads the values back. No observed behavior depends on those bits. Thus this treatment is sufficient for the exchanges above. A command that this project did not test can still depend on them.
-- `COM_STAT1` bit 1 is an error flag, and this emulator never sets it. This model has no error condition. A caller delivers a complete byte, or it delivers nothing. Real hardware can report three more conditions: a timeout, a parity error, or a /SEL line that went low during a transfer.
-- A transfer that arrives during a clock stop is untested. `INT_COM` is not in the wake sources of `psemu_run`. Such a transfer reports no acknowledge after its cycle budget expires. Real hardware probably wakes, because a PS1 must reach a card in a device that sleeps.
+- **This item concerns the rejected candidate, and not the model of this emulator.** A bit that clears at a read releases the kernel from `0x040007B8` after a command of one byte. The same bit does not release the kernel after a complete command. This project has no explanation for that difference. The level model above needs none: it releases the kernel after a command of each length, and `test_a_second_command_answers` in `tests/bu_test.c` holds that result. An explanation needs a trace of the two end-of-command paths of the kernel, and it would change no behavior of this emulator.
+- **Closed in part.** Real hardware gives the function of `COM_CTRL1` and `COM_CTRL2`: see "What real hardware shows in `COM_STAT2`". Three details are still open. A read of `COM_CTRL1` and `COM_CTRL2` gives the value that software wrote in this emulator, and no measurement gives the real read. A write of `COM_CTRL2` with one bit set clears that bit only in this emulator, and hardware confirms only a write of 3. A write of `COM_CTRL1` that selects an event that is already set does not request `INT_COM` here, and no measurement gives that case.
+- The published register map gives four candidate meanings for `COM_STAT1` bit 1, and this emulator models one of them. That one is the release of the /SEL line, which "The /SEL line" above establishes as the correct meaning. This emulator sets the bit at each release: `com_read` gives it from `sel_drop_latch`, and `COM_STAT1_ERROR` is the name of the bit. Five tests in `tests/com_test.c` hold the behavior, and they include a release during a byte.
+
+  The other candidates of the map are a timeout and a parity error. This emulator reports neither one as a distinct condition, and it cannot. A caller gives `com_begin_transfer` a complete byte, thus no partial byte exists to time out or to fail a parity check. A caller that gets no answer learns this from the return value of `psemu_com_transfer`, and not from a status bit. `test_transfer_without_a_bios_reports_no_acknowledge` in `tests/com_test.c` holds that path.
+
+  Thus the open part is narrow. To model a timeout or a parity error needs two things that this project does not have: an interface that can deliver a partial byte, and evidence of what the kernel does when it reads such a condition. No trace in this project has met either candidate.
+- **Closed.** The cost of an answer agrees with the tolerance of a PS1. The kernel takes its interrupt at the selection (see "What real hardware shows in `COM_STAT2`"), thus the `wait` mode of `tools/com_probe.c` measures 15 to 24 reference cycles for each byte, the first byte also. A model that gives the interrupt at the end of the first byte adds the entry of the FIQ handler, and that byte then costs 46 cycles. A PS1 emulator that times the acknowledge from that cost completes the card check of a real game with a delay of 53 reference cycles (1,700 console ticks), and it fails the check with 112 cycles (3,600 ticks). Thus each measured answer is inside the tolerance. `psemu_run` returns reference cycles, the same unit as its budget; `test_run_returns_the_reference_time_that_ran` in `tests/cpu_test.c` holds that property. This item stays here as the record.
+- **Closed.** A transfer that arrives during a clock stop gets no answer, because `INT_COM` is not in the wake sources of `psemu_run`. That condition does not arise: the machine does not enter a clock stop while it senses the docked condition, for the BIOS shell and for a running app. Four tests hold the result. See "The kernel stays awake while docked". This item stays here as the record, and not as an open question.
 
 ## IR / IR Link
 
@@ -592,6 +686,24 @@ The available documentation gives mode `00h` as an invalid or reserved setting t
 
 See `test_clk_mode_scales_run_speed`, `test_timer_scales_with_clk_mode`, `test_clk_mode_keeps_rtc_dac_on_real_time`.
 
+### The clock is exact
+
+The clock of the machine counts units of `PSEMU_TIME_HZ`, 1,022,410,752,000 each second. That value is the least common multiple of the reference clock (1,056,000Hz) and of each rate in the `CLK_MODE` table. Thus one reference cycle is 968,192 units, and one CPU cycle is a whole number of units at each mode: 255,750 at mode 7, 127,875 at mode 8, and 31,201,500 at mode 0. The clock adds only whole numbers, thus it has no remainder to round and no drift.
+
+The RTC, the DAC and the IR count the reference-cycle boundaries that the clock crosses. `psemu_run` counts the same boundaries, thus the sum of its return values is the exact time that ran.
+
+A host with a different clock converts with the ratio of the two rates in integer arithmetic. For a PS1 (33,868,800Hz), 441 ticks are 13,312,640 units. Thus such a host keeps step with the machine to the instruction.
+
+One long run and a sequence of short runs to the same time execute the same instructions and give the same machine. See `test_split_runs_give_the_same_machine`. A host that runs the machine ahead to find the time of an acknowledge, and then loads a saved state to give an input at an earlier time, depends on this property.
+
+### The idle-loop skip
+
+The docked kernel never stops its clock. It waits for an interrupt in a loop of 4 instructions that reads a RAM flag until an interrupt handler clears it. That loop is approximately 85% of the instructions that a docked machine executes.
+
+`run_until` finds such a loop from the condition of the machine alone, and not from an address. At a short backward branch, it waits for one iteration with no write and no read of a value that can change with time, and then for a second such iteration that ends with the same registers. RAM, BIOS, flash data and VRAM change only at a write. The interrupt controller, and the COM block except `COM_DATA`, change only at a host input or a device event, and the skip stops before each of those. Each other register counts as a value that can change with time: for example, the count of a timer changes at each cycle, and a read of `COM_DATA` clears `COM_STAT1` bit 0. The interrupt controller must also not change inside the iteration that the skip measures: a loop can read it before a change and branch after the change, and the registers then look the same while the next iteration reads a new value. The controller counts its changes for this test. A machine that boots with the skip and a machine that boots without it are the same, bit for bit, through boot, docking and 2,000 docked frames. Each further iteration then does the same thing. The skip advances the machine by the largest whole number of iterations before the next event of a device: a timer reload, an RTC transition, an IR edge or end of debounce, the end of the grace period of `psemu_app_running`, or the end of the run. Before such an event the devices only accumulate time, and no interrupt line changes.
+
+The machine after the skip is the same, bit for bit, as the machine after the iterations. `test_idle_skip_gives_the_same_machine` compares a machine with the skip against a machine without it through a docked wait, commands, and an undocked period. `test_idle_skip_of_a_branch_to_itself` does the same with two timers and the RTC. 40 seconds of docked and undocked device time cost 144 ms with the skip and 1441 ms without it. `psemu_set_idle_skip` turns the skip off.
+
 ## CLK control (0x0B000004): stop/standby
 
 **Bit 0 of the second `CLK` register halts the CPU, and each other part that this same oscillator clocks, until a button wakes the CPU.** This is the sleep method of a PocketStation.
@@ -621,6 +733,20 @@ A model of that write as a stop reproduces the observed behavior exactly: the fr
 **What stops, and what does not.** The System Clock clocks the Timer (see "Timers"), thus the Timer also stops here, as the measurement above confirms. That behavior is essential, and not incidental. A wake on each asserted interrupt is not a stop at all, because a Timer in operation asserts again in microseconds, and the CPU never pauses. The RTC continues on its own oscillator, which lets a device know the time while it sleeps. The DAC keeps the fixed resample rate of this emulator.
 
 **Whether real hardware clears the stop bit at a wake is not answerable by a read.** There is no readable stop status, as above. The run does show that the CPU started again and continued to operate. Thus the stop does not persist across a wake, whatever the internal implementation is. `clk_clear_stop` clears the bit in this emulator, thus emulated software does not have to clear it.
+
+### The kernel stays awake while docked
+
+**The kernel does not enter a clock stop while it senses the docked condition.** A PS1 gives the supply on the connector, thus a docked device stays awake for the PS1.
+
+A measurement against a real `J110` dump gives both halves of this behavior. Undocked, the BIOS shell stops the clock at frame 1983, which is 62 seconds at 32 frames each second. Docked, no stop occurs in 4200 frames, which is 131 seconds, and that window is more than twice the undocked figure. `test_the_bios_shell_sleeps_when_undocked` and `test_the_kernel_does_not_sleep_while_docked` in `tests/bu_test.c` hold both halves. The first test is the control for the second one: it shows that the suite can observe a stop at all.
+
+This behavior answers a question about the COM block. A clock stop executes nothing, and `INT_COM` is not a wake source, thus a transfer during a stop gets no answer. That condition does not arise from the BIOS shell.
+
+**A dispatched app does not sleep while docked either.** A measurement with a real app gives the same division. Undocked, the app stops the clock at frame 1922, which is 60 seconds, and `psemu_app_running` still reports the app at that stop. Docked, no stop occurs in 4000 frames, which is 125 seconds. `test_an_undocked_app_sleeps` and `test_a_docked_app_does_not_sleep` in `tests/sio_dispatch_test.c` hold both halves.
+
+Thus the docked condition suppresses the clock stop for the BIOS shell and for a running app. A transfer that arrives during a clock stop cannot occur while a PS1 holds the connector.
+
+One figure does not agree with the real-hardware observation above, and this project has not resolved it. A real unit blanks the screen approximately 37 seconds after the last button press. The two measurements here give approximately 60 seconds, for the app and for the BIOS shell. Three candidates remain: the real observation used a different app, the timeout of the app depends on the screen that it shows, or the zero point differs, because a measurement here starts at the launch of the app and the real observation starts at a button press. A run with a button press before the idle interval separates the third candidate from the other two.
 
 **One open question remains.** Whether a source that is not a button can wake the device. To answer it, run screen 13 again with `INTC_MASK = 0x1F`, which masks the buttons and leaves a timer active, and find whether the device wakes. No run has met that condition. No app that this project can operate causes it.
 
@@ -739,9 +865,9 @@ The format has four required properties. A raw copy of `psemu_t` satisfies none 
 
 The size is 218.8KB, against 354.9KB for `sizeof(psemu_t)`.
 
-**The size is the same for each state of the machine.** A ring buffer writes its full capacity, and not only the entries that it holds now. The count travels with it. A fixed size is a requirement: the libretro interface calls `retro_serialize_size` one time and keeps the result, and a frontend measures the state, then changes the machine, and then writes into the buffer of that measurement.
+**The size is the same for each state of the machine.** A ring buffer writes its full capacity, and not only the entries that it holds now. The count travels with it. A slot past the count holds zero in the file, thus two machines in the same condition give the same file, byte for byte. Without that zero, a slot holds an old entry or the bytes of the allocation. A fixed size is a requirement: the libretro interface calls `retro_serialize_size` one time and keeps the result, and a frontend measures the state, then changes the machine, and then writes into the buffer of that measurement.
 
-**`real_time_cycle_carry` is the only floating-point field.** The file stores it as a fixed-point fraction of 32 bits, and not as the raw bits of the double. `psemu_run` keeps the value between 0.0 and 1.0, thus 32 bits give more resolution than the reference clock can use.
+**The machine has no floating-point field.** The clock of the machine (`time`) is a 64-bit count of units of `PSEMU_TIME_HZ`. Each CPU cycle and each reference cycle is a whole number of those units, thus the clock has no fraction to store. See "The clock is exact".
 
 ## Diagnostics
 
@@ -779,7 +905,9 @@ The available register documentation records this: *"At physical address 0800000
 
 An `unlock_step` field in `flash_t` holds the position in the 3-step unlock sequence. It uses only the next key address. This emulator does not validate the values that the code writes. This agrees with the method that this project always uses for these addresses: they are commands, and not data.
 
-While the sequence is armed, a write to physical offset `0`, `2`, or `8` goes to `F_SN_LO`, `F_SN_HI`, or `F_CAL`. It does not go to `flash->data[]`. The armed state continues through the 3 halfword writes of a real header update. It stops at the first write to a different offset.
+**`F_WAIT2` (`FLASH_CTRL+0x10`) selects the target, and the software writes it before the unlock sequence.** The homebrew ID editor writes `0x41`. The kernel writes `0x21` before it programs a frame of card data, at `0x0400126C` in J110. The rest of the two routines is the same. A test on real hardware gives the two results: the ID editor changes the serial number, and a PS1 format of the card keeps it. A format programs frame 0 through the kernel, thus it writes offsets `0`, `2`, and `8` after the unlock sequence, the same as the ID editor. Thus the target depends on `F_WAIT2`, and not on the offset. This emulator uses bit 6 as the rule. Two values are the evidence, thus the rule agrees with both, but it does not prove the function of each bit.
+
+While the sequence is armed and bit 6 of `F_WAIT2` is set, a write to physical offset `0`, `2`, or `8` goes to `F_SN_LO`, `F_SN_HI`, or `F_CAL`. It does not go to `flash->data[]`. The armed state continues through the 3 halfword writes of a real header update. It stops at the first write to a different offset. Without bit 6, the first write after the unlock sequence starts the program of its frame, and each byte of that frame goes to card data. `test_flash_program_of_frame_0_keeps_the_serial` in `tests/cpu_test.c` and `test_a_write_to_frame_0_takes_the_data_and_keeps_the_serial` in `tests/bu_test.c` hold this behavior.
 
 This work found one implementation problem: the state first advanced at each byte of each key halfword, and not one time for each halfword. The cause is that `psemu_bus_write16`, the same as a real `STRH` instruction, issues two separate 8-bit bus writes. The correction advances the state only at the low byte.
 
@@ -842,7 +970,9 @@ The emulation core in `core/` and its test suite in `tests/` are MIT ([core/LICE
 
 Do not put GPLv3 code into `core/` or `tests/`. Those two directories must stay MIT, thus each new file there needs the same two SPDX lines. A GPLv3 frontend can use MIT core code, but the opposite direction is not permitted.
 
-A test in `tests/` must link only `psemu`, and it must read no file from `testdata/`. Those two limits keep the suite portable to a project with different terms. The tests presently follow both limits.
+A test in `tests/` must link only `psemu`. That limit keeps the suite portable to a project with different terms, and each test follows it.
+
+A test can need a real dump. `bu_test` and `sio_dispatch_test` read `testdata/J110.bin`, because the kernel of that dump holds the memory card protocol. A test of that protocol has no other source. Such a test gets `PSEMU_TESTDATA_DIR` from `tests/CMakeLists.txt`, and it exits with code 77 when it finds no dump. CTest reports that code as a skip, thus the suite still passes on a machine with no dump. The repository excludes each dump.
 
 A GPLv3 project can reference BSD-3 code, or use BSD-3 code with attribution. That direction is compatible.
 
