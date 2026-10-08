@@ -1,20 +1,15 @@
 # pokketstation
 
-This is an open-source Sony PocketStation emulator core, written in portable C. It is made for use in a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app, a web page, and a PS Vita homebrew port (in progress).
+This is an open-source Sony PocketStation emulator core, written in portable C. It is made for use in a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app and JavaScript for the browser. **Try it out here with your own retail bios dump:** the emulator runs at [daznet.neocities.org/pocketstation](https://daznet.neocities.org/pocketstation).
 
 ## Status
 
 This project is stable, and the community has tested it widely. It is as cycle-accurate as possible. If you need a feature that is not present, please [raise an issue](https://github.com/mentalfoundry/pokketstation/issues).
 
-IR now operates both locally and via IP. Once you have established a connection, set the receive side into receive mode in your apps first . The send side is not very tolerant, the same as on real hardware.
-
-Do not depend on save-state compatibility between versions yet. The internal registries need more changes.
-
-The link to a PS1 (SIO) is now largely tested and working. I am now working on implementations in PS1 emulators. See [Communication port](docs/hardware-notes.md#communication-port) in the hardware notes for the details.
+Do not depend on save-state compatibility between versions yet. The internal registries need more changes - I think it's really close - there aren't really many more unknowns hardware wise and none that make a difference to the emulation as far as I know.
 
 **Known gaps:**
-- The IR communication timing is unverified. I have only 1 PocketStation device, thus this is the best result that is possible without a second device. The core has hardware-tested behavior, and the desktop emulator does most of the work. I will try to get a second device when I have the opportunity.
-- This emulator makes a few edge cases simpler than the real hardware: low-battery detection, `F_BANK_VAL` entries that map more than one physical block to the same virtual slot, and the pre-remap boot phase of the BIOS.
+- Some minor things that don't really impact the emulation like battery status and perfection in the IR timings. What's here is close enough that you should be able to fill in the gaps yourself if you really feel the need. 
 
 See [docs/hardware-notes.md](docs/hardware-notes.md) for the technical data.
 
@@ -26,8 +21,6 @@ Download the latest [release](https://github.com/mentalfoundry/pokketstation/rel
 
 - [Desktop app](docs/desktop_readme.md#usage)
 - [Libretro core](docs/libretro_readme.md#usage)
-
-**Try it in your browser:** the emulator runs at [daznet.neocities.org/pocketstation](https://daznet.neocities.org/pocketstation), with no download. The page also needs your own BIOS dump.
 
 The release packages hold the desktop app and the libretro core for Windows, Linux, and
 macOS. For Android and the other systems that libretro supports, get the core from the
