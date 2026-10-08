@@ -1,6 +1,6 @@
 # pokketstation
 
-This is an open-source Sony PocketStation emulator core, written in portable C. It is made for use in a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app, and a PS Vita homebrew port (in progress).
+This is an open-source Sony PocketStation emulator core, written in portable C. It is made for use in a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app, a web page, and a PS Vita homebrew port (in progress).
 
 ## Status
 
@@ -26,6 +26,8 @@ Download the latest [release](https://github.com/mentalfoundry/pokketstation/rel
 
 - [Desktop app](docs/desktop_readme.md#usage)
 - [Libretro core](docs/libretro_readme.md#usage)
+
+**Try it in your browser:** the emulator runs at [daznet.neocities.org/pocketstation](https://daznet.neocities.org/pocketstation), with no download. The page also needs your own BIOS dump.
 
 The release packages hold the desktop app and the libretro core for Windows, Linux, and
 macOS. For Android and the other systems that libretro supports, get the core from the
@@ -56,6 +58,7 @@ frontends/
   libretro/              the libretro core wrapper
   desktop/               the SDL2 desktop app for Windows, Linux, and macOS
   vita/                  the PS Vita port (vita2d), built with the vitasdk toolchain
+  web/                   the build of the core for a web page (Emscripten)
 tests/                   a smoke test that exercises the public interface
 docs/hardware-notes.md   the hardware reference (memory map, file format, sources), and the readme files for each frontend
 pk_timing_bench/         a homebrew memory-timing benchmark app (build source and real-hardware results)
@@ -67,6 +70,7 @@ The [build guide of the desktop frontend](docs/desktop_readme.md#building) gives
 
 - [Desktop app](docs/desktop_readme.md): usage, building, and diagnostic reports.
 - [Libretro core](docs/libretro_readme.md): usage and building. It has one extra step: it gets `libretro-common` at the first configure operation, and that step needs internet access.
+- [Web build](frontends/web/README.md): compiles the core to one JavaScript file with Emscripten.
 
 ## License
 
