@@ -8,7 +8,7 @@ This is an open-source Sony PocketStation emulator core, written in portable C. 
 
 This project is stable, and the community has tested it widely. It is as cycle-accurate as possible. If you need a feature that is not present, please [raise an issue](https://github.com/mentalfoundry/pokketstation/issues).
 
-Do not depend on save-state compatibility between versions yet. The internal registries need more changes - I think it's really close - there aren't really many more unknowns hardware wise and none that make a difference to the emulation as far as I know.
+Do not depend on save-state compatibility between versions yet. The internal registries may need more changes although there aren't many unknowns left hardware wise and none that make a difference to the emulation (as far as I know).
 
 **Known gaps:**
 - Some minor things that don't really impact the emulation like battery status and perfection in the IR timings. What's here is close enough that you should be able to fill in the gaps yourself if you really feel the need. 
