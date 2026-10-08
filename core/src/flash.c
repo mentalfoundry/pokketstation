@@ -51,6 +51,9 @@ void flash_reset_registers(flash_t *flash) {
     flash->last_command = 0;
     memset(flash->bank_val, 0, sizeof(flash->bank_val));
     flash->unlock_step = 0;
+    flash->program_frame = 0;
+    flash->program_bytes_left = 0;
+    flash->wait2 = 0;
 }
 
 void flash_init(flash_t *flash) {
@@ -181,6 +184,16 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
    message. The corruption became visible only later, when execution got
    to the changed bytes. */
 #define FLASH_KEY1_OFFSET 0x2A54u
+#define FLASH_PROGRAM_FRAME_SIZE 128u
+
+/* F_WAIT2 selects the target of a program. The kernel writes 0x21 before it programs a frame of card
+   data (0x0400126C in J110). A homebrew ID editor writes 0x41 before it writes F_SN and F_CAL. The
+   rest of the two routines is the same: the same unlock sequence, and writes to FLASH2. A test on real
+   hardware gives the two different results: the ID editor changes the serial number, and a PS1
+   format of the card, which programs frame 0 through the kernel, keeps it. Thus the redirection to
+   F_SN and F_CAL needs bit 6. Two values are the evidence, thus bit 6 is the simplest rule that agrees
+   with both, and it is not a proof of the function of each bit. */
+#define FLASH_WAIT2_SELECTS_SERIAL 0x40u
 #define FLASH_KEY2_OFFSET 0x55AAu
 
 /* On real hardware, each key write is one 16-bit halfword
@@ -249,6 +262,21 @@ uint8_t flash_read8(flash_t *flash, uint32_t addr) {
 void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
     uint32_t offset = addr % PSEMU_FLASH_SIZE;
 
+    /* A PROGRAM IN PROGRESS TAKES EACH BYTE OF ITS FRAME AS DATA. That includes the byte at a key
+       address. F_KEY1 is in frame 84, and F_KEY2 is in frame 171. The kernel verifies each frame
+       after it programs it, and a difference at a key address makes that frame fail with FLAG 0x04.
+       Thus those two frames must take data like each other frame. A write outside the frame shows that
+       the software moved to other work, and it ends the program. See
+       test_the_frames_that_hold_the_unlock_addresses_take_data in tests/bu_test.c. */
+    if (flash->program_bytes_left > 0u) {
+        if ((offset & ~(FLASH_PROGRAM_FRAME_SIZE - 1u)) == flash->program_frame) {
+            flash->data[offset] = value;
+            flash->program_bytes_left--;
+            return;
+        }
+        flash->program_bytes_left = 0u;
+    }
+
     if (flash_is_unlock_key_offset(offset)) {
         /* A real key write is one 16-bit halfword (psemu_bus_write16).
            It is always the low byte and then the high byte. See the
@@ -278,7 +306,8 @@ void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
         return;
     }
 
-    if (flash->unlock_step == 3 && flash_is_header_write_offset(offset)) {
+    if (flash->unlock_step == 3 && (flash->wait2 & FLASH_WAIT2_SELECTS_SERIAL) != 0u &&
+        flash_is_header_write_offset(offset)) {
         if (offset == FLASH_HEADER_WRITE_SN_LO_OFFSET || offset == FLASH_HEADER_WRITE_SN_LO_OFFSET + 1u) {
             uint32_t shift = (offset - FLASH_HEADER_WRITE_SN_LO_OFFSET) * 8u;
             flash->f_sn_lo = (uint16_t)((flash->f_sn_lo & ~(0xFFu << shift)) | ((uint32_t)value << shift));
@@ -292,6 +321,11 @@ void flash_write8(flash_t *flash, uint32_t addr, uint8_t value) {
         return;
     }
 
+    if (flash->unlock_step == 3 && (flash->wait2 & FLASH_WAIT2_SELECTS_SERIAL) == 0u) {
+        /* The first data write after the unlock sequence starts the program of its frame. */
+        flash->program_frame = offset & ~(FLASH_PROGRAM_FRAME_SIZE - 1u);
+        flash->program_bytes_left = (uint8_t)(FLASH_PROGRAM_FRAME_SIZE - 1u);
+    }
     flash->unlock_step = 0;
     flash->data[offset] = value;
 }
@@ -463,6 +497,10 @@ void flash_ctrl_write8(flash_t *flash, uint32_t offset, uint8_t value) {
     reg_index = offset / 4u;
     shift = (offset % 4u) * 8u;
 
+    if (reg_index == 4u) { /* +0x10: F_WAIT2, which selects the target of the next program */
+        flash->wait2 = (flash->wait2 & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        return;
+    }
     if (reg_index == 2u) { /* +8: the block bitmask (F_BANK_FLG) */
         flash->bank_mask = (flash->bank_mask & ~(0xFFu << shift)) | ((uint32_t)value << shift);
         return;

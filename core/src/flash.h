@@ -100,6 +100,16 @@ typedef struct flash {
        physical offset 0, 2, or 8 changes F_SN_LO, F_SN_HI, or F_CAL. It
        does not change usual card data. */
     uint8_t unlock_step;
+    /* The program phase of one frame write. After the unlock sequence arms the flash, the first data
+       write starts the program of its 128-byte frame. Each write inside that frame is then data, also
+       at a key address. program_bytes_left counts the bytes that the frame still takes, and 0 means no
+       program is in progress. program_frame is the physical offset of the frame. */
+    uint32_t program_frame;
+    uint8_t program_bytes_left;
+    /* The last value written to F_WAIT2 (FLASH_CTRL+0x10). Software writes it before the unlock
+       sequence, and it selects the target of the program. Bit 6 selects F_SN and F_CAL. Without bit 6,
+       the program goes to card data. See FLASH_WAIT2_SELECTS_SERIAL in flash.c. */
+    uint32_t wait2;
 } flash_t;
 
 /* Combines F_SN_LO and F_SN_HI the same way that SWI 0Ah
@@ -114,7 +124,7 @@ void flash_set_serial(flash_t *flash, uint32_t serial);
 void flash_init(flash_t *flash);
 
 /* Sets only the volatile FLASH_CTRL register state to the power-on defaults.
-   That state is bank_mask, last_command, bank_val[], and unlock_step.
+   That state is bank_mask, last_command, bank_val[], unlock_step, the program state, and wait2.
    It does not change data[], which holds the loaded card content or app content.
    It also does not change f_sn_lo, f_sn_hi, or f_cal. These fields hold the hardware ID and the
    LCD calibration.

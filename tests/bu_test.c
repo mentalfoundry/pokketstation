@@ -237,6 +237,18 @@ static void test_read_sector_dummy_bytes_are_zero(mock_ps1_t *m) {
    Command 0x5E sends that bit. The region is sector 16 to 55.
    tools/com_probe.c write mode already reports both codes against a real card. */
 
+/* Sends command 0x58 Get Status and gives the FLAG byte. The output register is one byte behind the
+   input, thus FLAG is at index 1 of the reply. */
+static uint8_t poll_flag(mock_ps1_t *m) {
+    uint8_t send[5] = {0x81u, 0x58u, 0x00u, 0x00u, 0x00u};
+    uint8_t reply[5];
+
+    memset(reply, 0, sizeof(reply));
+    (void)mock_ps1_exchange(m, send, reply, sizeof(send));
+    mock_ps1_end_command(m);
+    return reply[1];
+}
+
 /* psemu_com_transfer_timed gives the reference cycles that each exchange ran. A caller that keeps
    the machine at the time of a host clock needs that number, and a caller that times the
    acknowledge for the host needs it too.
@@ -279,6 +291,97 @@ static void test_a_timed_transfer_reports_the_cost_of_each_answer(void) {
 
     mock_ps1_close(m);
     printf("test_a_timed_transfer_reports_the_cost_of_each_answer OK\n");
+}
+
+/* The two frames that hold the flash unlock addresses take data like each other frame. F_KEY1 is at
+   physical offset 0x2A54, which is in frame 84. F_KEY2 is at 0x55AA, which is in frame 171.
+
+   The kernel writes a frame in two phases. It first writes the three unlock commands to those two
+   addresses. It then programs the 128 bytes of the frame. A write in the second phase is data, also
+   at a key address. After the program, the kernel reads the frame back and compares it with the
+   source. A difference sets FLAG to 0x04, and a PS1 game then reports the frame as bad. Thus a frame
+   that holds a key address must keep all 128 bytes, and FLAG must stay 0x00.
+
+   The last part of this test guards the opposite fault. The unlock commands of a write to a
+   different frame must not change the data at a key address. */
+static void test_the_frames_that_hold_the_unlock_addresses_take_data(void) {
+    static const uint16_t key_frames[2] = {84u, 171u};
+    unsigned k;
+
+    for (k = 0; k < 2u; k++) {
+        mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+        uint8_t data[MOCK_PS1_FRAME_SIZE];
+        uint8_t term = 0xFFu;
+        const uint8_t *frame;
+        uint8_t flag;
+
+        assert(m != NULL);
+        fill_pattern(data, (uint8_t)(0x30u + k));
+
+        (void)mock_ps1_write_sector(m, key_frames[k], data, 0, &term, NULL);
+        mock_ps1_end_command(m);
+        mock_ps1_run_frames(m, FLASH_SETTLE_FRAMES);
+        flag = poll_flag(m);
+
+        frame = &psemu_flash_data(m->ps)[(size_t)key_frames[k] * MOCK_PS1_FRAME_SIZE];
+        printf("  frame %u: term 0x%02X, FLAG 0x%02X, key bytes sent %02X %02X, in card %02X %02X\n",
+            (unsigned)key_frames[k], (unsigned)term, (unsigned)flag,
+            data[k == 0u ? 0x54 : 0x2A], data[k == 0u ? 0x55 : 0x2B],
+            frame[k == 0u ? 0x54 : 0x2A], frame[k == 0u ? 0x55 : 0x2B]);
+
+        assert(term == MOCK_PS1_TERM_GOOD);
+        assert(memcmp(frame, data, MOCK_PS1_FRAME_SIZE) == 0);
+        assert(flag == 0x00u);
+
+        /* Another frame: its unlock commands go to the key addresses, and they must not change the
+           data that is already there. */
+        {
+            uint8_t other[MOCK_PS1_FRAME_SIZE];
+            fill_pattern(other, 0x77u);
+            (void)mock_ps1_write_sector(m, DATA_SECTOR, other, 0, &term, NULL);
+            mock_ps1_end_command(m);
+            mock_ps1_run_frames(m, FLASH_SETTLE_FRAMES);
+            assert(term == MOCK_PS1_TERM_GOOD);
+            frame = &psemu_flash_data(m->ps)[(size_t)key_frames[k] * MOCK_PS1_FRAME_SIZE];
+            assert(memcmp(frame, data, MOCK_PS1_FRAME_SIZE) == 0);
+        }
+
+        mock_ps1_close(m);
+    }
+
+    printf("test_the_frames_that_hold_the_unlock_addresses_take_data OK\n");
+}
+
+/* A Write Sector to frame 0 takes all 128 bytes, and it keeps the serial number. The kernel programs
+   frame 0 like each other frame, and it then verifies the frame, thus FLAG stays 0x00. A PS1 formats
+   a card in this way. A test on real hardware confirms both results: a PS1 format of a PocketStation
+   is successful, and its serial number does not change. */
+static void test_a_write_to_frame_0_takes_the_data_and_keeps_the_serial(void) {
+    mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+    uint8_t data[MOCK_PS1_FRAME_SIZE];
+    uint8_t term = 0xFFu;
+    uint32_t serial_before;
+    uint8_t flag;
+
+    assert(m != NULL);
+    serial_before = psemu_get_hardware_id(m->ps);
+    fill_pattern(data, 0x11u);
+
+    (void)mock_ps1_write_sector(m, 0u, data, 0, &term, NULL);
+    mock_ps1_end_command(m);
+    mock_ps1_run_frames(m, FLASH_SETTLE_FRAMES);
+    flag = poll_flag(m);
+
+    printf("  frame 0: term 0x%02X, FLAG 0x%02X, serial 0x%08X -> 0x%08X\n", (unsigned)term, (unsigned)flag,
+        (unsigned)serial_before, (unsigned)psemu_get_hardware_id(m->ps));
+
+    assert(term == MOCK_PS1_TERM_GOOD);
+    assert(flag == 0x00u);
+    assert(memcmp(psemu_flash_data(m->ps), data, MOCK_PS1_FRAME_SIZE) == 0);
+    assert(psemu_get_hardware_id(m->ps) == serial_before);
+
+    mock_ps1_close(m);
+    printf("test_a_write_to_frame_0_takes_the_data_and_keeps_the_serial OK\n");
 }
 
 /* The time of one byte on the link of a PS1, in units of PSEMU_TIME_HZ. A PS1 shifts 8 bits at
@@ -629,6 +732,8 @@ int main(void) {
     test_idle_skip_gives_the_same_machine();
     test_idle_skip_gives_the_same_boot();
     test_a_selection_with_no_byte_leaves_the_kernel_ready();
+    test_the_frames_that_hold_the_unlock_addresses_take_data();
+    test_a_write_to_frame_0_takes_the_data_and_keeps_the_serial();
 
     mock_ps1_close(m);
     printf("bu_test: all tests OK\n");

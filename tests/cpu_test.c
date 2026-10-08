@@ -1935,6 +1935,18 @@ static void test_flash_key_addresses_are_not_data_storage(void) {
    F_SN_LO value [8000002h]=new F_SN_HI value". A test on a real retail-BIOS unit
    confirms that the sequence operates correctly. See docs/hardware-notes.md,
    "Hardware ID (F_SN)". */
+/* F_WAIT2 (FLASH_CTRL+0x10) selects the target of a program, before the unlock sequence. The kernel
+   writes 0x21 before it programs a frame of card data (0x0400126C in J110). The homebrew ID editor
+   writes 0x41 before it writes F_SN and F_CAL. A test on real hardware gives both results: the ID
+   editor changes the serial number, and a PS1 format of the card, which programs frame 0 through the
+   kernel, keeps the serial number. */
+#define FLASH_PROGRAM_CARD_DATA 0x21u
+#define FLASH_PROGRAM_SERIAL 0x41u
+
+static void flash_select_program_target(psemu_t *ps, uint32_t target) {
+    psemu_bus_write32(&ps->bus, PSEMU_FLASH_CTRL_BASE + 0x10, target);
+}
+
 static void flash_perform_unlock_sequence(psemu_t *ps) {
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFAAu); /* F_KEY2 */
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u); /* F_KEY1 */
@@ -1944,6 +1956,7 @@ static void flash_perform_unlock_sequence(psemu_t *ps) {
 static void test_flash_header_write_via_unlock_sequence(void) {
     psemu_t *ps = make_arm_cpu();
 
+    flash_select_program_target(ps, FLASH_PROGRAM_SERIAL);
     flash_perform_unlock_sequence(ps);
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000, 0xBEEFu); /* new F_SN_LO */
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0002, 0xCAFEu); /* new F_SN_HI */
@@ -2000,6 +2013,31 @@ static void test_flash_frame_write_lands_in_a_ps1_save_block(void) {
     printf("test_flash_frame_write_lands_in_a_ps1_save_block OK\n");
 }
 
+static void test_flash_program_of_frame_0_keeps_the_serial(void) {
+    /* The kernel programs frame 0 like each other frame: F_WAIT2 0x21, the unlock sequence, then 64
+       halfwords. Every byte goes to card data, including offsets 0, 2, and 8, and the serial number
+       does not change. The kernel then compares the frame with its source, thus a byte that goes
+       elsewhere fails the write. A real PS1 formats a PocketStation in this way, and its serial
+       number stays the same. */
+    psemu_t *ps = make_arm_cpu();
+    uint32_t default_id = psemu_get_hardware_id(ps);
+    int i;
+
+    flash_select_program_target(ps, FLASH_PROGRAM_CARD_DATA);
+    flash_perform_unlock_sequence(ps);
+    for (i = 0; i < 64; i++) {
+        psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + (uint32_t)i * 2u, (uint16_t)(0x4D43u + i));
+    }
+
+    for (i = 0; i < 64; i++) {
+        assert(psemu_bus_read16(&ps->bus, PSEMU_FLASH2_BASE + (uint32_t)i * 2u) == (uint16_t)(0x4D43u + i));
+    }
+    assert(psemu_get_hardware_id(ps) == default_id);
+
+    psemu_destroy(ps);
+    printf("test_flash_program_of_frame_0_keeps_the_serial OK\n");
+}
+
 static void test_flash_header_write_requires_unlock_first(void) {
     /* The safety property that makes this design conditional, and not
        unconditional: physical offsets 0, 2, and 8 are ALSO usual card-data
@@ -2032,6 +2070,7 @@ static void test_flash_header_write_disarms_after_unrelated_write(void) {
     psemu_t *ps = make_arm_cpu();
     uint32_t default_id = psemu_get_hardware_id(ps);
 
+    flash_select_program_target(ps, FLASH_PROGRAM_SERIAL);
     flash_perform_unlock_sequence(ps);
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0004, 0x1234u); /* unrelated offset - disarms */
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x0000, 0xBEEFu); /* no unlock since disarm */
@@ -2049,6 +2088,7 @@ static void test_flash_header_write_requires_correct_key_order(void) {
     psemu_t *ps = make_arm_cpu();
     uint32_t default_id = psemu_get_hardware_id(ps);
 
+    flash_select_program_target(ps, FLASH_PROGRAM_SERIAL);
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u); /* F_KEY1 first - wrong */
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x55AA, 0xFFAAu);
     psemu_bus_write16(&ps->bus, PSEMU_FLASH2_BASE + 0x2A54, 0xFF55u);
@@ -2763,6 +2803,7 @@ int main(void) {
     test_flash_header_write_via_unlock_sequence();
     test_flash_frame_write_lands_in_a_ps1_save_block();
     test_flash_header_write_requires_unlock_first();
+    test_flash_program_of_frame_0_keeps_the_serial();
     test_flash_header_write_disarms_after_unrelated_write();
     test_flash_header_write_requires_correct_key_order();
     test_lcd_mode_dison_and_rotate();

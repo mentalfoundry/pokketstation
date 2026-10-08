@@ -246,6 +246,9 @@ static void state_visit(psemu_t *ps, st_t *s) {
     st_u16(s, &ps->flash.f_sn_hi);
     st_u16(s, &ps->flash.f_cal);
     st_u8(s, &ps->flash.unlock_step);
+    st_u32(s, &ps->flash.program_frame);
+    st_u8(s, &ps->flash.program_bytes_left);
+    st_u32(s, &ps->flash.wait2);
 
     /* Communication port. */
     st_u32(s, &ps->com.mode);

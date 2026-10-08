@@ -18,7 +18,8 @@
 
    1: the first version of the field-by-field format. It replaces a raw copy of psemu_t.
    2: replaces the fractional carry of psemu_run with the clock of the machine (time).
-   3: adds com.stat2_events and com.irq_level. */
-#define PSEMU_STATE_VERSION 3u
+   3: adds com.stat2_events and com.irq_level.
+   4: adds flash.program_frame, flash.program_bytes_left, and flash.wait2. */
+#define PSEMU_STATE_VERSION 4u
 
 #endif
