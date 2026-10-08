@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts run in a POSIX shell, which does not accept CRLF line endings.
+*.sh text eol=lf
