@@ -1,6 +1,8 @@
 # pokketstation
 
-This is an open-source Sony PocketStation emulator core, written in portable C. It is made for use in a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app and JavaScript for the browser. **Try it out here with your own retail bios dump:** the emulator runs at [daznet.neocities.org/pocketstation](https://daznet.neocities.org/pocketstation).
+This is an open-source Sony PocketStation emulator core, written in portable C. It is made for use in a [libretro](https://www.libretro.com/) core, a standalone Windows desktop app and JavaScript for the browser. 
+
+**Try it out here with your own retail bios dump:** the emulator runs at [daznet.neocities.org/pocketstation](https://daznet.neocities.org/pocketstation).
 
 ## Status
 
