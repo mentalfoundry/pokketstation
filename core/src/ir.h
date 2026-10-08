@@ -167,6 +167,11 @@ void ir_write(ir_t *ir, uint32_t offset, uint32_t value);
    transfer. */
 void ir_tick(ir_t *ir, struct intc *intc, uint32_t cycles);
 
+/* The smallest number of cycles for which ir_tick takes a received edge or ends a debounce. A smaller
+   number of cycles only advances the clock. UINT64_MAX if neither is waiting. The skip of an idle
+   loop in psemu.c uses this value. */
+uint64_t ir_cycles_to_next_event(const ir_t *ir);
+
 /* Gets the next TX edge that this instance made.
    It returns 1 and fills *out_edge. It returns 0 if tx_queue is empty.
    Call this function at each frame. Convert each edge to wall-clock time, then relay the edge.

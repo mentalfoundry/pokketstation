@@ -371,3 +371,19 @@ void ir_push_rx_edge(ir_t *ir, uint64_t timestamp_cycles, int level) {
 uint64_t ir_get_clock_cycles(const ir_t *ir) {
     return ir->clock_cycles;
 }
+
+uint64_t ir_cycles_to_next_event(const ir_t *ir) {
+    uint64_t best = UINT64_MAX;
+    const ir_edge_t *front = queue_peek(&ir->rx_queue);
+    if (front) {
+        best = (front->timestamp_cycles > ir->clock_cycles) ? front->timestamp_cycles - ir->clock_cycles : 0u;
+    }
+    if (ir->rx_pending_valid) {
+        uint64_t due = ir->rx_pending_since_cycles + IR_BFLT_DEBOUNCE_CYCLES;
+        uint64_t left = (due > ir->clock_cycles) ? due - ir->clock_cycles : 0u;
+        if (left < best) {
+            best = left;
+        }
+    }
+    return best;
+}

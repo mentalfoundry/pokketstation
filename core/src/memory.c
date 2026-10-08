@@ -187,6 +187,25 @@ static uint8_t bus_read8_untraced(psemu_bus_t *bus, uint32_t addr) {
     if (addr >= PSEMU_FLASH2_BASE && addr < PSEMU_FLASH2_BASE + PSEMU_FLASH_SIZE) {
         return flash_read8(bus->flash, addr - PSEMU_FLASH2_BASE);
     }
+    /* The interrupt controller, and each register of the COM block except COM_DATA, change only at an
+       input from the host or at an event of a device: a timer reload, an RTC transition, or an IR edge.
+       A read of them has no side effect. The idle-loop skip stops before the next device event and at
+       the end of the run, and a host input comes only between runs. Thus a read of them gives the
+       same value in each iteration that the skip replaces, and it does not count. The kernel waits for
+       the release of /SEL in a loop that reads COM_STAT1 and INT_INPUT (0x040007B6 to 0x040007C8 in
+       J110), and the PS1 holds /SEL for each read of the controller. See side_accesses in memory.h. */
+    if (addr >= PSEMU_INTC_BASE && addr < PSEMU_INTC_BASE + INTC_REG_SPAN) {
+        return intc_read8(bus->intc, addr - PSEMU_INTC_BASE);
+    }
+    if (addr >= PSEMU_COM_BASE && addr < PSEMU_COM_BASE + COM_REG_SPAN &&
+        ((addr - PSEMU_COM_BASE) & ~3u) != COM_DATA_OFFSET) {
+        return (uint8_t)com_read(bus->com, bus->intc, addr - PSEMU_COM_BASE);
+    }
+
+    /* Each region below can give a value that changes with time, or has a side effect. VRAM does
+       not, but a count of it costs nothing that matters. A read of COM_DATA clears COM_STAT1 bit 0, and
+       the count of a timer changes at each cycle. See side_accesses in memory.h. */
+    bus->side_accesses++;
     if (addr >= PSEMU_FLASH_CTRL_BASE && addr < PSEMU_FLASH_CTRL_BASE + FLASH_CTRL_SPAN) {
         return flash_ctrl_read8(bus->flash, addr - PSEMU_FLASH_CTRL_BASE);
     }
@@ -240,6 +259,7 @@ static uint8_t bus_read8_raw(psemu_bus_t *bus, uint32_t addr) {
 
 /* Raw 8-bit write with no cost. See bus_read8_raw. */
 static void bus_write8_raw(psemu_bus_t *bus, uint32_t addr, uint8_t value) {
+    bus->side_accesses++;
 #ifdef PSEMU_TRACE_HOOKS
     /* This callback occurs before the region dispatch below. Thus this
        code still reports a write that a region then discards. This is

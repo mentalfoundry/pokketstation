@@ -317,6 +317,15 @@ uint64_t psemu_run_time(psemu_t *ps, uint64_t units);
 /* The clock of the machine, in units of PSEMU_TIME_HZ since the last reset. */
 uint64_t psemu_time(const psemu_t *ps);
 
+/* Turns the idle-loop skip on (nonzero) or off. It is on after psemu_create.
+
+   Software often waits for an interrupt in a short loop that only reads memory. The skip finds such a
+   loop from the condition of the machine, and advances the machine to just before the next event of
+   a device in one step, in place of each iteration. The machine after the skip is the same, bit for
+   bit, as after those iterations, thus this setting changes only the host time that a run costs. It
+   is not part of the state of the machine. A frontend can turn it off to compare the two. */
+void psemu_set_idle_skip(psemu_t *ps, int enabled);
+
 /* Settings that the BIOS owns. These settings are in RAM, not in a hardware register.
    docs/hardware-notes.md gives data on both settings, in "System sound volume setting"
    and "Where the date/time settings actually live". A trace of a real BIOS found both

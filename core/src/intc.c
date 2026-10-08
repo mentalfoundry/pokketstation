@@ -38,6 +38,7 @@ void intc_init(intc_t *intc) {
     intc->enable_write_scratch = 0;
     intc->mask_write_scratch = 0;
     intc->ack_write_scratch = 0;
+    intc->changes = 0;
 }
 
 uint8_t intc_read8(intc_t *intc, uint32_t offset) {
@@ -72,7 +73,7 @@ static void accumulate_byte(uint32_t *scratch, uint32_t shift, uint8_t value) {
     *scratch = (*scratch & ~(0xFFu << shift)) | ((uint32_t)value << shift);
 }
 
-void intc_write8(intc_t *intc, uint32_t offset, uint8_t value) {
+static void intc_write8_body(intc_t *intc, uint32_t offset, uint8_t value) {
     uint32_t word_index = offset / 4u;
     uint32_t shift = (offset % 4u) * 8u;
 
@@ -112,7 +113,7 @@ void intc_write8(intc_t *intc, uint32_t offset, uint8_t value) {
     }
 }
 
-void intc_set_line(intc_t *intc, uint32_t line, int state) {
+static void intc_set_line_body(intc_t *intc, uint32_t line, int state) {
     if (line == 0) {
         return;
     }
@@ -158,15 +159,15 @@ uint32_t intc_get_line(intc_t *intc, uint32_t line) {
     return intc->status & line;
 }
 
-void intc_clear_hold_only(intc_t *intc, uint32_t line) {
+static void intc_clear_hold_only_body(intc_t *intc, uint32_t line) {
     intc->hold &= ~line;
 }
 
-void intc_clear_status_only(intc_t *intc, uint32_t line) {
+static void intc_clear_status_only_body(intc_t *intc, uint32_t line) {
     intc->status &= ~line;
 }
 
-void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level) {
+static void intc_set_level_and_pulse_body(intc_t *intc, uint32_t line, int level) {
     if (line == 0) {
         return;
     }
@@ -186,4 +187,46 @@ int intc_irq_asserted(intc_t *intc) {
 
 int intc_fiq_asserted(intc_t *intc) {
     return (intc->hold & intc->enable & INT_FIQ_MASK) != 0;
+}
+
+/* The public functions that change the controller. Each one counts a change. See `changes` in
+   intc.h. */
+void intc_write8(intc_t *intc, uint32_t offset, uint8_t value) {
+    uint32_t hold = intc->hold, status = intc->status, enable = intc->enable;
+    intc_write8_body(intc, offset, value);
+    if (intc->hold != hold || intc->status != status || intc->enable != enable) {
+        intc->changes++;
+    }
+}
+
+void intc_set_line(intc_t *intc, uint32_t line, int state) {
+    uint32_t hold = intc->hold, status = intc->status, enable = intc->enable;
+    intc_set_line_body(intc, line, state);
+    if (intc->hold != hold || intc->status != status || intc->enable != enable) {
+        intc->changes++;
+    }
+}
+
+void intc_clear_hold_only(intc_t *intc, uint32_t line) {
+    uint32_t hold = intc->hold, status = intc->status, enable = intc->enable;
+    intc_clear_hold_only_body(intc, line);
+    if (intc->hold != hold || intc->status != status || intc->enable != enable) {
+        intc->changes++;
+    }
+}
+
+void intc_clear_status_only(intc_t *intc, uint32_t line) {
+    uint32_t hold = intc->hold, status = intc->status, enable = intc->enable;
+    intc_clear_status_only_body(intc, line);
+    if (intc->hold != hold || intc->status != status || intc->enable != enable) {
+        intc->changes++;
+    }
+}
+
+void intc_set_level_and_pulse(intc_t *intc, uint32_t line, int level) {
+    uint32_t hold = intc->hold, status = intc->status, enable = intc->enable;
+    intc_set_level_and_pulse_body(intc, line, level);
+    if (intc->hold != hold || intc->status != status || intc->enable != enable) {
+        intc->changes++;
+    }
 }

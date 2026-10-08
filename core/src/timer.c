@@ -154,3 +154,25 @@ void timer_tick(psemu_timer_t *timer, struct intc *intc, uint32_t cycles) {
         }
     }
 }
+
+uint32_t timer_cycles_to_next_reload(const psemu_timer_t *timer) {
+    uint32_t best = UINT32_MAX;
+    uint32_t i;
+    for (i = 0; i < TIMER_COUNT; i++) {
+        const single_timer_t *t = &timer->timers[i];
+        uint32_t divisor;
+        uint32_t need;
+        if (!(t->control & TIMER_CTRL_ENABLE) || t->period == 0) {
+            continue;
+        }
+        /* timer_tick reloads when the ticks are more than `count`, thus at count + 1 ticks. The
+           accumulator holds the cycles of the next tick that already passed, and it is always less
+           than the divisor, thus `need` is 1 or more. */
+        divisor = timer_divisor(t->control);
+        need = (t->count + 1u) * divisor - t->cycle_accumulator;
+        if (need < best) {
+            best = need;
+        }
+    }
+    return best;
+}

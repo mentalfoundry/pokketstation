@@ -261,3 +261,8 @@ void rtc_tick(rtc_t *rtc, struct intc *intc, uint32_t cycles) {
         }
     }
 }
+
+uint32_t rtc_cycles_to_next_tick(const rtc_t *rtc) {
+    uint32_t threshold = (rtc->mode & 1u) ? RTC_TICK_CYCLES_PAUSED : RTC_TICK_CYCLES_RUN;
+    return (rtc->tick_accumulator < threshold) ? threshold - rtc->tick_accumulator : 0u;
+}

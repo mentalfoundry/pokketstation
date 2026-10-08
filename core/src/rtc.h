@@ -122,4 +122,8 @@ void rtc_write8(rtc_t *rtc, uint32_t offset, uint8_t value);
    While the RTC runs, each change of state also advances the clock (see the top comment of rtc.h). */
 void rtc_tick(rtc_t *rtc, struct intc *intc, uint32_t cycles);
 
+/* The smallest number of cycles for which rtc_tick changes the line. A smaller number of cycles only
+   adds to the accumulator. The skip of an idle loop in psemu.c uses this value. */
+uint32_t rtc_cycles_to_next_tick(const rtc_t *rtc);
+
 #endif

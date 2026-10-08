@@ -36,6 +36,10 @@ struct psemu {
        rounds it. The RTC, the DAC and the IR count the reference-cycle boundaries that it crosses.
        See run_until in psemu.c. */
     uint64_t time;
+    /* Nonzero to skip the iterations of an idle loop. See idle_loop_branch in psemu.c. This is a
+       setting of the host, and not part of the state of the machine: the skip gives the same machine
+       as the iterations that it skips. */
+    int idle_skip;
     uint32_t buttons; /* the last PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;
     /* app_running shows whether a dispatched app owns WRAM. See psemu_app_running.

@@ -15,6 +15,7 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "psemu_internal.h"
@@ -1133,6 +1134,54 @@ static void test_the_time_unit_divides_every_clock(void) {
         psemu_destroy(ps);
     }
     printf("test_the_time_unit_divides_every_clock OK\n");
+}
+
+/* A branch to itself is the shortest idle loop. Two timers and the RTC run, and their lines assert
+   into the interrupt controller, but CPSR masks both interrupts, so the CPU never leaves the loop.
+   The skip must stop before each timer reload and each RTC transition, and the machine at the end
+   must be the same as the machine that executed each iteration. The runs use lengths that are not a
+   multiple of an iteration. */
+static void test_idle_skip_of_a_branch_to_itself(void) {
+    psemu_t *ps[2];
+    size_t size;
+    uint8_t *sa, *sb;
+    unsigned m, i;
+
+    for (m = 0; m < 2u; m++) {
+        ps[m] = make_arm_cpu();
+        ps[m]->has_bios = 1;
+        psemu_set_idle_skip(ps[m], m == 0u);
+        put32(ps[m], 0x00u, 0xEAFFFFFEu); /* B . */
+        ps[m]->cpu.cpsr |= CPSR_I | CPSR_F;
+        psemu_bus_write32(&ps[m]->bus, PSEMU_CLK_BASE, 7u);
+        psemu_bus_write32(&ps[m]->bus, PSEMU_TIMER_BASE + 0x0u, 97u);                        /* Timer0 period */
+        psemu_bus_write32(&ps[m]->bus, PSEMU_TIMER_BASE + 0x8u, TIMER_CTRL_ENABLE | 0u);     /* /2 */
+        psemu_bus_write32(&ps[m]->bus, PSEMU_TIMER_BASE + 0x10u, 3001u);                     /* Timer1 period */
+        psemu_bus_write32(&ps[m]->bus, PSEMU_TIMER_BASE + 0x18u, TIMER_CTRL_ENABLE | 1u);    /* /32 */
+        for (i = 0; i < 300u; i++) {
+            (void)psemu_run_time(ps[m], (uint64_t)(i % 37u + 1u) * 98765431ull);
+        }
+        /* Past one RTC transition (half a second) as well. */
+        (void)psemu_run_time(ps[m], PSEMU_TIME_HZ * 3u / 4u);
+    }
+
+    size = psemu_state_size(ps[0]);
+    sa = (uint8_t *)malloc(size);
+    sb = (uint8_t *)malloc(size);
+    assert(sa != NULL && sb != NULL);
+    assert(psemu_save_state(ps[0], sa, size) == PSEMU_OK);
+    assert(psemu_save_state(ps[1], sb, size) == PSEMU_OK);
+    printf("  steps %llu / %llu, time %llu / %llu\n", (unsigned long long)ps[0]->cpu.total_steps,
+        (unsigned long long)ps[1]->cpu.total_steps, (unsigned long long)psemu_time(ps[0]),
+        (unsigned long long)psemu_time(ps[1]));
+    assert(ps[0]->cpu.total_steps == ps[1]->cpu.total_steps);
+    assert(memcmp(sa, sb, size) == 0);
+
+    free(sa);
+    free(sb);
+    psemu_destroy(ps[0]);
+    psemu_destroy(ps[1]);
+    printf("test_idle_skip_of_a_branch_to_itself OK\n");
 }
 
 static void test_timer_scales_with_clk_mode(void) {
@@ -2694,6 +2743,7 @@ int main(void) {
     test_clk_mode_scales_run_speed();
     test_run_returns_the_reference_time_that_ran();
     test_the_time_unit_divides_every_clock();
+    test_idle_skip_of_a_branch_to_itself();
     test_timer_scales_with_clk_mode();
     test_clk_mode_keeps_rtc_dac_on_real_time();
     test_rtc_defaults_and_increment();

@@ -77,6 +77,14 @@ typedef struct psemu_bus {
        cost of that step. See "Memory access timing" in
        docs/hardware-notes.md. */
     uint32_t pending_cycles;
+    /* A count of each write, and of each read outside RAM, BIOS, flash data, VRAM, the interrupt
+       controller, and the COM block except COM_DATA. Those read a value that only a write, a host
+       input or a device event can change, and the idle-loop skip stops before each of those (see
+       bus_read8_untraced in memory.c). Any other read can see a value that changes with time, and a
+       write changes the machine. The idle-loop skip in psemu.c needs an iteration with neither. The
+       value is not part of the state of the machine: only a difference over a few instructions has a
+       meaning. */
+    uint32_t side_accesses;
     /* One RAM byte that stays read-only to emulated code. The value
        PSEMU_RAM_SIZE means "no byte is locked". This value is a sentinel
        that no RAM address can equal. Thus the guard in bus_write8_raw is

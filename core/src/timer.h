@@ -81,4 +81,9 @@ void timer_write8(psemu_timer_t *timer, uint32_t offset, uint8_t value);
    It asserts the applicable INT_TIMERn line through `intc` at each expiry. */
 void timer_tick(psemu_timer_t *timer, struct intc *intc, uint32_t cycles);
 
+/* The smallest number of raw cycles for which timer_tick reloads a timer, and so asserts its
+   interrupt line. A smaller number of cycles only decreases the counts. UINT32_MAX if no timer runs.
+   The skip of an idle loop in psemu.c uses this value. */
+uint32_t timer_cycles_to_next_reload(const psemu_timer_t *timer);
+
 #endif

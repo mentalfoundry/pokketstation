@@ -103,6 +103,11 @@ typedef struct intc {
     uint32_t enable_write_scratch;
     uint32_t mask_write_scratch;
     uint32_t ack_write_scratch;
+    /* A count of the changes of hold, status and enable. The idle-loop skip in psemu.c compares it
+       across one iteration of a loop: a loop that reads this controller reads the same values in each
+       iteration only if no change came between them. The value is not part of the state of the
+       machine: only a difference has a meaning. */
+    uint32_t changes;
 } intc_t;
 
 void intc_init(intc_t *intc);

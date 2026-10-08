@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "mock_ps1.h"
 
@@ -438,6 +439,88 @@ static void test_split_runs_give_the_same_machine(void) {
     printf("test_split_runs_give_the_same_machine OK\n");
 }
 
+/* Sends Get ID with the byte gap of a real PS1, releases the select line, and gives the kernel 1/128 s
+   to finish. */
+static void get_id_at_ps1_pace(psemu_t *ps) {
+    static const uint8_t send[10] = {0x81u, 0x53u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    unsigned i;
+    select_like_a_ps1(ps);
+    for (i = 0; i < 10u; i++) {
+        (void)psemu_com_send(ps, send[i]);
+        (void)psemu_run_time_to_ack(ps, ANSWER_BUDGET_UNITS);
+        (void)psemu_run_time(ps, PS1_BYTE_UNITS);
+    }
+    psemu_com_set_selected(ps, 0);
+    (void)psemu_run_time(ps, 600ull * 13312640ull);
+}
+
+/* Runs `seconds` of device time in runs of 1/128 s, and gives the host
+   time that it took, in clock() ticks. */
+static clock_t run_seconds(psemu_t *ps, unsigned seconds) {
+    clock_t t0 = clock();
+    unsigned i;
+    for (i = 0; i < seconds * 128u; i++) {
+        (void)psemu_run_time(ps, 600ull * 13312640ull);
+    }
+    return clock() - t0;
+}
+
+/* The idle-loop skip advances the machine past the iterations of a wait loop in one step. The machine
+   after the skip must be the same, bit for bit, as the machine that executed each iteration: the
+   registers, the step count, each timer, the RTC, the DAC samples and the IR clock. This test runs
+   two machines, one with the skip and one without, through the conditions of a docked session: a
+   docked wait, commands at the pace of a PS1, and an undocked period. It compares them after each
+   part. The undocked part is also where an app runs. */
+static void test_idle_skip_gives_the_same_machine(void) {
+    mock_ps1_t *a = mock_ps1_open(bios_path(), NULL);
+    mock_ps1_t *b = mock_ps1_open(bios_path(), NULL);
+    clock_t ta = 0, tb = 0;
+    unsigned i;
+
+    assert(a != NULL && b != NULL);
+    psemu_set_idle_skip(b->ps, 0);
+    assert(same_machine(a->ps, b->ps));
+
+    ta += run_seconds(a->ps, 10u);
+    tb += run_seconds(b->ps, 10u);
+    assert(same_machine(a->ps, b->ps));
+
+    for (i = 0; i < 20u; i++) {
+        get_id_at_ps1_pace(a->ps);
+        get_id_at_ps1_pace(b->ps);
+        ta += run_seconds(a->ps, 1u);
+        tb += run_seconds(b->ps, 1u);
+    }
+    assert(same_machine(a->ps, b->ps));
+
+    /* A selection with no byte, as for each read of the controller: the kernel waits in its FIQ for the
+       release, in a loop that reads COM_STAT1 and INT_INPUT. */
+    for (i = 0; i < 60u; i++) {
+        psemu_com_set_selected(a->ps, 1);
+        psemu_com_set_selected(b->ps, 1);
+        (void)psemu_run_time(a->ps, 500ull * PSEMU_TIME_PER_REFERENCE_CYCLE + 12345u);
+        (void)psemu_run_time(b->ps, 500ull * PSEMU_TIME_PER_REFERENCE_CYCLE + 12345u);
+        psemu_com_set_selected(a->ps, 0);
+        psemu_com_set_selected(b->ps, 0);
+        (void)psemu_run_time(a->ps, 600ull * 13312640ull);
+        (void)psemu_run_time(b->ps, 600ull * 13312640ull);
+    }
+    assert(same_machine(a->ps, b->ps));
+
+    psemu_com_set_docked(a->ps, 0);
+    psemu_com_set_docked(b->ps, 0);
+    ta += run_seconds(a->ps, 10u);
+    tb += run_seconds(b->ps, 10u);
+    assert(same_machine(a->ps, b->ps));
+
+    printf("  40 s of device time: %ld ms with the skip, %ld ms without\n", (long)(ta * 1000 / CLOCKS_PER_SEC),
+        (long)(tb * 1000 / CLOCKS_PER_SEC));
+
+    mock_ps1_close(a);
+    mock_ps1_close(b);
+    printf("test_idle_skip_gives_the_same_machine OK\n");
+}
+
 /* A selection with no byte for the device leaves the kernel ready. A PS1 selects the port also to
    read the controller, and the device sees that selection. The selection starts the FIQ of the kernel
    (see PSEMU_COM_SELECT_LEAD_CYCLES), the kernel waits for the release, and it then ends the command.
@@ -467,6 +550,57 @@ static void test_a_selection_with_no_byte_leaves_the_kernel_ready(void) {
     printf("test_a_selection_with_no_byte_leaves_the_kernel_ready OK\n");
 }
 
+/* The idle-loop skip must also give the same machine from creation: through boot, docking and docked
+   frames. Boot has loops that read the interrupt controller, for example the waits for an edge of the
+   RTC at 0x04000546 and 0x04000650 in J110. An edge can come after the read of an iteration and before
+   its branch, thus the skip must also require that the interrupt controller does not change inside the
+   iteration that it measures. The runs here are 100 reference cycles each, thus each one ends inside a
+   different iteration. */
+static psemu_t *boot_machine(int skip) {
+    FILE *f = fopen(bios_path(), "rb");
+    uint8_t bios[PSEMU_BIOS_SIZE];
+    size_t n;
+    psemu_t *ps = psemu_create();
+    assert(f != NULL && ps != NULL);
+    n = fread(bios, 1, sizeof(bios), f);
+    fclose(f);
+    psemu_set_idle_skip(ps, skip);
+    assert(psemu_load_bios(ps, bios, n) == PSEMU_OK);
+    psemu_reset(ps);
+    return ps;
+}
+
+static void test_idle_skip_gives_the_same_boot(void) {
+    psemu_t *a = boot_machine(1);
+    psemu_t *b = boot_machine(0);
+    unsigned i;
+
+    for (i = 0; i < 200u * 330u; i++) {
+        (void)psemu_run(a, 100u);
+        (void)psemu_run(b, 100u);
+    }
+    assert(same_machine(a, b));
+
+    psemu_com_set_docked(a, 1);
+    psemu_com_set_docked(b, 1);
+    for (i = 0; i < 60u * 330u; i++) {
+        (void)psemu_run(a, 100u);
+        (void)psemu_run(b, 100u);
+    }
+    assert(psemu_com_is_enabled(a));
+    assert(same_machine(a, b));
+
+    for (i = 0; i < 300u; i++) {
+        (void)psemu_run(a, 33000u);
+        (void)psemu_run(b, 33000u);
+    }
+    assert(same_machine(a, b));
+
+    psemu_destroy(a);
+    psemu_destroy(b);
+    printf("test_idle_skip_gives_the_same_boot OK\n");
+}
+
 int main(void) {
     mock_ps1_t *m;
     const char *path = bios_path();
@@ -492,6 +626,8 @@ int main(void) {
     test_a_timed_transfer_reports_the_cost_of_each_answer();
     test_the_time_to_ack_is_the_exact_time_of_the_answer();
     test_split_runs_give_the_same_machine();
+    test_idle_skip_gives_the_same_machine();
+    test_idle_skip_gives_the_same_boot();
     test_a_selection_with_no_byte_leaves_the_kernel_ready();
 
     mock_ps1_close(m);

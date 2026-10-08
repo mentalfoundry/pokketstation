@@ -3,6 +3,7 @@
 
 #include "psemu_internal.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,7 @@ psemu_t *psemu_create(void) {
     ps->buttons = 0;
     ps->has_bios = 0;
     ps->time = 0;
+    ps->idle_skip = 1;
     ps->app_running = 0;
     ps->app_exec_idle_cycles = 0;
     return ps;
@@ -504,6 +506,183 @@ int psemu_app_running(const psemu_t *ps) {
 /* The units of PSEMU_TIME_HZ in one reference cycle. */
 #define TIME_PER_REF ((uint64_t)PSEMU_TIME_PER_REFERENCE_CYCLE)
 
+/* ---- Idle-loop skip ----
+
+   Software often waits for an interrupt in a short loop that only reads memory, for example a loop
+   that reads a RAM flag until an interrupt handler changes it. Each iteration of such a loop executes
+   the same instructions, with the same cycles, and leaves the CPU in the same condition. Nothing
+   changes until a device asserts an interrupt line. The kernel waits in this way while it is docked,
+   and that wait is most of the instructions that the machine executes.
+
+   The skip finds such a loop from the condition of the machine alone. It does not know an address
+   of any program. At a branch back to an address no more than IDLE_LOOP_MAX_BYTES before it, it
+   records the branch. If the next iteration gets to the same branch with no write and no read of a
+   value that can change with time (see side_accesses in memory.h), the skip takes a copy of
+   the registers. If the iteration after that also gets there with no such access, with the same
+   registers, and with no change of the interrupt controller inside it, then the loop is a fixed
+   point: a further iteration reads the same values, which only a write, a host input or a device
+   event can change, and so does the same thing again.
+
+   The skip then advances the machine by the largest whole number of iterations before the next event
+   of a device: a timer reload, an RTC transition, an IR edge or end of debounce, the end of the grace
+   period of psemu_track_app_execution, or the end of the run. The devices only accumulate time
+   before such an event, and one call for the full time gives the same result as one call for each
+   instruction. No interrupt line changes, thus no interrupt that is not taken at the start of the
+   skip is taken inside it. The machine after the skip is the same, bit for bit, as the machine after
+   those iterations. test_idle_skip_gives_the_same_machine in tests/bu_test.c compares the two. */
+#define IDLE_LOOP_MAX_BYTES 64u
+#define IDLE_LOOP_MAX_STEPS 16u
+#define IDLE_REG_WORDS (offsetof(arm7tdmi_t, bus) / sizeof(uint32_t))
+
+typedef struct {
+    int stage; /* 0: nothing recorded; 1: a branch recorded; 2: a branch and the registers recorded */
+    uint32_t branch_pc;
+    uint32_t side_accesses;
+    uint32_t intc_changes;
+    uint32_t regs[IDLE_REG_WORDS];
+    uint64_t time;
+    uint64_t cycles;
+    uint64_t steps;
+    uint32_t n; /* the steps recorded since stage 2 started */
+    uint32_t pcs[IDLE_LOOP_MAX_STEPS];
+    uint32_t cpsrs[IDLE_LOOP_MAX_STEPS];
+} idle_probe_t;
+
+static int interrupt_due(psemu_t *ps) {
+    return (!(ps->cpu.cpsr & CPSR_F) && intc_fiq_asserted(&ps->intc)) ||
+           (!(ps->cpu.cpsr & CPSR_I) && intc_irq_asserted(&ps->intc));
+}
+
+/* The largest k such that floor((frac + k * per_iter) / TIME_PER_REF) < limit: the number of whole
+   iterations that cross fewer than `limit` reference-cycle boundaries. */
+static uint64_t iterations_below_ref_limit(uint64_t frac, uint64_t per_iter, uint64_t limit) {
+    uint64_t span;
+    if (limit > 0xFFFFFFFFull) {
+        limit = 0xFFFFFFFFull;
+    }
+    span = limit * TIME_PER_REF;
+    return (span > frac) ? (span - frac - 1u) / per_iter : 0u;
+}
+
+static void idle_probe_snapshot(psemu_t *ps, idle_probe_t *p, uint64_t cycles_run) {
+    memcpy(p->regs, &ps->cpu, sizeof(p->regs));
+    p->time = ps->time;
+    p->cycles = cycles_run;
+    p->steps = ps->cpu.total_steps;
+    p->side_accesses = ps->bus.side_accesses;
+    p->intc_changes = ps->intc.changes;
+    p->n = 0;
+    p->stage = 2;
+}
+
+/* Called after a step that went back to an address no more than IDLE_LOOP_MAX_BYTES before it (or
+   to itself). `branch_pc` is the address of that step. */
+static void idle_loop_branch(psemu_t *ps, idle_probe_t *p, uint32_t branch_pc, uint64_t cycles_run, uint64_t *frac,
+                             uint64_t end) {
+    uint64_t per_iter, cycles_per_iter, k, limit, dt, f, steps;
+    uint32_t real, i, in_flash = 0;
+
+    if (p->stage == 0 || p->branch_pc != branch_pc || p->side_accesses != ps->bus.side_accesses) {
+        p->stage = 1;
+        p->branch_pc = branch_pc;
+        p->side_accesses = ps->bus.side_accesses;
+        return;
+    }
+    /* The interrupt controller must not change inside the measured iteration. A loop that reads it can
+       read a value before a change and branch after it, and its registers then look the same while the
+       next iteration reads a different value. */
+    if (p->stage == 1 || p->n == 0 || p->n > IDLE_LOOP_MAX_STEPS || ps->cpu.total_steps - p->steps != p->n ||
+        ps->intc.changes != p->intc_changes || memcmp(p->regs, &ps->cpu, sizeof(p->regs)) != 0) {
+        idle_probe_snapshot(ps, p, cycles_run);
+        return;
+    }
+
+    /* A fixed point. The iteration is p->n steps, per_iter units and cycles_per_iter CPU cycles. */
+    per_iter = ps->time - p->time;
+    cycles_per_iter = cycles_run - p->cycles;
+    if (per_iter == 0u || cycles_per_iter == 0u || interrupt_due(ps)) {
+        idle_probe_snapshot(ps, p, cycles_run);
+        return;
+    }
+    for (i = 0; i < p->n; i++) {
+        in_flash += (p->pcs[i] >= PSEMU_FLASH1_BASE && p->pcs[i] < PSEMU_FLASH1_BASE + PSEMU_FLASH_SIZE) ? 1u : 0u;
+    }
+    if (in_flash != 0u && in_flash != p->n) {
+        /* psemu_track_app_execution then depends on the order of the steps. Do not skip. */
+        idle_probe_snapshot(ps, p, cycles_run);
+        return;
+    }
+
+    /* Each limit keeps the event outside the skip. The last iteration of the skip ends before `end`,
+       thus a run that steps each instruction also executes all of them. */
+    k = (end > ps->time) ? (end - ps->time - 1u) / per_iter : 0u;
+    {
+        uint32_t timer_left = timer_cycles_to_next_reload(&ps->timer);
+        uint64_t k_timer = (timer_left == UINT32_MAX) ? UINT64_MAX : (timer_left - 1u) / cycles_per_iter;
+        if (k_timer < k) {
+            k = k_timer;
+        }
+    }
+    limit = rtc_cycles_to_next_tick(&ps->rtc);
+    if (iterations_below_ref_limit(*frac, per_iter, limit) < k) {
+        k = iterations_below_ref_limit(*frac, per_iter, limit);
+    }
+    limit = ir_cycles_to_next_event(&ps->ir);
+    if (iterations_below_ref_limit(*frac, per_iter, limit) < k) {
+        k = iterations_below_ref_limit(*frac, per_iter, limit);
+    }
+    if (ps->app_running && in_flash == 0u) {
+        limit = APP_EXEC_GRACE_CYCLES - ps->app_exec_idle_cycles;
+        if (iterations_below_ref_limit(*frac, per_iter, limit) < k) {
+            k = iterations_below_ref_limit(*frac, per_iter, limit);
+        }
+    }
+    /* The tick functions take 32-bit counts. */
+    if (k > 0x7FFFFFFFull / cycles_per_iter) {
+        k = 0x7FFFFFFFull / cycles_per_iter;
+    }
+    if (k == 0u) {
+        idle_probe_snapshot(ps, p, cycles_run);
+        return;
+    }
+
+    dt = k * per_iter;
+    f = *frac + dt;
+    real = (uint32_t)(f / TIME_PER_REF);
+    *frac = f % TIME_PER_REF;
+    ps->time += dt;
+    timer_tick(&ps->timer, &ps->intc, (uint32_t)(k * cycles_per_iter));
+    rtc_tick(&ps->rtc, &ps->intc, real);
+    dac_tick(&ps->dac, real);
+    ir_tick(&ps->ir, &ps->intc, real);
+    if (ps->app_running && in_flash == 0u) {
+        ps->app_exec_idle_cycles += real;
+    }
+
+    /* The step count, and the diagnostic trace ring with the steps that it would hold. */
+    steps = k * p->n;
+    {
+        uint64_t first = (steps > PSEMU_TRACE_SIZE) ? steps - PSEMU_TRACE_SIZE : 0u;
+        uint64_t s;
+        uint32_t idx = (uint32_t)(first % p->n);
+        for (s = first; s < steps; s++) {
+            psemu_trace_entry_t *e = &ps->cpu.trace[(ps->cpu.trace_pos + (uint32_t)s) % PSEMU_TRACE_SIZE];
+            e->pc = p->pcs[idx];
+            e->cpsr = p->cpsrs[idx];
+            if (++idx == p->n) {
+                idx = 0;
+            }
+        }
+    }
+    ps->cpu.trace_pos += (uint32_t)steps;
+    ps->cpu.total_steps += steps;
+
+    /* cycles_run counts stepped cycles only, and the probe compares differences of it, thus the skipped
+       cycles do not go into it. */
+    idle_probe_snapshot(ps, p, cycles_run);
+}
+
+
 /* Runs the machine until its clock (ps->time) reaches `end`. The last instruction can go past `end`.
    With `stop_at_ack` set, the run also stops after the instruction that acknowledges a byte from the
    PS1, and at a CPU fault.
@@ -550,8 +729,12 @@ static void run_until(psemu_t *ps, uint64_t end, int stop_at_ack) {
     uint64_t frac = ps->time % TIME_PER_REF;
     uint32_t per_cycle_mode = ps->clk.mode;
     uint64_t per_cycle = PSEMU_TIME_HZ / clk_current_hz(&ps->clk);
+    uint64_t cycles_run = 0;
+    idle_probe_t probe;
+    memset(&probe, 0, sizeof(probe));
     while (ps->time < end) {
         uint32_t pc = ps->cpu.r[15];
+        uint32_t cpsr = ps->cpu.cpsr;
         uint32_t step_cycles;
         uint32_t real_time_cycles = 0;
         uint64_t dt;
@@ -617,6 +800,18 @@ static void run_until(psemu_t *ps, uint64_t end, int stop_at_ack) {
         rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
         dac_tick(&ps->dac, real_time_cycles);
         ir_tick(&ps->ir, &ps->intc, real_time_cycles);
+
+        cycles_run += step_cycles;
+        if (probe.stage == 2) {
+            if (probe.n < IDLE_LOOP_MAX_STEPS) {
+                probe.pcs[probe.n] = pc;
+                probe.cpsrs[probe.n] = cpsr;
+            }
+            probe.n++;
+        }
+        if (ps->idle_skip && ps->cpu.r[15] <= pc && pc - ps->cpu.r[15] <= IDLE_LOOP_MAX_BYTES) {
+            idle_loop_branch(ps, &probe, pc, cycles_run, &frac, end);
+        }
     }
 }
 
@@ -649,6 +844,10 @@ uint64_t psemu_run_time_to_ack(psemu_t *ps, uint64_t units) {
     }
     run_until(ps, start + units, 1);
     return ps->time - start;
+}
+
+void psemu_set_idle_skip(psemu_t *ps, int enabled) {
+    ps->idle_skip = enabled ? 1 : 0;
 }
 
 uint64_t psemu_time(const psemu_t *ps) {
