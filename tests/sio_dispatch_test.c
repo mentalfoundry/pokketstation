@@ -349,8 +349,8 @@ static void test_dispatch_write_then_read_within_session(const char *bios, const
     printf("test_dispatch_write_then_read_within_session OK\n");
 }
 
-/* Demonstrates the continuity bug: chocobo data written to work RAM is lost after a fresh
-   boot from flash only. This is what DuckStation currently does on session restart. */
+/* Work RAM does not survive a fresh boot from flash: psemu_reset clears it. Data that a 0x5C
+   dispatch puts in work RAM is not present after a boot from the same flash. */
 static void test_dispatch_write_lost_after_fresh_boot(const char *bios, const char *app) {
     uint8_t payload[CHOCO_PAYLOAD_SIZE];
     static uint8_t flash_buf[PSEMU_FLASH_SIZE];
@@ -403,8 +403,8 @@ static void test_dispatch_write_lost_after_fresh_boot(const char *bios, const ch
            " (data not preserved after fresh boot — this is the bug)\n");
 }
 
-/* Demonstrates the fix: restoring full machine state preserves work RAM across sessions.
-   After psemu_load_state the chocobo data at CHOCO_WRITE_ADDR is still present. */
+/* A restore of the full machine state keeps work RAM. After psemu_load_state, the data at
+   CHOCO_WRITE_ADDR is present. */
 static void test_dispatch_write_survives_state_restore(const char *bios, const char *app) {
     uint8_t payload[CHOCO_PAYLOAD_SIZE];
     static uint8_t flash_buf[PSEMU_FLASH_SIZE];
@@ -957,15 +957,13 @@ static void test_session_end_commits_flash(const char *bios, const char *app) {
     printf("test_session_end_commits_flash done\n");
 }
 
-/* The BIOS does not set D0 or CE at boot — not even when an app is present in flash. Both
-   registers stay zero until command 0x59 arrives: the 0x59 FIQ handler writes D0 = slot, and
-   the app runs on the next frame. CE is a dispatch register that the host layer must write
-   (it is not written by the BIOS boot scan or by a command other than navigation).
+/* The BIOS does not set D0 or CE at boot, also when an app is in flash. Both bytes stay zero
+   until command 0x59 arrives: the 0x59 FIQ handler writes D0 = slot, and the app runs on the
+   next frame. The PS1 game sends that command to start its app, thus no code outside the kernel
+   writes these bytes (see "Command 0x59" in docs/hardware-notes.md).
 
-   The host layer (pocketstation.cpp SetActiveAppSlot) must therefore write CE before the first
-   0x58 command arrives, using a flash scan to find the slot. It cannot rely on D0 being set
-   first. This test pins that invariant: D0 and CE are both zero after boot regardless of whether
-   the card holds an app, and the app is not running yet. */
+   This test holds the boot state: D0 and CE are zero after boot, with an app on the card and
+   without one, and the app does not run. */
 static void test_d0_ce_zero_after_boot(const char *bios, const char *app)
 {
     mock_ps1_t *m;

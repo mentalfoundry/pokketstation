@@ -45,6 +45,8 @@ Reverse engineering of a real BIOS disassembly gives this sequence:
 5. The kernel validates the header of the block a second time, with two Thumb helper functions. It reaches those functions through the standard ARM-to-Thumb `add lr,pc,#1 / bx lr` transition sequence. This step decides whether to start the app from its entry point, or to continue from an `MCX1` snapshot.
 6. The kernel clears the user RAM (`0x200` to `0x7FF`), changes to User mode, sets the User SP to `0x800`, and branches (`BX`) to the entry point.
 
+**A PS1 game starts its app itself.** It sends command `0x59` with the directory slot of the app, and the kernel writes that slot to `0xD0` (see "Command `0x59`" in `hardware-notes.md`). Real hardware shows that a user does not start the app on the device before the device goes into the connector.
+
 **One loaded app (`.pss` or `.mcs`) needs a synthesized directory before this sequence can reach it.** `flash_load_app` builds that directory: a card header, one directory frame for each app block (in a chain that starts at slot 1), and the data of the app from physical block 1.
 
 **Directory frame offset `0x10`, which is byte 6 of the file-name field, must be the ASCII character `'P'`.** Without that byte, the menu-browsing code of the BIOS does not let a user move to the slot or select it. That code is separate from the dispatch routine above, and it executes before that routine. Each other file-name byte can hold any value.
