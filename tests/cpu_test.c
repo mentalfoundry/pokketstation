@@ -2141,6 +2141,45 @@ static void test_lcd_mode_dison_and_rotate(void) {
     printf("test_lcd_mode_dison_and_rotate OK\n");
 }
 
+/* A VRAM write calculates only its own scanline of `presented` again. The result must be the same
+   as a calculation of the full screen in each mode. This test writes bytes in a fixed pseudo-random
+   order, and after each write it compares the frame with a reference that it calculates from the
+   full VRAM, one pixel at a time. */
+static void test_lcd_write_updates_the_same_frame_as_a_full_redraw(void) {
+    static const uint32_t modes[3] = {LCD_MODE_DISON, LCD_MODE_DISON | LCD_MODE_ROT, 0u};
+    unsigned m;
+
+    for (m = 0; m < 3u; m++) {
+        psemu_t *ps = make_arm_cpu();
+        uint32_t seed = 0x12345678u;
+        unsigned w;
+        psemu_bus_write32(&ps->bus, PSEMU_LCD_MODE_BASE, modes[m]);
+
+        for (w = 0; w < 600u; w++) {
+            uint8_t expect[128];
+            const uint8_t *fb;
+            unsigned row, x;
+            seed = seed * 1103515245u + 12345u;
+            psemu_bus_write8(&ps->bus, PSEMU_LCD_VRAM_BASE + ((seed >> 8) % 128u), (uint8_t)(seed >> 20));
+
+            memset(expect, 0, sizeof(expect));
+            for (row = 0; row < 32u && (modes[m] & LCD_MODE_DISON); row++) {
+                for (x = 0; x < 32u; x++) {
+                    unsigned src_row = (modes[m] & LCD_MODE_ROT) ? 31u - row : row;
+                    unsigned src_x = (modes[m] & LCD_MODE_ROT) ? 31u - x : x;
+                    if ((ps->lcd.vram[src_row * 4u + src_x / 8u] >> (src_x % 8u)) & 1u) {
+                        expect[row * 4u + x / 8u] |= (uint8_t)(1u << (x % 8u));
+                    }
+                }
+            }
+            fb = psemu_get_framebuffer(ps);
+            assert(memcmp(fb, expect, sizeof(expect)) == 0);
+        }
+        psemu_destroy(ps);
+    }
+    printf("test_lcd_write_updates_the_same_frame_as_a_full_redraw OK\n");
+}
+
 static void test_dac_basic(void) {
     psemu_t *ps = make_arm_cpu();
     int16_t samples[4];
@@ -2807,6 +2846,7 @@ int main(void) {
     test_flash_header_write_disarms_after_unrelated_write();
     test_flash_header_write_requires_correct_key_order();
     test_lcd_mode_dison_and_rotate();
+    test_lcd_write_updates_the_same_frame_as_a_full_redraw();
     test_dac_basic();
     test_iop_sound_gate_mutes_dac();
     test_iop_stop_start_take_effect_via_single_byte_writes();

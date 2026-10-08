@@ -24,7 +24,8 @@
 
    `presented` uses the same format, after this emulator applies the DISON and ROT bits of LCD_MODE.
    psemu_get_framebuffer returns `presented`. It does not return the raw VRAM.
-   This emulator calculates `presented` again at each VRAM write and each LCD_MODE write.
+   This emulator calculates the scanline of `presented` again at each VRAM write, and all of
+   `presented` at each LCD_MODE write.
 
    The default value of `mode` has DISON set and ROT clear.
    The real power-on-reset value has no documentation. This default is not that value.
