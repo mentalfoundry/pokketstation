@@ -779,3 +779,428 @@ run_experiment_12_rtc_rates:
     pop {r4, r5, r6, lr}
     bx lr
     .ltorg
+
+@ --- Experiment 13 (screen 15): when does the COM block raise its interrupt? ---
+@
+@ The kernel's FIQ entry waits for Ready up to 30 times before it takes the
+@ first byte of a command (0x04001086..0x040010A8 in J110). That wait is only
+@ needed if the interrupt can come BEFORE the byte is complete. This
+@ experiment measures it directly, with no logic analyser: the app keeps the
+@ COM interrupt masked (it masks every source at startup), so the kernel never
+@ answers, and it times each change of the status bits itself.
+@
+@ Each run:
+@   1. Timer0 to /2 (0.5us at CLK_MODE 7), restored afterwards, as experiment
+@      12 does with /512.
+@   2. The kernel's own link setup at docking (0x0400073E..0x0400078C):
+@      CTRL1=0, MODE=2, DATA=0xFF, CTRL2=3, MODE=6, then CTRL1 = the value
+@      under test (3 for captures 0 to 5, 1 for capture 6, 2 for capture 7;
+@      the kernel itself uses 2 while it waits).
+@   3. Wait for COM_QUIET_ITERS samples with no change. Each start of that
+@      wait writes CTRL2 = 3, reads DATA and acknowledges INT_COM, to clear
+@      what an access left. On real hardware the STAT2 bits stay set until
+@      something clears them (the first hardware run of this screen), and the
+@      kernel writes CTRL2 = 1 straight after it sees Ready (0x040010A2,
+@      0x0400159C in J110).
+@   4. com_log_changes: sample until the first change, then for
+@      COM_WINDOW_ITERS more samples, and log each change with its Timer0
+@      count, up to COM_LOG_EVENTS changes. The loop does nothing else, so the
+@      sample after a change comes as soon as the sample after no change.
+@   5. From the log: when each bit first differs from its value before the
+@      first change.
+@
+@ The six bits of a sample, and their slots (WRAM_COM_TIMES + 4*slot):
+@   0-1  COM_STAT1 bits 0-1      (bit 1 is the release of /SEL)
+@   2-3  COM_STAT2 bits 0-1      (bit 0 is Ready)
+@   4    INTC HOLD bit 6         (INT_COM latched)
+@   5    INTC STATUS bit 6       (INT_COM raw input)
+@ STAT1 bit 2 and STAT2 bit 2 never changed in the first hardware run, so they
+@ are not watched. A slot is the Timer0 /2 ticks from the first change, or
+@ 0xFFFF for "never". Slot 6 = changes logged << 8 | the last sample of the
+@ window. Slot 7 = the Timer0 /2 ticks of the last change.
+@ WRAM_COM_INFO = the capture number << 24 | bits before the change << 16 |
+@ Timer0 /2 ticks the whole window took. The window divided by
+@ COM_WINDOW_ITERS is the time between two samples, which is the resolution.
+@ Window 0 means no access came before the timeout.
+@
+@ The sampling loop is Thumb: a Thumb fetch from FLASH costs 1 cycle, against
+@ 2 for ARM (screens 1 to 4).
+@
+@ A sample reads STAT1, STAT2, HOLD and STATUS one after the other, so a
+@ change can fall between two of those reads. The next sample then shows the
+@ rest of it.
+
+@ \rd = the six bits now, in the same form as the Thumb loop. Uses r12.
+.macro com_sample rd
+    ldr \rd, [r4, #4]                  @ STAT1 bits 0-1
+    and \rd, \rd, #3
+    ldr r12, [r4, #0x14]               @ STAT2 bits 0-1, to bits 2-3
+    and r12, r12, #3
+    orr \rd, \rd, r12, lsl #2
+    ldr r12, [r5]                      @ INTC HOLD bit 6, to bit 4
+    and r12, r12, #INT_COM_BIT
+    orr \rd, \rd, r12, lsr #2
+    ldr r12, [r5, #4]                  @ INTC STATUS bit 6, to bit 5
+    and r12, r12, #INT_COM_BIT
+    orr \rd, \rd, r12, lsr #1
+.endm
+
+@ Calls a Thumb routine from ARM. ARMv4T has no BLX.
+.macro call_thumb fn
+    ldr r12, =\fn
+    mov lr, pc
+    bx r12
+.endm
+
+    .global run_com_capture
+run_com_capture:
+    push {r4, r5, r6, r7, r8, r9, r10, r11, lr}
+    ldr r4, =COM_BASE
+    ldr r5, =INTC_BASE
+    ldr r6, =TIMER0_BASE
+
+    ldr r0, =0xFFFF                    @ every bit slot starts as "never"
+    ldr r2, =WRAM_COM_TIMES
+    mov r1, #6
+cc_clear:
+    str r0, [r2], #4
+    subs r1, r1, #1
+    bne cc_clear
+    mov r0, #0
+    str r0, [r2], #4                   @ slot 6
+    str r0, [r2]                       @ slot 7
+
+    ldr r0, [r6, #8]                   @ save Timer0 control, then /2
+    push {r0}
+    mov r0, #0
+    str r0, [r6, #8]
+    mvn r0, #0
+    str r0, [r6]
+    str r0, [r6, #4]
+    mov r0, #TIMER0_CTRL_DIV2
+    str r0, [r6, #8]
+
+    mov r0, #0                         @ the kernel's link setup at docking
+    str r0, [r4, #0x10]                @ CTRL1 = 0
+    mov r0, #2
+    str r0, [r4]                       @ MODE = 2
+    mov r0, #0xFF
+    str r0, [r4, #8]                   @ DATA = 0xFF
+    mov r0, #3
+    str r0, [r4, #0x18]                @ CTRL2 = 3
+    mov r0, #6
+    str r0, [r4]                       @ MODE = 6
+    ldr r0, =WRAM_COM_CTRL1_SEL        @ CTRL1 = the value under test:
+    ldr r0, [r0]                       @ 3 for captures 0-5, then 1, then 2
+    cmp r0, #6
+    movlo r0, #3
+    subhs r0, r0, #5
+    str r0, [r4, #0x10]
+
+    mov r9, #COM_QUIET_TRIES           @ quiet attempts before giving up
+cc_quiet:
+    mov r0, #3                         @ clear what an access left, at each new
+    str r0, [r4, #0x18]                @ start of the quiet span: CTRL2 = 3 for
+    ldr r0, [r4, #8]                   @ the STAT2 bits, a DATA read, and an
+    mov r0, #INT_COM_BIT               @ acknowledge of INT_COM. An access that
+    str r0, [r5, #0x10]                @ comes inside the span must not become the
+    com_sample r7                      @ bits before the change. r7 = those bits
+    ldr r2, =COM_QUIET_ITERS
+    call_thumb com_wait_change
+    cmp r2, #0
+    beq cc_log                         @ no change for the whole quiet span
+    subs r9, r9, #1
+    bne cc_quiet
+    mov r11, r7
+    mov r9, #0                         @ no log
+    b cc_store_info
+
+cc_log:
+    mov r11, r7                        @ r11 = the bits before the change
+    push {r11}                         @ (the Thumb loop takes the window in r11)
+    ldr r3, =WRAM_COM_LOG
+    mov r8, r6                         @ Timer0 base
+    add r9, r3, #8                     @ the end of the first entry
+    add r10, r3, #(COM_LOG_EVENTS * 8) @ the end of the log
+    ldr r11, =COM_WINDOW_ITERS
+    ldr r2, =COM_ARM_ITERS
+    call_thumb com_log_changes         @ -> r3 = the end of what was logged
+    pop {r11}
+    ldr r1, [r6, #4]                   @ the time at the end of the window
+
+    ldr r10, =WRAM_COM_LOG
+    sub r9, r3, r10
+    movs r9, r9, lsr #3                @ r9 = changes logged
+    beq cc_store_info                  @ none: no access came
+
+    ldr r8, [r10, #4]                  @ t0 = the time of the first change
+    sub r1, r8, r1                     @ the window, in ticks
+    mov r1, r1, lsl #16
+    mov r1, r1, lsr #16
+    push {r1}
+
+    ldr r7, =WRAM_COM_TIMES
+    mov r2, #0                         @ bits already recorded
+    mov r3, r10
+cc_scan:                               @ each logged change, oldest first
+    ldr r0, [r3], #4                   @ the sample
+    ldr r1, [r3], #4                   @ its Timer0 count
+    sub r1, r8, r1
+    mov r1, r1, lsl #16
+    mov r1, r1, lsr #16                @ ticks from the first change
+    mov lr, r0                         @ the last sample so far
+    eor r0, r0, r11
+    bic r0, r0, r2                     @ bits that differ and are not recorded yet
+    orr r2, r2, r0
+    mov r12, #0
+cc_bit:
+    tst r0, #1
+    strne r1, [r7, r12, lsl #2]
+    add r12, r12, #1
+    movs r0, r0, lsr #1
+    bne cc_bit
+    subs r9, r9, #1
+    bne cc_scan
+cc_scan_done:                          @ r1 = the ticks of the last change
+    str r1, [r7, #28]                  @ slot 7
+    sub r0, r3, r10
+    mov r0, r0, lsr #3                 @ changes logged
+    and lr, lr, #0xFF
+    orr r0, lr, r0, lsl #8
+    str r0, [r7, #24]                  @ slot 6
+    pop {r9}                           @ r9 = the window, in ticks
+
+cc_store_info:
+    ldr r0, =WRAM_COM_CTRL1_SEL        @ the capture number: CTRL1 is its low
+    ldr r0, [r0]                       @ two bits
+    and r0, r0, #7
+    mov r0, r0, lsl #24
+    and r1, r11, #0xFF
+    orr r0, r0, r1, lsl #16
+    orr r0, r0, r9
+    ldr r1, =WRAM_COM_INFO
+    str r0, [r1]
+
+    mov r0, #3                         @ leave the link as the kernel's end of a
+    str r0, [r4, #0x18]                @ command does: CTRL2 = 3, CTRL1 = 2
+    mov r0, #2
+    str r0, [r4, #0x10]
+    mov r0, #INT_COM_BIT
+    str r0, [r5, #0x10]
+
+    pop {r0}                           @ restore Timer0 exactly as it was found
+    mov r1, #0
+    str r1, [r6, #8]
+    mvn r1, #0
+    str r1, [r6]
+    str r1, [r6, #4]
+    str r0, [r6, #8]
+
+    pop {r4, r5, r6, r7, r8, r9, r10, r11, lr}
+    bx lr
+    .ltorg
+
+    .thumb
+
+@ Samples until the seven bits differ from r7, or r2 samples have passed.
+@ In: r4 = COM base, r5 = INTC base, r7 = the bits to compare, r2 = samples.
+@ Out: r0 = the last sample, r2 = the samples that remain (0 = no change).
+    .thumb_func
+com_wait_change:
+    push {r6}
+    movs r6, #INT_COM_BIT
+cwc_loop:
+    ldr r0, [r4, #4]                   @ STAT1 bits 0-1
+    lsls r0, r0, #30
+    lsrs r0, r0, #30
+    ldr r1, [r4, #0x14]                @ STAT2 bits 0-1, to bits 2-3
+    lsls r1, r1, #30
+    lsrs r1, r1, #28
+    orrs r0, r1
+    ldr r1, [r5]                       @ INTC HOLD bit 6, to bit 4
+    ands r1, r6
+    lsrs r1, r1, #2
+    orrs r0, r1
+    ldr r1, [r5, #4]                   @ INTC STATUS bit 6, to bit 5
+    ands r1, r6
+    lsrs r1, r1, #1
+    orrs r0, r1
+    cmp r0, r7
+    bne cwc_done
+    subs r2, r2, #1
+    bne cwc_loop
+cwc_done:
+    pop {r6}
+    bx lr
+
+@ Samples like com_wait_change, and logs each change as two words: the sample
+@ and the Timer0 count after it. The first change starts the window: r2 then
+@ becomes the window length. Stops at the end of the window, or when the log
+@ is full, or after r2 samples with no change at all.
+@ In: r4 = COM base, r5 = INTC base, r7 = the bits before, r2 = samples to
+@ wait for the first change, r3 = the log, r8 = Timer0 base, r9 = the end of
+@ the first entry, r10 = the end of the log, r11 = the window in samples.
+@ Out: r3 = the end of what was logged.
+    .thumb_func
+com_log_changes:
+    push {r6}
+    movs r6, #INT_COM_BIT
+clc_loop:
+    ldr r0, [r4, #4]
+    lsls r0, r0, #30
+    lsrs r0, r0, #30
+    ldr r1, [r4, #0x14]
+    lsls r1, r1, #30
+    lsrs r1, r1, #28
+    orrs r0, r1
+    ldr r1, [r5]
+    ands r1, r6
+    lsrs r1, r1, #2
+    orrs r0, r1
+    ldr r1, [r5, #4]
+    ands r1, r6
+    lsrs r1, r1, #1
+    orrs r0, r1
+    cmp r0, r7
+    bne clc_change
+clc_next:
+    subs r2, r2, #1
+    bne clc_loop
+clc_done:
+    pop {r6}
+    bx lr
+clc_change:
+    mov r1, r8
+    ldr r1, [r1, #4]                   @ Timer0 count
+    stmia r3!, {r0, r1}
+    movs r7, r0
+    cmp r3, r10
+    bhs clc_done                       @ the log is full
+    cmp r3, r9
+    bne clc_next
+    mov r2, r11                        @ the first change: the window starts
+    b clc_next
+    .align 2
+    .arm
+
+@ --- The unattended run of screen 15 ---
+@
+@ The memory card slot covers the buttons of the device. Thus DOWN arms this
+@ run before the device goes into the slot, and the run then needs no button.
+@ It waits for the docking level (INTC STATUS bit 11), lets the connector
+@ settle, and makes COM_CAPTURES captures: CTRL1 = 3 for captures 0 to 5, 1
+@ for capture 6, and 2 for capture 7. It keeps each one in WRAM_COM_TABLE. A capture that no access
+@ came to is made again, for as long as the device stays in the slot. The run
+@ ends when the device leaves the slot, and the screen then shows capture 0.
+@ UP then shows the next capture.
+
+    .global com_auto_run
+com_auto_run:
+    push {r4, r5, lr}
+    ldr r4, =INTC_STATUS
+
+    mov r5, #0                         @ every entry: no capture yet
+car_clear:
+    mov r0, r5
+    bl com_clear_entry
+    add r5, r5, #1
+    cmp r5, #COM_CAPTURES
+    blo car_clear
+
+car_wait_dock:
+    ldr r0, [r4]
+    tst r0, #INT_IOP_BIT
+    beq car_wait_dock
+    ldr r0, =COM_DOCK_SETTLE           @ the connector bounces for a short time
+car_settle:
+    subs r0, r0, #1
+    bne car_settle
+
+    mov r5, #0
+car_next:
+    ldr r0, [r4]
+    tst r0, #INT_IOP_BIT
+    beq car_done                       @ the device left the slot
+    ldr r0, =WRAM_COM_CTRL1_SEL
+    str r5, [r0]                       @ the capture number (see run_com_capture)
+    bl run_com_capture
+    ldr r0, =WRAM_COM_INFO
+    ldr r0, [r0]
+    movs r0, r0, lsl #16
+    beq car_next                       @ no access came: the same capture again
+    mov r0, r5
+    bl com_store_entry
+    bl redraw_screen                   @ the capture just made
+    add r5, r5, #1
+    cmp r5, #COM_CAPTURES
+    blo car_next
+
+car_wait_undock:
+    ldr r0, [r4]
+    tst r0, #INT_IOP_BIT
+    bne car_wait_undock
+car_done:
+    ldr r1, =WRAM_COM_PAGE
+    mov r0, #0
+    str r0, [r1]
+    bl com_load_entry                  @ r0 = 0: show capture 0
+    pop {r4, r5, lr}
+    bx lr
+    .ltorg
+
+@ An entry is WRAM_COM_TIMES (8 words) and then WRAM_COM_INFO, which are the
+@ next 9 words of WRAM in that order. r0 = entry number -> r0 = its address.
+@ Uses r1.
+com_entry_address:
+    mov r1, #(COM_ENTRY_WORDS * 4)
+    mul r0, r1, r0
+    ldr r1, =WRAM_COM_TABLE
+    add r0, r0, r1
+    bx lr
+
+@ r0 = entry number. Every slot 0, and the info word = the entry number << 24.
+    .global com_clear_entry
+com_clear_entry:
+    push {r4, lr}
+    mov r4, r0
+    bl com_entry_address
+    mov r1, #0
+    mov r2, #(COM_ENTRY_WORDS - 1)
+cce_loop:
+    str r1, [r0], #4
+    subs r2, r2, #1
+    bne cce_loop
+    mov r1, r4, lsl #24
+    str r1, [r0]
+    pop {r4, lr}
+    bx lr
+
+@ r0 = entry number. The capture just made, into the entry.
+com_store_entry:
+    push {lr}
+    bl com_entry_address
+    ldr r1, =WRAM_COM_TIMES
+    mov r2, #COM_ENTRY_WORDS
+cse_loop:
+    ldr r3, [r1], #4
+    str r3, [r0], #4
+    subs r2, r2, #1
+    bne cse_loop
+    pop {lr}
+    bx lr
+
+@ r0 = entry number. The entry, into the words that screen 15 draws.
+    .global com_load_entry
+com_load_entry:
+    push {lr}
+    bl com_entry_address
+    ldr r1, =WRAM_COM_TIMES
+    mov r2, #COM_ENTRY_WORDS
+cle_loop:
+    ldr r3, [r0], #4
+    str r3, [r1], #4
+    subs r2, r2, #1
+    bne cle_loop
+    pop {lr}
+    bx lr
+    .ltorg

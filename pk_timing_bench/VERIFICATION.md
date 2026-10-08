@@ -89,6 +89,82 @@ This screen runs at startup, but `bench_probe` does not read its two WRAM slots.
 
 Real hardware gave the paused value twice, as `0x0F40` and then `0x0F3F`. Those two values are one tick apart, which is the resolution of this measurement, at 0.026%.
 
+## Screen 15: when does the COM block raise its interrupt?
+
+This screen runs by itself while the device is in the slot, and `bench_probe` does not run it.
+
+### A run with no clear of `COM_STAT2` (real hardware, 2026-10-08)
+
+This run used a form of the screen that does not write `COM_CTRL2` before a capture, with `COM_CTRL1` = 0, 1, 2, 3, 0, 1, 2, 3 for captures 0 to 7. Its rows were: top as now; row 2 Ready and HOLD bit 6; row 3 `COM_STAT2` bits 1 and 2; row 4 `COM_STAT1` bits 0 and 1; row 5 `COM_STAT1` bit 2, the number of changes, and the last sample. Its bit order for "bits before" was `COM_STAT1` bits 0 to 2, `COM_STAT2` bits 0 to 2, and HOLD bit 6. A PS1 memory card screen accessed the slot.
+
+| Capture | `COM_CTRL1` | Top row | Row 4 | Row 5 |
+|---|---|---|---|---|
+| 0 | 0 | `F0024B0B` | `FFFF0000` | `FFFF0202` |
+| 1 | 1 | `F10A4B69` | `007A0000` | `FFFF0D0A` |
+| 2 | 2 | `F2124B69` | `00860000` | `FFFF0D12` |
+| 3 | 3 | `F31A4B69` | `00870000` | `FFFF0D1A` |
+| 4 | 0 | `F4024B69` | `00870000` | `FFFF0D02` |
+| 5 | 1 | `F50A4B69` | `00860000` | `FFFF0D0A` |
+| 6 | 2 | `F6124B69` | `00860000` | `FFFF0D12` |
+| 7 | 3 | `F71A4B69` | `007A0000` | `FFFF0D1A` |
+
+Rows 2 and 3 were `FFFFFFFF` in each capture. A repeated run gave capture 2 again, digit for digit.
+
+What these values give:
+
+- **"Bits before" is `02`, `0A`, `12`, `1A` for `COM_CTRL1` = 0, 1, 2, 3.** `0x08` is `COM_STAT2` bit 0 and `0x10` is `COM_STAT2` bit 1. Thus a read of `COM_STAT2` shows only the bits that `COM_CTRL1` selects, and the bits stay set between accesses. The app read `COM_DATA` before it took the "bits before" sample, thus that read does not clear Ready.
+- **`COM_STAT1` bit 0 sets at 122 to 135 ticks (61 to 67us)** after the selection, with each value of `COM_CTRL1`. Capture 0 is the exception: 2 changes only, with no byte. It is probably a different kind of access.
+- **HOLD bit 6 never set.** The window was `4B0B` or `4B69`, which is the same sample time as this emulator.
+
+See "What real hardware shows in `COM_STAT2`" in [docs/hardware-notes.md](../docs/hardware-notes.md).
+
+### The screen as it is
+
+The emulator rows below come from a recorded control run, with the model of `COM_STAT2` that the real-hardware run below gives. In that run the PS1 accesses the slot every 20ms: it selects the device, the byte is complete 62us later, it gives no acknowledge, and it releases /SEL 60us after the byte. The first change of a capture is the selection, or the sample after it.
+
+| Source | Captures | Ready | HOLD bit 6 | `COM_STAT2` bit 1 | `INT_INPUT` bit 6 | `COM_STAT1` bit 0 | Release of /SEL | Window | Date |
+|---|---|---|---|---|---|---|---|---|---|
+| This emulator | 2, 4, 5 | `007D` | `0000` | `0000` | `0000` | `007D` | `00F9` (last change) | `6310` | 2026-10-08 |
+| This emulator | 1, 3 | `0085` | `0000` or `001A` | `0000` or `001A` | `0000` | `0085` | `0101` (last change) | `6318` | 2026-10-08 |
+| This emulator | 6 (`COM_CTRL1 = 1`) | `006C` | `006C` | `FFFF` | `006C` | `0085` | `00F1` (last change) | `6318` | 2026-10-08 |
+| This emulator | 7 (`COM_CTRL1 = 2`) | `FFFF` | `0000` | `0000` | `0000` | `0085` | `0101` (last change) | `6318` | 2026-10-08 |
+| Real hardware | 0 | `FFFF` | `0000` | `0000` | `0000` | `FFFF` | `001A` (last change) | `6308` | 2026-10-08 |
+| Real hardware | 1 | `0096` | `0000` | `001A` | `0000` | `0096` | `03CA` (last change) | `636E` | 2026-10-08 |
+| Real hardware | 2 | `0085` | `0000` | `001A` | `0000` | `009E` | `03D2` (last change) | `6376` | 2026-10-08 |
+| Real hardware | 3 | `007D` | `0000` | `0000` | `0000` | `007D` | `03C1` (last change) | `6365` | 2026-10-08 |
+| Real hardware | 4 | `0096` | `001A` | `001A` | `0000` | `0096` | `03C9` (last change) | `636D` | 2026-10-08 |
+| Real hardware | 5 | `008D` | `0000` | `0000` | `0000` | `008D` | `03C1` (last change) | `6365` | 2026-10-08 |
+| Real hardware | 6 (`COM_CTRL1 = 1`) | `007D` | `007D` | `FFFF` | `007D` | `007D` | `03C1` (last change) | `6365` | 2026-10-08 |
+| Real hardware | 7 (`COM_CTRL1 = 2`) | `FFFF` | `0000` | `0000` | `0000` | `008E` | `03D2` (last change) | `6365` | 2026-10-08 |
+
+The raw rows of the real-hardware run:
+
+| Capture | Top | Row 2 | Row 3 | Row 4 | Row 5 |
+|---|---|---|---|---|---|
+| 0 | `F0026308` | `FFFF0000` | `00000000` | `FFFF0000` | `023A001A` |
+| 1 | `F102636E` | `00960000` | `001A0000` | `0096001A` | `0E3E03CA` |
+| 2 | `F2026376` | `00850000` | `001A0000` | `009E001A` | `0F3E03D2` |
+| 3 | `F3026365` | `007D0000` | `00000000` | `007D0000` | `0D3E03C1` |
+| 4 | `F402636D` | `0096001A` | `001A0000` | `0096001A` | `0E3E03C9` |
+| 5 | `F5026365` | `008D0000` | `00000000` | `008D0000` | `0D3E03C1` |
+| 6 | `F6026365` | `007D007D` | `FFFF007D` | `007D0000` | `0D3603C1` |
+| 7 | `F7026365` | `FFFF0000` | `00000000` | `008E0000` | `0D3A03D2` |
+
+What these values give:
+
+- **"Bits before" is `02` in each capture.** Thus `COM_CTRL2 = 3` clears both bits of `COM_STAT2`.
+- **`INT_COM` sets at the selection** with `COM_CTRL1` = 3 and 2, in the same sample as `COM_STAT2` bit 1, or with a split across two samples (`001A` against `0000`). The first change of an access is the selection: `COM_STAT1` bit 1 clears.
+- **With `COM_CTRL1 = 1`, `INT_COM` sets at Ready** (`007D`), and `COM_STAT2` bit 1 never shows.
+- **With `COM_CTRL1 = 2`, Ready never shows,** and the byte still sets `COM_STAT1` bit 0 (`008E`).
+- **Ready sets 107 to 124 ticks after the selection** (53 to 62us), within one sample of `COM_STAT1` bit 0.
+- **The access ends at 961 to 978 ticks** (approximately 485us). The last sample has `COM_STAT1` bit 1 set again (the release) and `COM_STAT1` bit 0 clear.
+- **Capture 0 has no byte,** like capture 0 of the run with no clear: the selection and a release 13us later.
+- **The window is `6308` to `6376`,** against `6307` in this emulator.
+
+See "What real hardware shows in `COM_STAT2`" in [docs/hardware-notes.md](../docs/hardware-notes.md).
+
+This emulator gives the same pattern as real hardware: `INT_COM` at the selection with `COM_CTRL1` = 3 and 2, `INT_COM` at Ready with `COM_CTRL1 = 1`, and each masked bit never. Times of `001A` against `0000` are one event split across two samples, as on real hardware. See "The resolution" in [README.md](README.md). The release comes sooner here than on real hardware, because the PS1 of the control run releases /SEL 60us after the byte.
+
 ## What these values settle
 
 - **`FLASH_CTRL` gets the fast 1-cycle data-access rate of WRAM.** Screen 2 gives a test value that is exactly equal to its control value. It does not get the slow 2-cycle rate.

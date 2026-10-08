@@ -254,3 +254,51 @@
 .equ LOOP_N, 30000
 
 .equ FLASH1_BASE, 0x02000000
+
+@ Screen 15 (experiment 13): when does the COM block raise its interrupt,
+@ relative to the byte? See run_com_capture and com_auto_run in experiments.s,
+@ and ../README.md. The memory card slot covers the buttons, thus DOWN arms an
+@ unattended run before the device goes into the slot. UP shows the next of
+@ the stored captures after the device comes out.
+.equ SCREEN_COM_TIMING,      15
+.equ COM_BASE,               0x0C000000
+.equ INT_COM_BIT,            0x40
+@ INTC STATUS bit 11: the docking level (1 = in the slot of a PS1).
+.equ INT_IOP_BIT,            0x800
+.equ TIMER0_CTRL_DIV2,       0x4      @ divisor bits 0 (= /2) | enable
+@ One capture: 8 words (six bit times, the change count and the last sample,
+@ and the time of the last change; see run_com_capture), and then the info
+@ word. The two are adjacent, and an entry of
+@ WRAM_COM_TABLE copies both as COM_ENTRY_WORDS words.
+.equ WRAM_COM_TIMES,         0x2E0
+@ The capture number << 24 | bits before the change << 16 | window in ticks.
+@ CTRL1 is 3 for captures 0 to 5, 1 for capture 6, and 2 for capture 7.
+.equ WRAM_COM_INFO,          0x300
+@ The capture number that run_com_capture makes now (0-7).
+.equ WRAM_COM_CTRL1_SEL,     0x304
+@ In samples of the poll loop (several us each; the window value of screen 15
+@ gives the real time). Quiet: no change for ~1ms before the capture arms, so
+@ it starts between accesses and not inside one; give up after
+@ COM_QUIET_TRIES. Window: longer than one whole access, and short enough to
+@ stay under Timer0's 16-bit wrap (~32ms at /2) even at 16us per sample. Arm:
+@ approximately 3 seconds of waiting for the PS1, before com_auto_run checks
+@ that the device is still in the slot and tries again.
+.equ COM_QUIET_ITERS,        256
+.equ COM_QUIET_TRIES,        64
+.equ COM_WINDOW_ITERS,       1536
+.equ COM_ARM_ITERS,          0x80000
+@ The log of changes in one window: two words each (the sample, then the
+@ Timer0 count), 32 changes.
+.equ WRAM_COM_LOG,           0x308
+.equ COM_LOG_EVENTS,         32
+@ The stored captures of one unattended run: COM_CAPTURES entries of
+@ COM_ENTRY_WORDS words, 0x408 to 0x527. The kernel's interrupt stacks are at
+@ 0x180 and 0x200, and the app's stack starts at 0x800 and stays far above.
+.equ WRAM_COM_TABLE,         0x408
+.equ COM_ENTRY_WORDS,        9
+.equ COM_CAPTURES,           8
+@ The capture that screen 15 shows (0-7).
+.equ WRAM_COM_PAGE,          0x52C
+@ Iterations of a 2-instruction loop: approximately half a second at CLK_MODE
+@ 7, for the connector to settle after the docking level appears.
+.equ COM_DOCK_SETTLE,        0x60000

@@ -55,12 +55,13 @@ To change the icon, edit or replace `assets/card_icon.bmp`. Then build again. Th
 
 ## Controls
 
-This app runs its startup measurements one time, at power-on. A person then pages through the result screens by hand. Screen 13 is the exception. It is interactive, and it operates on demand.
+This app runs its startup measurements one time, at power-on. A person then pages through the result screens by hand. Screens 13 and 15 are the exceptions. They are interactive, and they operate on demand.
 
 - **RIGHT**: the next screen
 - **LEFT**: the previous screen
-- The screens wrap around: 1 to 11, then screen 13, then screen 14, then 1.
+- The screens wrap around: 1 to 11, then screen 13, then screen 14, then screen 15, then 1.
 - **DOWN**, on screen 13 only, runs the CLK stop test. That is the one measurement here that does not run at startup, because only a button press from a person can end it. See "Screen 13" below.
+- **DOWN**, on screen 15 only, arms the COM timing run before the device goes into a memory card slot, and it clears the captures of the run before. **UP**, on screen 15 only, shows the next stored capture after the device comes out. See "Screen 15" below.
 - **A hold on ACTION** opens a CONTINUE/EXIT prompt. That prompt returns to the system without a hardware reset. UP selects CONTINUE, DOWN selects EXIT, and a new ACTION press confirms the selection. See "Screen index used for the continue/exit prompt" in `src/constants.inc`, and `pb_prompt_confirm_exit` in `src/ui.s`, for the full behavior.
 
 ## What each screen shows
@@ -267,6 +268,61 @@ If the screen changes **with no button press**, then a source that is not a butt
 **The control run in this emulator** used a stop of five seconds, and it gave top `0x00000005` and middle `0x00000000`. The seconds row compares directly against hardware, because the emulated RTC keeps true 1Hz time. Thus that row must agree with the wall-clock time of the wait, on either side. That run came before the correction to `clk_read8`, thus its readback row is out of date. See [VERIFICATION.md](VERIFICATION.md).
 
 **Recovery.** If the CPU stops and nothing wakes it, the device needs its physical reset button. Nothing in this test writes flash, thus that is the full cost.
+
+### Screen 15: when does the COM block raise its interrupt?
+
+This screen is interactive, like screen 13. **The memory card slot covers the buttons, thus this screen runs by itself while the device is in the slot.** DOWN arms it before the device goes in. UP shows the results after the device comes out.
+
+**The reason for this screen.** The kernel answers a command from its FIQ handler. At the first byte of a command, that handler polls the Ready bit of `COM_STAT2` up to 30 times before it takes the byte (`0x04001086` to `0x040010A8` in `J110`). That wait is only necessary if the interrupt can arrive before the byte is complete. This emulator asserts the interrupt when the byte is complete, thus the kernel finds Ready at its first poll. If real hardware asserts it earlier, the kernel acknowledges the first byte sooner on hardware than in this emulator. See "What the kernel writes to `COM_CTRL1` and `COM_CTRL2`" in [docs/hardware-notes.md](../docs/hardware-notes.md).
+
+**The bits of `COM_STAT2` stay set between accesses, and a read shows only the bits that `COM_CTRL1` selects.** Thus the screen clears them before each capture, and it uses `COM_CTRL1 = 3` for most captures. HOLD does not latch a request that continues, thus the screen also logs the raw input bit of `INT_COM`. See "What real hardware shows in `COM_STAT2`" in [docs/hardware-notes.md](../docs/hardware-notes.md).
+
+**How to run it.**
+
+1. Start the app with the device out of the slot. Go to screen 15 (LEFT from screen 1).
+2. Press DOWN. A bar appears across the middle of the screen. The app now waits for the docking level, and it needs no more buttons.
+3. Turn the PS1 on and go to its memory card screen, which reads the slot again and again. A controller in the same port also makes transfers, because the controller and the card share the select line of the port.
+4. Put the device in the memory card slot. Wait approximately 15 seconds. The app makes 8 captures, and it shows each one as it makes it.
+5. Take the device out of the slot **before** you turn the PS1 off. The screen shows capture 0. Press UP for the next capture.
+
+**After the run, press only UP on this screen.** DOWN arms a new run, and that clears the stored captures. To give the link back to the kernel, leave the app.
+
+**What it does.** The app masks every interrupt source at startup, thus the kernel does not answer the PS1 while this app runs. After the docking level appears (`INT_INPUT` bit 11), the app waits approximately half a second for the connector to settle. It then makes 8 captures. Captures 0 to 5 use `COM_CTRL1 = 3`, capture 6 uses 1, and capture 7 uses 2. Each capture:
+
+1. Sets Timer0 to /2, which is 0.5us for each tick at `CLK_MODE` 7. It restores Timer0 afterwards.
+2. Does the link setup of the kernel at docking (`0x0400073E` to `0x0400078C`): `COM_CTRL1 = 0`, `COM_MODE = 2`, `COM_DATA = 0xFF`, `COM_CTRL2 = 3`, `COM_MODE = 6`, and then `COM_CTRL1` = the value of the capture.
+3. Waits for approximately 2ms with no change. Each start of that wait writes `COM_CTRL2 = 3`, reads `COM_DATA`, and acknowledges `INT_COM`, to clear what an access left. The kernel writes `COM_CTRL2 = 1` straight after it sees Ready, thus `COM_CTRL2` is the most probable clear.
+4. Logs each change of six bits for approximately 12ms after the first change: `COM_STAT1` bits 0 and 1, `COM_STAT2` bits 0 and 1, bit 6 (`INT_COM`) of the interrupt HOLD register, and bit 6 of `INT_INPUT`, the raw input of the interrupt controller.
+
+The app never acknowledges a byte. Thus the PS1 sees no card while this screen runs, and it tries again. A capture that gets no access in approximately 4 seconds is made again, while the device stays in the slot. The run ends when the device comes out of the slot.
+
+**Five rows of results.** Each bit time is in Timer0 /2 ticks from the first change. `FFFF` means that the bit did not change in the window.
+
+| row | left four digits | right four digits |
+|---|---|---|
+| top | `F`, the capture number (0 to 7), the bits before the first change (2 digits) | the ticks that the window took (0 = no capture) |
+| 2 | `COM_STAT2` bit 0 (Ready) | HOLD bit 6 (`INT_COM`) |
+| 3 | `COM_STAT2` bit 1 | `INT_INPUT` bit 6 (`INT_COM`, raw) |
+| 4 | `COM_STAT1` bit 0 | `COM_STAT1` bit 1 (the release of /SEL) |
+| 5 | the number of changes logged (2 digits), and the last sample (2 digits) | the time of the last change |
+
+The two digits of "bits before" and "last sample" use this order: bits 0 and 1 are `COM_STAT1`, bits 2 and 3 are `COM_STAT2`, bit 4 is HOLD bit 6, and bit 5 is `INT_INPUT` bit 6. A time is the first time that the bit differs from its value before the first change, thus it can be a set or a clear. The release bit of `COM_STAT1` stays set from the access before, until the PS1 selects the device again, thus "bits before" is usually `02`, and the start of the access clears that bit at time 0.
+
+**The resolution.** The window value divided by 1536 is the time between two samples. In this emulator that is approximately 17 ticks (8.3us). One byte from a PS1 is approximately 32us, which is 64 ticks. A sample reads four registers one after the other, thus a change can fall between two reads, and the next sample then shows the rest of it. Thus two times that are less than approximately 35 ticks apart are the same time.
+
+**How to read the result.** In each capture, compare the two `INT_COM` bits with Ready and with `COM_STAT1` bit 0.
+
+| `INT_COM` (either bit) | Ready | conclusion |
+|---|---|---|
+| near 0 | near 0, or less than approximately 35 ticks after it | The interrupt comes when the byte is complete. This is the model of this emulator. |
+| near 0 | clearly later, near one byte time or more | The interrupt comes before the byte is complete. Thus the kernel acknowledges the first byte sooner on hardware than in this emulator. `COM_STAT2` bit 1 then shows if it is the bit that starts the interrupt. |
+| `FFFF` in both | any | The block does not request the interrupt with this `COM_CTRL1` value, or neither register shows a masked request. |
+
+If the bits before the first change still show `COM_STAT2` bits, `COM_CTRL2 = 3` does not clear them. That is a result too.
+
+**Real hardware and this emulator agree.** Both give `INT_COM` at the selection with `COM_CTRL1` = 3 and 2, `INT_COM` at Ready with `COM_CTRL1 = 1`, and Ready approximately 60us after the selection. This emulator takes its model of `COM_STAT2` from the real-hardware run of this screen. See [VERIFICATION.md](VERIFICATION.md), and "What real hardware shows in `COM_STAT2`" in [docs/hardware-notes.md](../docs/hardware-notes.md).
+
+**Recovery.** This screen writes no flash. If no PS1 accesses the slot, the run waits until the device comes out of the slot.
 
 ### Reading the hex digits
 

@@ -151,6 +151,8 @@ clr_loop:
     beq rs_stop_test_screen
     cmp r4, #SCREEN_RTC_RATES
     beq rs_rtc_rates_screen
+    cmp r4, #SCREEN_COM_TIMING
+    beq rs_com_screen
 
     sub r5, r4, #1
     lsl r5, r5, #3
@@ -328,6 +330,46 @@ rs_stop_test_screen:
     bl draw_hex_u32
     b rs_done
 
+rs_com_screen:
+    @ One stored capture of the COM interrupt timing. See run_com_capture and
+    @ com_auto_run in experiments.s.
+    @ Row 0: F, the capture number (0-7; CTRL1 is 3 for 0-5, 1 for 6, 2 for
+    @ 7), the bits before the change (2 digits: bits 0-1 STAT1, 2-3 STAT2, 4
+    @ HOLD, 5 STATUS), and the Timer0 /2 ticks the window took (0 = none).
+    @ Rows 7 to 25: two values per row. The six bit values are Timer0 /2
+    @ ticks from the first change (0xFFFF = never):
+    @   row 7:  STAT2 bit 0 (Ready)   | HOLD bit 6 (INT_COM latched)
+    @   row 13: STAT2 bit 1           | STATUS bit 6 (INT_COM raw input)
+    @   row 19: STAT1 bit 0           | STAT1 bit 1 (the release of /SEL)
+    @   row 25: changes logged (2 digits) and the last sample (2) | the time
+    @           of the last change
+    ldr r5, =WRAM_COM_INFO
+    ldr r0, [r5]
+    bic r0, r0, #0xF0000000
+    orr r0, r0, #0xF0000000
+    mov r1, #0
+    mov r2, #0
+    bl draw_hex_u32
+
+    ldr r5, =WRAM_COM_TIMES
+    ldr r0, [r5, #8]
+    ldr r1, [r5, #16]
+    mov r2, #7
+    bl draw_pair16
+    ldr r0, [r5, #12]
+    ldr r1, [r5, #20]
+    mov r2, #13
+    bl draw_pair16
+    ldr r0, [r5]
+    ldr r1, [r5, #4]
+    mov r2, #19
+    bl draw_pair16
+    ldr r0, [r5, #24]
+    ldr r1, [r5, #28]
+    mov r2, #25
+    bl draw_pair16
+    b rs_done
+
 rs_diag_screen:
     @ Diagnostic screen: raw (not delta) Timer0 snapshots, 4 rows -
     @ single-call before/after, then full-30000-loop before/after.
@@ -357,6 +399,51 @@ rs_diag_screen:
 
 rs_done:
     pop {r4, r5, r6, lr}
+    bx lr
+    .ltorg
+
+draw_pair16:                  @ r0=high value, r1=low value, r2=row -> 8 hex digits
+    push {lr}
+    mov r0, r0, lsl #16
+    mov r1, r1, lsl #16
+    orr r0, r0, r1, lsr #16
+    mov r1, r2
+    mov r2, #0
+    bl draw_hex_u32
+    pop {lr}
+    bx lr
+
+@ Up on screen 15: show the next stored capture (0-7, then 0 again).
+com_next_page:
+    push {lr}
+    ldr r1, =WRAM_COM_PAGE
+    ldr r0, [r1]
+    add r0, r0, #1
+    and r0, r0, #(COM_CAPTURES - 1)
+    str r0, [r1]
+    bl com_load_entry
+    pop {lr}
+    bx lr
+    .ltorg
+
+@ Down on screen 15: arm the unattended run. A bar across the middle stays on
+@ the screen until the first capture replaces it.
+com_arm_with_bar:
+    push {lr}
+    mov r0, #14
+    mov r1, #0
+    mov r2, #31
+    bl draw_hline
+    mov r0, #15
+    mov r1, #0
+    mov r2, #31
+    bl draw_hline
+    mov r0, #16
+    mov r1, #0
+    mov r2, #31
+    bl draw_hline
+    bl com_auto_run
+    pop {lr}
     bx lr
     .ltorg
 
@@ -417,7 +504,7 @@ pb_check_right:
     @ costs no existing binding. Edge-triggered against the previous frame's
     @ bits, the same way the Left/Right checks below are.
     cmp r4, #SCREEN_STOP_TEST
-    bne pb_check_right_real
+    bne pb_check_com
     tst r5, #8
     beq pb_check_right_real
     tst r0, #8
@@ -429,6 +516,31 @@ pb_check_right:
     @ Without this, pb_store would record the stale pre-stop bits and the very
     @ next poll would read the waking button as a fresh press - navigating
     @ straight off the results screen the test just filled in.
+    ldr r6, =INTC_STATUS
+    ldr r5, [r6]
+    mov r1, #1
+    b pb_store
+
+    @ Screen 15: Up shows the next stored capture, Down arms the unattended run.
+    @ Both are edge-triggered, like Down on screen 13. The run lasts until the
+    @ device leaves the slot, so re-sample the buttons afterwards for the same
+    @ reason as the stop test above.
+pb_check_com:
+    cmp r4, #SCREEN_COM_TIMING
+    bne pb_check_right_real
+    tst r5, #0x10
+    beq pb_com_down
+    tst r0, #0x10
+    bne pb_com_down
+    bl com_next_page
+    mov r1, #1
+    b pb_store
+pb_com_down:
+    tst r5, #8
+    beq pb_check_right_real
+    tst r0, #8
+    bne pb_check_right_real
+    bl com_arm_with_bar
     ldr r6, =INTC_STATUS
     ldr r5, [r6]
     mov r1, #1
@@ -610,7 +722,7 @@ pb_store:
     .ltorg
 
 @ The cycle is 1..11, then SCREEN_STOP_TEST (13), then SCREEN_RTC_RATES (14),
-@ wrapping back to 1.
+@ then SCREEN_COM_TIMING (15), wrapping back to 1.
 @ SCREEN_EXIT_PROMPT (12) is deliberately skipped: it is not a result screen,
 @ it is reached only by holding Action, and tools/pk_exit_test.c depends on its
 @ index, so it stays where it is rather than being renumbered around.
@@ -618,8 +730,11 @@ screen_next:
     push {r0, r1, lr}
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
-    cmp r1, #SCREEN_RTC_RATES
+    cmp r1, #SCREEN_COM_TIMING
     moveq r1, #1
+    beq sn_store
+    cmp r1, #SCREEN_RTC_RATES
+    moveq r1, #SCREEN_COM_TIMING
     beq sn_store
     cmp r1, #SCREEN_STOP_TEST
     moveq r1, #SCREEN_RTC_RATES
@@ -638,6 +753,9 @@ screen_prev:
     push {r0, r1, lr}
     ldr r0, =WRAM_SCREEN_INDEX
     ldr r1, [r0]
+    cmp r1, #SCREEN_COM_TIMING
+    moveq r1, #SCREEN_RTC_RATES
+    beq sp_store
     cmp r1, #SCREEN_RTC_RATES
     moveq r1, #SCREEN_STOP_TEST
     beq sp_store
@@ -647,7 +765,7 @@ screen_prev:
     sub r1, r1, #1
     cmp r1, #1
     bge sp_store
-    mov r1, #SCREEN_RTC_RATES
+    mov r1, #SCREEN_COM_TIMING
 sp_store:
     str r1, [r0]
     pop {r0, r1, lr}

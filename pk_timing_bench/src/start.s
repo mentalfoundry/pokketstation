@@ -214,6 +214,22 @@ clk_wait:
     bl draw_pixel
     .ltorg
 
+    @ --- screen 15 starts with no captures. It runs only when a person arms
+    @ it: see com_auto_run in experiments.s. ---
+    mov r4, #0
+com_init_loop:
+    mov r0, r4
+    bl com_clear_entry
+    add r4, r4, #1
+    cmp r4, #COM_CAPTURES
+    blo com_init_loop
+    ldr r0, =WRAM_COM_PAGE
+    mov r1, #0
+    str r1, [r0]
+    mov r0, #0
+    bl com_load_entry
+    .ltorg
+
     @ --- init UI state ---
     ldr r0, =WRAM_SCREEN_INDEX
     mov r1, #1
