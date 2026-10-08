@@ -7,6 +7,9 @@ build_*/
 # copyrighted firmware or commercial save/game data.
 /testdata/
 
+# The default output of frontends/web/build.sh.
+/frontends/web/pokketstation-core.js
+
 # Diagnostic reports written by frontends/desktop/main.c during manual
 # testing (see docs/hardware-notes.md) - local debugging artifacts, not
 # something to commit.
