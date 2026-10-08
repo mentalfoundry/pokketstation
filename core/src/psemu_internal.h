@@ -31,10 +31,11 @@ struct psemu {
     dac_t dac;
     clk_t clk;
     iop_t iop;
-    /* The fractional carry between psemu_run() calls.
-       It converts real elapsed time back into the fixed PSEMU_ASSUMED_CPU_HZ reference
-       rate that Timer, RTC, and DAC use. See the comment on psemu_run for more data. */
-    double real_time_cycle_carry;
+    /* The clock of the machine, in units of PSEMU_TIME_HZ since the last reset. Each CPU cycle and
+       each reference cycle is a whole number of units, thus this value is exact and no conversion
+       rounds it. The RTC, the DAC and the IR count the reference-cycle boundaries that it crosses.
+       See run_until in psemu.c. */
+    uint64_t time;
     uint32_t buttons; /* the last PSEMU_BUTTON_* bitmask, for edge detection into the INTC */
     int has_bios;
     /* app_running shows whether a dispatched app owns WRAM. See psemu_app_running.

@@ -284,9 +284,38 @@ void psemu_format_hardware_id(uint32_t id, char *buf, size_t buf_size);
    its own rate. One example of such a host is a PS1 emulator at 60Hz. */
 #define PSEMU_REFERENCE_CLOCK_HZ 1056000u
 
-/* Runs for approximately `cycles` CPU cycles. Returns the number of cycles that it
-   executed. */
+/* Runs the machine for a budget of real time. `cycles` is that budget in reference cycles at
+   PSEMU_REFERENCE_CLOCK_HZ, and not in CPU cycles. The function returns the reference cycles that ran.
+   That value is the same unit as the budget, and it does not change with CLK_MODE. The last
+   instruction can go past the budget, thus the return value can be a little larger than `cycles`.
+
+   A host that keeps the machine at the time of its own clock adds up the return values. The number
+   of CPU cycles in the same time changes with CLK_MODE. See PSEMU_REFERENCE_CLOCK_HZ. */
 uint32_t psemu_run(psemu_t *ps, uint32_t cycles);
+
+/* The unit of the clock of the machine. One second is this number of units.
+
+   The value is the least common multiple of PSEMU_REFERENCE_CLOCK_HZ and of each CPU clock that
+   CLK_MODE selects. Thus one reference cycle, and one CPU cycle at each CLK_MODE, is a whole number
+   of units. The clock adds whole numbers only, and it has no remainder to round. psemu_run also
+   counts this clock, thus the sum of its return values is exact.
+
+   A host with a different clock converts with the ratio of PSEMU_TIME_HZ to its own rate, in integer
+   arithmetic. One example is the master clock of a PS1, 33,868,800Hz: 441 ticks of that clock are
+   13,312,640 units. The host then keeps exact step with the machine, to the instruction.
+
+   A 64-bit count of these units holds approximately 208 days. */
+#define PSEMU_TIME_HZ 1022410752000ull
+#define PSEMU_TIME_PER_REFERENCE_CYCLE (PSEMU_TIME_HZ / PSEMU_REFERENCE_CLOCK_HZ) /* 968,192 */
+
+/* Runs the machine for a budget of `units` of PSEMU_TIME_HZ, and returns the units that ran. The last
+   instruction can go past the budget, thus the return value can be a little larger than `units`. A
+   host adds up the return values, and it gives a smaller budget to the next call by the amount of
+   that excess. */
+uint64_t psemu_run_time(psemu_t *ps, uint64_t units);
+
+/* The clock of the machine, in units of PSEMU_TIME_HZ since the last reset. */
+uint64_t psemu_time(const psemu_t *ps);
 
 /* Settings that the BIOS owns. These settings are in RAM, not in a hardware register.
    docs/hardware-notes.md gives data on both settings, in "System sound volume setting"
@@ -530,25 +559,61 @@ void psemu_com_set_selected(psemu_t *ps, int selected);
    condition. A caller can supply a larger value.
 
    The `wait` mode of tools/com_probe.c measured the cost of one answer against a real J110 dump. The
-   first byte of a command costs 177 reference cycles, because the kernel must take the FIQ. Each
-   byte after the first byte costs 52 to 112 cycles, because the kernel already polls COM_STAT2
-   inside that same FIQ. Thus 177 cycles is the worst measured answer.
+   first byte of a command costs 46 reference cycles, because the kernel must take the FIQ. Each byte
+   after the first byte costs 14 to 30 cycles, because the kernel already polls COM_STAT2 inside that
+   same FIQ. Thus 46 cycles is the worst measured answer. That is approximately 174 CPU cycles.
 
    THIS COST SCALES WITH CLK_MODE. That measurement used CLK_MODE 7 (3,997,696Hz), and the kernel
    selects that mode when it enables communication in the docked condition. The budget here is in
    PSEMU_ASSUMED_CPU_HZ reference cycles (1,056,000Hz). Thus a slower clock makes the same work cost
-   more reference cycles. The measured 177 cycles is approximately 670 CPU cycles. That work costs
-   approximately 5600 reference cycles at CLK_MODE 2, and approximately 21600 at CLK_MODE 0.
+   more reference cycles.
 
-   This value covers CLK_MODE 2 and each faster mode. It is approximately 46 times the worst measured
-   answer at the docked clock. An app that slows the clock below CLK_MODE 2 while it is docked needs
-   a larger budget from the caller.
+   This value is approximately 178 times the worst measured answer at the docked clock. An app that
+   slows the clock far below the docked clock while it is docked can need a larger budget from the
+   caller.
 
    Do not make this value very large. A command gives no acknowledge for its last byte, because the
    command is complete at that point. Thus every command reaches this budget one time, and the
    machine executes for the full budget before this function returns. */
 #define PSEMU_COM_DEFAULT_TIMEOUT_CYCLES 8192u
 int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles);
+
+/* The same operation as psemu_com_transfer. It also gives the number of reference cycles that this
+   call ran in *cycles_out. A caller that keeps the machine at the time of a host clock needs that
+   number, because this call moves the machine forward.
+
+   After an acknowledge, the number is the time from the arrival of the byte to the acknowledge, to
+   the resolution of the step that this function uses to poll. That resolution is 64 reference
+   cycles. Thus the number is the measured cost of the answer, and it is never smaller than the true
+   cost. Without an acknowledge, the number is the full budget that ran.
+
+   `cycles_out` accepts NULL. */
+int psemu_com_transfer_timed(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles,
+                             uint32_t *cycles_out);
+
+/* The two parts of an exchange, for a host that keeps the machine at the exact time of its own clock.
+   psemu_com_transfer and psemu_com_transfer_timed do the two parts in one call, and they stop the
+   run only at a poll step.
+
+   psemu_com_send gives one byte from the PS1 to the machine at the time of its clock, and it holds
+   the /SEL line. It returns the byte that moves out in the same exchange. The kernel wrote that byte
+   before this exchange, thus it does not depend on the run that follows. This function runs nothing.
+
+   psemu_run_time_to_ack then runs the machine like psemu_run_time. It also stops after the instruction
+   that acknowledges the byte. psemu_com_acked tells which condition stopped the run. Thus the return
+   value is the exact time from the arrival of the byte to the acknowledge. The host signals the
+   acknowledge to the PS1 at that time.
+
+   The machine is then ahead of the host by that time. Nothing that the PS1 does can change the
+   machine inside that time, except a release of /SEL or a new byte. A host that must give one of those
+   inputs at an earlier time saves the state before this run, and loads it again. The clock is exact,
+   thus a run from the saved state to the time of the input gives the machine that the input finds on
+   real hardware. See PSEMU_TIME_HZ.
+
+   Without an acknowledge, the run ends at the budget. A last byte of a command has no acknowledge. */
+uint8_t psemu_com_send(psemu_t *ps, uint8_t data_in);
+uint64_t psemu_run_time_to_ack(psemu_t *ps, uint64_t units);
+int psemu_com_acked(const psemu_t *ps);
 
 /* Like psemu_com_transfer, but releases /SEL immediately after the byte enters the COM buffer,
    before running any ARM cycles.
@@ -601,6 +666,19 @@ void psemu_write_crash_report(const psemu_t *ps, FILE *f);
 size_t psemu_state_size(const psemu_t *ps);
 psemu_status psemu_save_state(const psemu_t *ps, void *buf, size_t size);
 psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size);
+
+/* A fast copy of the full machine, for a host that must go back to an earlier point in the same
+   session. One example is the host that saves the machine before psemu_run_time_to_ack, and goes
+   back to it when an input arrives inside that run. That host saves the machine at each byte, thus
+   the time of the save is important.
+
+   A snapshot is a raw copy of the memory of the machine. It is not portable, and it holds the BIOS.
+   Thus it is not a substitute for psemu_save_state: do not write it to a file. It is valid only for
+   the machine that made it, in the same process, and psemu_snapshot_load refuses a snapshot from a
+   different machine with PSEMU_ERR_BAD_FORMAT. `buf` must be psemu_snapshot_size() bytes. */
+size_t psemu_snapshot_size(void);
+void psemu_snapshot_save(const psemu_t *ps, void *buf);
+psemu_status psemu_snapshot_load(psemu_t *ps, const void *buf);
 
 #ifdef __cplusplus
 }

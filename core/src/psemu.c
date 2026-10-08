@@ -30,7 +30,7 @@ psemu_t *psemu_create(void) {
     arm7tdmi_init(&ps->cpu, &ps->bus);
     ps->buttons = 0;
     ps->has_bios = 0;
-    ps->real_time_cycle_carry = 0.0;
+    ps->time = 0;
     ps->app_running = 0;
     ps->app_exec_idle_cycles = 0;
     return ps;
@@ -80,7 +80,7 @@ void psemu_reset(psemu_t *ps) {
     iop_init(&ps->iop);
     flash_reset_registers(&ps->flash);
     ps->buttons = 0;
-    ps->real_time_cycle_carry = 0.0;
+    ps->time = 0;
     /* A reset returns to the BIOS. Thus the dispatched app stops. */
     ps->app_running = 0;
     ps->app_exec_idle_cycles = 0;
@@ -501,51 +501,63 @@ int psemu_app_running(const psemu_t *ps) {
     return ps->app_running;
 }
 
-uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
-    if (!ps->has_bios) {
-        return 0;
-    }
-    /* `cycles` is a time budget at the reference clock rate PSEMU_ASSUMED_CPU_HZ (see
-       dac.h). See docs/hardware-notes.md, "CLK_MODE", for a summary. This comment gives
-       the full reasoning.
+/* The units of PSEMU_TIME_HZ in one reference cycle. */
+#define TIME_PER_REF ((uint64_t)PSEMU_TIME_PER_REFERENCE_CYCLE)
 
-       Timer uses the raw step_cycles value, which CLK_MODE scales.
-       The System Clock clocks the real timers. Thus they connect directly to the
-       variable clock of the CPU. They do not use an independent oscillator.
-       A direct measurement confirms this. A Timer at a fixed reference rate made two
-       errors:
-       - The HELLO animation was approximately 4 times too slow during CLK_MODE 7. The
-         same Timer1 heartbeat drives the HELLO animation and the audio. Both are
-         confirmed uses of the same IRQ by GUI code.
-       - The blink on the date-setting screen was approximately 2 times too fast during
-         CLK_MODE 4.
-       Both errors agree almost exactly with the ratio between the real Hz value of
-       CLK_MODE 7 or 4 and the fixed reference rate: 3.97 times and 2.01 times.
-       This confirms that the Timer rate must follow CLK_MODE. The two must not be
-       independent.
+/* Runs the machine until its clock (ps->time) reaches `end`. The last instruction can go past `end`.
+   With `stop_at_ack` set, the run also stops after the instruction that acknowledges a byte from the
+   PS1, and at a CPU fault.
 
-       The RTC and the DAC stay at real elapsed time for all values of CLK_MODE, for
-       different reasons.
-       The RTC is a separate oscillator, independent of the CPU clock. Real hardware
-       confirms this: its RTC ticks at a constant real 1Hz, with no relation to the
-       CPU-frequency setting.
-       The DAC resample function of this emulator needs a fixed real-time output rate,
-       to supply a usual audio interface. This is true for all rates of DACV writes by
-       the app.
-       The DACV content still follows CLK_MODE through the Timer: the audio content and
-       the pitch change with CLK_MODE, the same as on real hardware.
+   The clock is exact. See PSEMU_TIME_HZ. Thus one long run and a sequence of short runs to the same
+   end execute the same instructions and give the same machine. A host that runs the machine ahead
+   and then goes back to a saved state (see psemu_run_time_to_ack) depends on this.
 
-       A fractional carry (ps->real_time_cycle_carry) converts the real elapsed time of
-       each step back into the fixed PSEMU_ASSUMED_CPU_HZ reference rate that the RTC
-       and the DAC use. The conversion uses the active clk_current_hz() value. This
-       method keeps real time exact across the steps, and prevents an error from integer
-       truncation. dac_tick uses this same accumulator pattern internally. */
-    double budget_seconds = (double)cycles / (double)PSEMU_ASSUMED_CPU_HZ;
-    double elapsed_seconds = 0.0;
-    uint32_t ran = 0;
-    while (elapsed_seconds < budget_seconds) {
+   See docs/hardware-notes.md, "CLK_MODE", for a summary. This comment gives the full reasoning.
+
+   Timer uses the raw step_cycles value, which CLK_MODE scales.
+   The System Clock clocks the real timers. Thus they connect directly to the
+   variable clock of the CPU. They do not use an independent oscillator.
+   A direct measurement confirms this. A Timer at a fixed reference rate made two
+   errors:
+   - The HELLO animation was approximately 4 times too slow during CLK_MODE 7. The
+     same Timer1 heartbeat drives the HELLO animation and the audio. Both are
+     confirmed uses of the same IRQ by GUI code.
+   - The blink on the date-setting screen was approximately 2 times too fast during
+     CLK_MODE 4.
+   Both errors agree almost exactly with the ratio between the real Hz value of
+   CLK_MODE 7 or 4 and the fixed reference rate: 3.97 times and 2.01 times.
+   This confirms that the Timer rate must follow CLK_MODE. The two must not be
+   independent.
+
+   The RTC and the DAC stay at real elapsed time for all values of CLK_MODE, for
+   different reasons.
+   The RTC is a separate oscillator, independent of the CPU clock. Real hardware
+   confirms this: its RTC ticks at a constant real 1Hz, with no relation to the
+   CPU-frequency setting.
+   The DAC resample function of this emulator needs a fixed real-time output rate,
+   to supply a usual audio interface. This is true for all rates of DACV writes by
+   the app.
+   The DACV content still follows CLK_MODE through the Timer: the audio content and
+   the pitch change with CLK_MODE, the same as on real hardware.
+
+   Each step adds its CPU cycles to the clock, at the units of the active clk_current_hz() value.
+   The RTC, the DAC and the IR receive the number of reference-cycle boundaries that the step
+   crossed. `frac` is the part of the current reference cycle that has passed.
+
+   The units of one CPU cycle change only when software writes CLK_MODE. `per_cycle` holds the value
+   for `per_cycle_mode`, thus the division occurs only after such a write, and not at each step. */
+static void run_until(psemu_t *ps, uint64_t end, int stop_at_ack) {
+    uint64_t frac = ps->time % TIME_PER_REF;
+    uint32_t per_cycle_mode = ps->clk.mode;
+    uint64_t per_cycle = PSEMU_TIME_HZ / clk_current_hz(&ps->clk);
+    while (ps->time < end) {
         uint32_t pc = ps->cpu.r[15];
         uint32_t step_cycles;
+        uint32_t real_time_cycles = 0;
+        uint64_t dt;
+        if (stop_at_ack && (com_transfer_acked(&ps->com) || psemu_cpu_faulted(ps))) {
+            break;
+        }
         /* Software requested a clock stop (see clk.h). Execute nothing, and stop the peripherals
            that use the same oscillator. The System Clock clocks the Timer, thus the Timer also stops
            here. This behavior is important. A wake on each asserted interrupt is not a stop at all,
@@ -567,33 +579,37 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
             if (ps->intc.hold & ps->intc.enable & WAKE_SOURCES) {
                 clk_clear_stop(&ps->clk);
             } else {
-                /* This loop uses one reference-rate cycle for each iteration. It does not use one CPU
-                   cycle at the current CLK_MODE. No code executes here, thus this interval controls
-                   only the resolution of the RTC ticks and the DAC ticks. The reference rate also
-                   keeps `ran` correct against the real elapsed time. This function returns `ran` in
-                   reference-rate cycles. A count of CPU cycles made `ran` too large, by the ratio
-                   between the two rates. That error was as much as approximately 4 times at
-                   CLK_MODE 7. Thus a caller that used the return value for its pacing saw the clock
-                   of a sleeping device operate too fast. */
-                double stopped_dt = 1.0 / (double)PSEMU_ASSUMED_CPU_HZ;
-                uint32_t real_time_cycles;
-                elapsed_seconds += stopped_dt;
-                ps->real_time_cycle_carry += stopped_dt * (double)PSEMU_ASSUMED_CPU_HZ;
-                real_time_cycles = (uint32_t)ps->real_time_cycle_carry;
-                ps->real_time_cycle_carry -= (double)real_time_cycles;
+                /* The clock moves to the next reference-cycle boundary, or to `end` if that is
+                   sooner. No code executes here, thus this interval controls only the resolution of
+                   the RTC ticks and the DAC ticks. An interrupt can only become held at a boundary,
+                   thus a run that ends between two boundaries does not change the time of a wake. */
+                dt = TIME_PER_REF - frac;
+                if (dt > end - ps->time) {
+                    dt = end - ps->time;
+                }
+                ps->time += dt;
+                frac += dt;
+                if (frac == TIME_PER_REF) {
+                    frac = 0;
+                    real_time_cycles = 1u;
+                }
                 rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
                 dac_tick(&ps->dac, real_time_cycles);
-                ran += 1u;
                 continue;
             }
         }
         step_cycles = arm7tdmi_step(&ps->cpu);
-        double dt = (double)step_cycles / (double)clk_current_hz(&ps->clk);
-        elapsed_seconds += dt;
-
-        ps->real_time_cycle_carry += dt * (double)PSEMU_ASSUMED_CPU_HZ;
-        uint32_t real_time_cycles = (uint32_t)ps->real_time_cycle_carry;
-        ps->real_time_cycle_carry -= (double)real_time_cycles;
+        if (ps->clk.mode != per_cycle_mode) {
+            per_cycle_mode = ps->clk.mode;
+            per_cycle = PSEMU_TIME_HZ / clk_current_hz(&ps->clk);
+        }
+        dt = (uint64_t)step_cycles * per_cycle;
+        ps->time += dt;
+        frac += dt;
+        if (frac >= TIME_PER_REF) {
+            real_time_cycles = (uint32_t)(frac / TIME_PER_REF);
+            frac %= TIME_PER_REF;
+        }
 
         psemu_track_app_execution(ps, pc, real_time_cycles);
 
@@ -601,9 +617,42 @@ uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
         rtc_tick(&ps->rtc, &ps->intc, real_time_cycles);
         dac_tick(&ps->dac, real_time_cycles);
         ir_tick(&ps->ir, &ps->intc, real_time_cycles);
-        ran += step_cycles;
     }
-    return ran;
+}
+
+uint32_t psemu_run(psemu_t *ps, uint32_t cycles) {
+    uint64_t start;
+    if (!ps->has_bios) {
+        return 0;
+    }
+    /* The budget and the return value count reference-cycle boundaries of the clock. Thus the sum of
+       the return values of a sequence of calls is the exact time that the sequence ran, with no
+       remainder lost between calls. */
+    start = ps->time / TIME_PER_REF;
+    run_until(ps, (start + cycles) * TIME_PER_REF, 0);
+    return (uint32_t)(ps->time / TIME_PER_REF - start);
+}
+
+uint64_t psemu_run_time(psemu_t *ps, uint64_t units) {
+    uint64_t start = ps->time;
+    if (!ps->has_bios) {
+        return 0;
+    }
+    run_until(ps, start + units, 0);
+    return ps->time - start;
+}
+
+uint64_t psemu_run_time_to_ack(psemu_t *ps, uint64_t units) {
+    uint64_t start = ps->time;
+    if (!ps->has_bios) {
+        return 0;
+    }
+    run_until(ps, start + units, 1);
+    return ps->time - start;
+}
+
+uint64_t psemu_time(const psemu_t *ps) {
+    return ps->time;
 }
 
 const uint8_t *psemu_get_framebuffer(const psemu_t *ps) {
@@ -670,18 +719,19 @@ void psemu_com_set_selected(psemu_t *ps, int selected) {
     com_set_selected(&ps->com, selected);
 }
 
-int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles) {
-    uint32_t ran = 0;
-    int acked;
-
-    /* A byte can only arrive while the PS1 holds the /SEL line. A caller that never sets the
-       line still gets a working transfer, because this call holds it. The caller keeps the duty to
-       release the line at the end of a command. See psemu_com_set_selected. */
+uint8_t psemu_com_send(psemu_t *ps, uint8_t data_in) {
+    /* A byte can only arrive while the PS1 holds the /SEL line. See psemu_com_transfer_timed. */
     com_set_selected(&ps->com, 1);
     com_begin_transfer(&ps->com, &ps->intc, data_in);
+    return com_take_reply(&ps->com);
+}
 
-    while (ran < timeout_cycles && !com_transfer_acked(&ps->com)) {
-        uint32_t remaining = timeout_cycles - ran;
+/* Runs the machine for up to `cycles` reference cycles, in poll steps, until the kernel acknowledges.
+   Returns the reference cycles that ran. */
+static uint32_t run_to_ack(psemu_t *ps, uint32_t cycles) {
+    uint32_t ran = 0;
+    while (ran < cycles && !com_transfer_acked(&ps->com)) {
+        uint32_t remaining = cycles - ran;
         uint32_t chunk = (remaining < COM_POLL_CHUNK_CYCLES) ? remaining : COM_POLL_CHUNK_CYCLES;
         uint32_t did;
         if (psemu_cpu_faulted(ps)) {
@@ -697,18 +747,42 @@ int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t
         }
         ran += did;
     }
+    return ran;
+}
+
+int psemu_com_acked(const psemu_t *ps) {
+    return com_transfer_acked(&ps->com);
+}
+
+int psemu_com_transfer(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles) {
+    return psemu_com_transfer_timed(ps, data_in, data_out, timeout_cycles, NULL);
+}
+
+int psemu_com_transfer_timed(psemu_t *ps, uint8_t data_in, uint8_t *data_out, uint32_t timeout_cycles,
+                             uint32_t *cycles_out) {
+    uint32_t ran;
+    int acked;
+
+    /* A byte can only arrive while the PS1 holds the /SEL line. A caller that never sets the
+       line still gets a working transfer, because this call holds it. The caller keeps the duty to
+       release the line at the end of a command. See psemu_com_set_selected. */
+    com_set_selected(&ps->com, 1);
+    com_begin_transfer(&ps->com, &ps->intc, data_in);
+    ran = run_to_ack(ps, timeout_cycles);
 
     acked = com_transfer_acked(&ps->com);
     if (data_out) {
         *data_out = com_take_reply(&ps->com);
     }
     com_end_transfer(&ps->com, &ps->intc);
+    if (cycles_out) {
+        *cycles_out = ran;
+    }
     return acked;
 }
 
 int psemu_com_transfer_and_select_drop(psemu_t *ps, uint8_t data_in, uint8_t *data_out,
                                        uint32_t timeout_cycles) {
-    uint32_t ran = 0;
     int acked;
 
     /* Assert SELECT before the transfer so the BIOS sees the line in the held state at the
@@ -722,19 +796,7 @@ int psemu_com_transfer_and_select_drop(psemu_t *ps, uint8_t data_in, uint8_t *da
        we set it here, before the FIQ executes any of those instructions. */
     com_set_selected(&ps->com, 0);
 
-    while (ran < timeout_cycles && !com_transfer_acked(&ps->com)) {
-        uint32_t remaining = timeout_cycles - ran;
-        uint32_t chunk = (remaining < COM_POLL_CHUNK_CYCLES) ? remaining : COM_POLL_CHUNK_CYCLES;
-        uint32_t did;
-        if (psemu_cpu_faulted(ps)) {
-            break;
-        }
-        did = psemu_run(ps, chunk);
-        if (did == 0u) {
-            break;
-        }
-        ran += did;
-    }
+    (void)run_to_ack(ps, timeout_cycles);
 
     acked = com_transfer_acked(&ps->com);
     if (data_out) {

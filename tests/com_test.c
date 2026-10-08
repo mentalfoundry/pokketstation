@@ -369,7 +369,7 @@ static void test_state_round_trip_keeps_the_machine(void) {
     a->iop.data = 0x20u;
     a->buttons = PSEMU_BUTTON_FIRE;
     a->app_running = 1;
-    a->real_time_cycle_carry = 0.5;
+    a->time = 123456789012345ull;
 
     assert(psemu_save_state(a, buf, size) == PSEMU_OK);
     assert(psemu_load_state(b, buf, size) == PSEMU_OK);
@@ -399,7 +399,7 @@ static void test_state_round_trip_keeps_the_machine(void) {
     assert(b->iop.data == 0x20u);
     assert(b->buttons == PSEMU_BUTTON_FIRE);
     assert(b->app_running == 1);
-    assert(b->real_time_cycle_carry > 0.49 && b->real_time_cycle_carry < 0.51);
+    assert(b->time == 123456789012345ull);
 
     /* The bus pointers of the loaded instance must address that instance, and not the instance that
        supplied the state. */

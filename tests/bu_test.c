@@ -236,6 +236,196 @@ static void test_read_sector_dummy_bytes_are_zero(mock_ps1_t *m) {
    Command 0x5E sends that bit. The region is sector 16 to 55.
    tools/com_probe.c write mode already reports both codes against a real card. */
 
+/* psemu_com_transfer_timed gives the reference cycles that each exchange ran. A caller that keeps
+   the machine at the time of a host clock needs that number, and a caller that times the
+   acknowledge for the host needs it too.
+
+   This test sends Get ID two times. An answer costs much less than the budget, and a missing
+   acknowledge on the last byte costs the full budget. The two commands are identical, thus the
+   cost of each byte must agree between them, to one reference cycle: the number comes from the
+   machine, and not from the host. */
+static void test_a_timed_transfer_reports_the_cost_of_each_answer(void) {
+    mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+    const uint8_t send[10] = {0x81u, 0x53u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    uint32_t cost[2][10];
+    unsigned pass, i;
+
+    assert(m != NULL);
+    for (pass = 0; pass < 2u; pass++) {
+        for (i = 0; i < 10u; i++) {
+            uint8_t out = 0u;
+            int ack = psemu_com_transfer_timed(m->ps, send[i], &out, PSEMU_COM_DEFAULT_TIMEOUT_CYCLES,
+                                               &cost[pass][i]);
+            if (i < 9u) {
+                assert(ack);
+                assert(cost[pass][i] > 0u && cost[pass][i] < 1024u);
+            } else {
+                assert(!ack);
+                assert(cost[pass][i] >= PSEMU_COM_DEFAULT_TIMEOUT_CYCLES);
+            }
+        }
+        mock_ps1_end_command(m);
+    }
+
+    printf("  cost of each byte:");
+    for (i = 0; i < 10u; i++) {
+        printf(" %u", (unsigned)cost[0][i]);
+        /* psemu_run counts the reference-cycle boundaries that the clock crosses, and an exchange can
+           start between two boundaries. Thus the same exchange can report one cycle more or less. */
+        assert(cost[0][i] + 1u >= cost[1][i] && cost[1][i] + 1u >= cost[0][i]);
+    }
+    printf("\n");
+
+    mock_ps1_close(m);
+    printf("test_a_timed_transfer_reports_the_cost_of_each_answer OK\n");
+}
+
+/* The time of one byte on the link of a PS1, in units of PSEMU_TIME_HZ. A PS1 shifts 8 bits at
+   JOY_BAUD 0x88, thus one byte is 8 x 136 = 1088 ticks of its 33,868,800Hz master clock, and 441
+   ticks are 13,312,640 units. A PS1 cannot send the next byte in less time than this. */
+#define PS1_BYTE_UNITS ((1088ull * 13312640ull) / 441ull)
+
+/* The budget for one answer, in units: the default budget of psemu_com_transfer. */
+#define ANSWER_BUDGET_UNITS ((uint64_t)PSEMU_COM_DEFAULT_TIMEOUT_CYCLES * PSEMU_TIME_PER_REFERENCE_CYCLE)
+
+static int same_machine(const psemu_t *a, const psemu_t *b) {
+    size_t size = psemu_state_size(a);
+    uint8_t *sa = (uint8_t *)malloc(size);
+    uint8_t *sb = (uint8_t *)malloc(size);
+    int same;
+    assert(sa != NULL && sb != NULL);
+    assert(psemu_save_state(a, sa, size) == PSEMU_OK);
+    assert(psemu_save_state(b, sb, size) == PSEMU_OK);
+    same = (memcmp(sa, sb, size) == 0);
+    if (!same) {
+        size_t k, n = 0;
+        for (k = 0; k < size && n < 12u; k++) {
+            if (sa[k] != sb[k]) {
+                printf("  DIFF at %u: %02X %02X\n", (unsigned)k, sa[k], sb[k]);
+                n++;
+            }
+        }
+    }
+    free(sa);
+    free(sb);
+    return same;
+}
+
+/* psemu_run_time_to_ack stops after the instruction that acknowledges the byte, thus its return value
+   is the exact time of the answer. This test sends Get ID with the gap of a real PS1 between the
+   bytes, and the time of each answer must be less than the poll step of psemu_com_transfer_timed (64
+   reference cycles). The last byte has no acknowledge, and the run then ends at the budget. */
+static void test_the_time_to_ack_is_the_exact_time_of_the_answer(void) {
+    mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+    const uint8_t send[10] = {0x81u, 0x53u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+    uint8_t reply[10];
+    uint64_t cost[10];
+    unsigned i;
+
+    assert(m != NULL);
+    for (i = 0; i < 10u; i++) {
+        reply[i] = psemu_com_send(m->ps, send[i]);
+        cost[i] = psemu_run_time_to_ack(m->ps, ANSWER_BUDGET_UNITS);
+        if (i < 9u) {
+            assert(psemu_com_acked(m->ps));
+            assert(cost[i] > 0u && cost[i] < 64u * PSEMU_TIME_PER_REFERENCE_CYCLE);
+            /* The PS1 sends the next byte one byte time after the acknowledge. */
+            (void)psemu_run_time(m->ps, PS1_BYTE_UNITS);
+        } else {
+            assert(!psemu_com_acked(m->ps));
+            assert(cost[i] >= ANSWER_BUDGET_UNITS);
+        }
+    }
+    mock_ps1_end_command(m);
+
+    print_stream("Get ID", reply, 10);
+    printf("  time of each answer, in reference cycles:");
+    for (i = 0; i < 9u; i++) {
+        printf(" %.2f", (double)cost[i] / (double)PSEMU_TIME_PER_REFERENCE_CYCLE);
+    }
+    printf("\n");
+
+    /* The same identifier bytes as the answer of psemu_com_transfer. See
+       test_get_id_gives_the_values_of_a_sony_card. */
+    {
+        size_t id = mock_ps1_find_id_pair(reply, 10);
+        assert(id != MOCK_PS1_NOT_FOUND && id + 8u <= 10u);
+        assert(reply[id + 4u] == 0x04u && reply[id + 7u] == 0x80u);
+    }
+
+    mock_ps1_close(m);
+    printf("test_the_time_to_ack_is_the_exact_time_of_the_answer OK\n");
+}
+
+/* The clock is exact, thus one long run and a sequence of short runs of different lengths to the same
+   end give the same machine, bit for bit. A host that runs the machine ahead, and then goes back to a
+   saved state to give an input at an earlier time, depends on this. The third machine here does
+   that: it runs ahead past an exchange, loads its saved state, and runs again to the same end. The
+   fourth machine does the same with a snapshot, and a snapshot of it does not load into the third. */
+static void test_split_runs_give_the_same_machine(void) {
+    mock_ps1_t *a = mock_ps1_open(bios_path(), NULL);
+    mock_ps1_t *b = mock_ps1_open(bios_path(), NULL);
+    mock_ps1_t *c = mock_ps1_open(bios_path(), NULL);
+    mock_ps1_t *d = mock_ps1_open(bios_path(), NULL);
+    const uint64_t total = 3ull * (PSEMU_REFERENCE_CLOCK_HZ / 32u) * PSEMU_TIME_PER_REFERENCE_CYCLE;
+    uint64_t ran_a, ran_b = 0, ran_c, ran_d;
+    unsigned i = 0;
+    size_t size;
+    uint8_t *saved;
+
+    assert(a != NULL && b != NULL && c != NULL && d != NULL);
+    assert(same_machine(a->ps, b->ps) && same_machine(a->ps, c->ps));
+
+    ran_a = psemu_run_time(a->ps, total);
+
+    while (ran_b < total) {
+        /* Lengths that are not a multiple of a reference cycle or of a CPU cycle. */
+        uint64_t chunk = ((uint64_t)(i * 7919u) % 100000u + 1u) * 1000u + 17u;
+        if (chunk > total - ran_b) {
+            chunk = total - ran_b;
+        }
+        ran_b += psemu_run_time(b->ps, chunk);
+        i++;
+    }
+
+    size = psemu_state_size(c->ps);
+    saved = (uint8_t *)malloc(size);
+    assert(saved != NULL);
+    assert(psemu_save_state(c->ps, saved, size) == PSEMU_OK);
+    (void)psemu_com_send(c->ps, 0x81u);
+    (void)psemu_run_time_to_ack(c->ps, ANSWER_BUDGET_UNITS);
+    (void)psemu_run_time(c->ps, total);
+    assert(psemu_load_state(c->ps, saved, size) == PSEMU_OK);
+    ran_c = psemu_run_time(c->ps, total);
+    free(saved);
+
+    saved = (uint8_t *)malloc(psemu_snapshot_size());
+    assert(saved != NULL);
+    psemu_snapshot_save(d->ps, saved);
+    (void)psemu_com_send(d->ps, 0x81u);
+    (void)psemu_run_time_to_ack(d->ps, ANSWER_BUDGET_UNITS);
+    (void)psemu_run_time(d->ps, total);
+    assert(psemu_snapshot_load(c->ps, saved) == PSEMU_ERR_BAD_FORMAT);
+    assert(psemu_snapshot_load(d->ps, saved) == PSEMU_OK);
+    ran_d = psemu_run_time(d->ps, total);
+    free(saved);
+
+    printf("  one run %llu units in %u short runs, end %llu / %llu / %llu\n", (unsigned long long)ran_a, i,
+        (unsigned long long)psemu_time(a->ps), (unsigned long long)psemu_time(b->ps),
+        (unsigned long long)psemu_time(c->ps));
+    assert(psemu_time(a->ps) == psemu_time(b->ps));
+    assert(ran_a == ran_b && ran_a == ran_c && ran_a == ran_d);
+    assert(same_machine(a->ps, b->ps));
+    assert(same_machine(a->ps, c->ps));
+    assert(same_machine(a->ps, d->ps));
+
+    mock_ps1_close(a);
+    mock_ps1_close(b);
+    mock_ps1_close(c);
+    mock_ps1_close(d);
+    printf("test_split_runs_give_the_same_machine OK\n");
+}
+
 int main(void) {
     mock_ps1_t *m;
     const char *path = bios_path();
@@ -258,6 +448,9 @@ int main(void) {
     test_read_sector_gives_the_written_data(m);
     test_read_sector_dummy_bytes_are_zero(m);
     test_write_sector_refuses_a_bad_checksum(m);
+    test_a_timed_transfer_reports_the_cost_of_each_answer();
+    test_the_time_to_ack_is_the_exact_time_of_the_answer();
+    test_split_runs_give_the_same_machine();
 
     mock_ps1_close(m);
     printf("bu_test: all tests OK\n");

@@ -136,28 +136,6 @@ static void st_i16(st_t *s, int16_t *v) {
     }
 }
 
-/* real_time_cycle_carry is the only floating-point field of the machine. psemu_run keeps it in the
-   range 0.0 to 1.0, because it subtracts each whole cycle that it uses. Thus a fixed-point fraction
-   of 32 bits holds it with more resolution than the reference clock can use.
-   The file does not store the raw bits of the double. Those bits depend on the target. */
-static void st_carry(st_t *s, double *v) {
-    uint32_t fixed = 0;
-    if (s->mode == ST_WRITE) {
-        double c = *v;
-        if (c < 0.0) {
-            c = 0.0;
-        }
-        if (c > 0.999999999) {
-            c = 0.999999999;
-        }
-        fixed = (uint32_t)(c * 4294967296.0);
-    }
-    st_u32(s, &fixed);
-    if (s->mode == ST_READ && !s->error) {
-        *v = (double)fixed / 4294967296.0;
-    }
-}
-
 /* THE SIZE OF THIS FORMAT IS THE SAME FOR EACH STATE OF THE MACHINE. A ring buffer below writes its
    full capacity, and not only the entries that it holds now. The count travels with it, thus a read
    restores the correct number of entries.
@@ -183,10 +161,24 @@ static void st_ir_queue(st_t *s, ir_edge_queue_t *q) {
             return;
         }
     }
+    /* A slot past `count` holds no edge. The file holds zero for it, and a read sets it to zero, thus
+       two machines in the same condition give the same file. That slot can otherwise hold an old edge,
+       or the bytes that the allocation had. */
     for (i = 0; i < IR_EDGE_QUEUE_CAPACITY; i++) {
         uint32_t slot = (s->mode == ST_READ) ? i : ((q->head + i) % IR_EDGE_QUEUE_CAPACITY);
-        st_u64(s, &q->entries[slot].timestamp_cycles);
-        st_flag(s, &q->entries[slot].level);
+        if (i < count) {
+            st_u64(s, &q->entries[slot].timestamp_cycles);
+            st_flag(s, &q->entries[slot].level);
+        } else {
+            uint64_t zero_time = 0;
+            int zero_level = 0;
+            st_u64(s, &zero_time);
+            st_flag(s, &zero_level);
+            if (s->mode == ST_READ) {
+                q->entries[slot].timestamp_cycles = 0;
+                q->entries[slot].level = 0;
+            }
+        }
     }
     if (s->mode == ST_READ && !s->error) {
         q->head = 0;
@@ -315,9 +307,18 @@ static void state_visit(psemu_t *ps, st_t *s) {
             s->error = 1;
             return;
         }
+        /* A slot past `count` holds zero in the file. See st_ir_queue. */
         for (k = 0; k < DAC_SAMPLE_BUFFER_SIZE; k++) {
             uint32_t slot = (s->mode == ST_READ) ? k : ((ps->dac.sample_read_pos + k) % DAC_SAMPLE_BUFFER_SIZE);
-            st_i16(s, &ps->dac.sample_buffer[slot]);
+            if (k < count) {
+                st_i16(s, &ps->dac.sample_buffer[slot]);
+            } else {
+                int16_t zero_sample = 0;
+                st_i16(s, &zero_sample);
+                if (s->mode == ST_READ) {
+                    ps->dac.sample_buffer[slot] = 0;
+                }
+            }
         }
         if (s->mode == ST_READ && !s->error) {
             ps->dac.sample_read_pos = 0;
@@ -336,7 +337,7 @@ static void state_visit(psemu_t *ps, st_t *s) {
     st_u32(s, &ps->iop.data);
 
     /* The remaining state of the machine. */
-    st_carry(s, &ps->real_time_cycle_carry);
+    st_u64(s, &ps->time);
     st_u32(s, &ps->buttons);
     st_flag(s, &ps->has_bios);
     st_flag(s, &ps->app_running);
@@ -418,5 +419,30 @@ psemu_status psemu_load_state(psemu_t *ps, const void *buf, size_t size) {
     memset(ps->cpu.trace, 0, sizeof(ps->cpu.trace));
     ps->cpu.trace_pos = 0;
 
+    return PSEMU_OK;
+}
+
+/* A snapshot is the address of the machine that made it, and then a raw copy of that machine. Each
+   pointer in psemu_t addresses a part of the same psemu_t (the bus and its devices), thus a copy
+   that goes back into the same machine keeps each pointer correct. The address at the start is how
+   psemu_snapshot_load finds a snapshot of a different machine, whose pointers address that machine. */
+size_t psemu_snapshot_size(void) {
+    return sizeof(const psemu_t *) + sizeof(psemu_t);
+}
+
+void psemu_snapshot_save(const psemu_t *ps, void *buf) {
+    uint8_t *out = (uint8_t *)buf;
+    memcpy(out, &ps, sizeof(ps));
+    memcpy(out + sizeof(ps), ps, sizeof(psemu_t));
+}
+
+psemu_status psemu_snapshot_load(psemu_t *ps, const void *buf) {
+    const uint8_t *in = (const uint8_t *)buf;
+    const psemu_t *owner;
+    memcpy(&owner, in, sizeof(owner));
+    if (owner != ps) {
+        return PSEMU_ERR_BAD_FORMAT;
+    }
+    memcpy(ps, in + sizeof(owner), sizeof(psemu_t));
     return PSEMU_OK;
 }

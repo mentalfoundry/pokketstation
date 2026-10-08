@@ -16,7 +16,8 @@
    core refuses a file that it cannot read, and psemu_load_state returns PSEMU_ERR_BAD_FORMAT for
    that condition.
 
-   1: the first version of the field-by-field format. It replaces a raw copy of psemu_t. */
-#define PSEMU_STATE_VERSION 1u
+   1: the first version of the field-by-field format. It replaces a raw copy of psemu_t.
+   2: replaces the fractional carry of psemu_run with the clock of the machine (time). */
+#define PSEMU_STATE_VERSION 2u
 
 #endif

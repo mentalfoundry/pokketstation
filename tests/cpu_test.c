@@ -1025,6 +1025,14 @@ static void test_boot_ready_stub(void) {
     printf("test_boot_ready_stub OK\n");
 }
 
+/* Puts a counting loop at address 0: R0 = R0 + 1, then a branch back. R0 then counts the loops that
+   the CPU executed, which is a measure of CPU work that does not depend on the return value of
+   psemu_run. */
+static void put_counting_loop(psemu_t *ps) {
+    put32(ps, 0x00u, 0xE2800001u); /* ADD R0, R0, #1 */
+    put32(ps, 0x04u, 0xEAFFFFFDu); /* B 0x00 */
+}
+
 static void test_clk_mode_scales_run_speed(void) {
     /* Real hardware executes more raw instructions in each real frame at a
        higher CLK_MODE. A trace of a real boot and sound sequence confirms
@@ -1035,26 +1043,96 @@ static void test_clk_mode_scales_run_speed(void) {
        executes more raw cycles in the same budget than the idle default,
        which is mode 0. The Timer also scales with CLK_MODE (see
        test_timer_scales_with_clk_mode). The RTC and the DAC stay at real time
-       (see test_clk_mode_keeps_rtc_dac_on_real_time). */
+       (see test_clk_mode_keeps_rtc_dac_on_real_time).
+
+       The counter of a loop gives the CPU work. The return value of psemu_run
+       is time, and it is the same at each CLK_MODE. See
+       test_run_returns_the_reference_time_that_ran. */
     psemu_t *ps_idle = make_arm_cpu();
     psemu_t *ps_max = make_arm_cpu();
     ps_idle->has_bios = 1; /* psemu_run is a no-op without a loaded BIOS */
     ps_max->has_bios = 1;
+    put_counting_loop(ps_idle);
+    put_counting_loop(ps_max);
 
     psemu_bus_write32(&ps_max->bus, PSEMU_CLK_BASE, 7u);
 
-    uint32_t ran_idle = psemu_run(ps_idle, 100000u);
-    uint32_t ran_max = psemu_run(ps_max, 100000u);
+    (void)psemu_run(ps_idle, 100000u);
+    (void)psemu_run(ps_max, 100000u);
 
     /* Mode 7 (approximately 4MHz) is approximately 122 times mode 0
        (approximately 32.768kHz). This test uses a lower limit of 10 times.
        Thus the test does not depend on the exact table values, and it still
        finds a psemu_run function that applies no scale at all. */
-    assert(ran_max > ran_idle * 10u);
+    printf("  loops: mode 0 %u, mode 7 %u\n", (unsigned)ps_idle->cpu.r[0], (unsigned)ps_max->cpu.r[0]);
+    assert(ps_idle->cpu.r[0] > 0u);
+    assert(ps_max->cpu.r[0] > ps_idle->cpu.r[0] * 10u);
 
     psemu_destroy(ps_idle);
     psemu_destroy(ps_max);
     printf("test_clk_mode_scales_run_speed OK\n");
+}
+
+static void test_run_returns_the_reference_time_that_ran(void) {
+    /* psemu_run takes a budget of real time in reference cycles, and it returns the reference cycles
+       that ran. The return value is time, thus it does not change with CLK_MODE. A host that keeps the
+       machine at the time of its own clock counts this value, thus a return in CPU cycles makes that
+       host give the machine too little time. At CLK_MODE 7 the difference is 3,997,696 / 1,056,000,
+       which is approximately 3.8 times.
+
+       The last instruction can go past the budget. One CPU cycle at mode 0 is approximately 32
+       reference cycles, thus the limit here is 1 percent of the budget. */
+    static const uint32_t modes[2] = {0u, 7u};
+    unsigned i;
+
+    for (i = 0; i < 2u; i++) {
+        psemu_t *ps = make_arm_cpu();
+        uint32_t ran;
+        ps->has_bios = 1;
+        put_counting_loop(ps);
+        psemu_bus_write32(&ps->bus, PSEMU_CLK_BASE, modes[i]);
+
+        ran = psemu_run(ps, 100000u);
+        printf("  CLK_MODE %u: budget 100000, returned %u\n", (unsigned)modes[i], (unsigned)ran);
+        assert(ran >= 100000u && ran <= 101000u);
+
+        psemu_destroy(ps);
+    }
+    printf("test_run_returns_the_reference_time_that_ran OK\n");
+}
+
+/* Each CPU cycle and each reference cycle is a whole number of units of PSEMU_TIME_HZ, thus the clock
+   of the machine has no remainder to round. A new CLK_MODE rate that is not a factor of PSEMU_TIME_HZ
+   breaks this, and this test then fails. The counting loop also shows that the clock advances by
+   exactly that whole number for each cycle. */
+static void test_the_time_unit_divides_every_clock(void) {
+    unsigned mode;
+    assert(PSEMU_TIME_HZ % PSEMU_REFERENCE_CLOCK_HZ == 0u);
+    for (mode = 0; mode < 16u; mode++) {
+        clk_t clk;
+        clk_init(&clk);
+        clk.mode = mode;
+        assert(PSEMU_TIME_HZ % clk_current_hz(&clk) == 0u);
+    }
+
+    for (mode = 0; mode < 16u; mode += 7u) {
+        psemu_t *ps = make_arm_cpu();
+        uint64_t per_cycle, ran;
+        clk_t clk;
+        ps->has_bios = 1;
+        put_counting_loop(ps);
+        psemu_bus_write32(&ps->bus, PSEMU_CLK_BASE, mode);
+        clk_init(&clk);
+        clk.mode = mode;
+        per_cycle = PSEMU_TIME_HZ / clk_current_hz(&clk);
+
+        ran = psemu_run_time(ps, 1000u * per_cycle);
+        assert(ran == psemu_time(ps));
+        assert(ran % per_cycle == 0u);
+        assert(ran >= 1000u * per_cycle);
+        psemu_destroy(ps);
+    }
+    printf("test_the_time_unit_divides_every_clock OK\n");
 }
 
 static void test_timer_scales_with_clk_mode(void) {
@@ -2614,6 +2692,8 @@ int main(void) {
     test_timer_registers_are_16_bit();
     test_boot_ready_stub();
     test_clk_mode_scales_run_speed();
+    test_run_returns_the_reference_time_that_ran();
+    test_the_time_unit_divides_every_clock();
     test_timer_scales_with_clk_mode();
     test_clk_mode_keeps_rtc_dac_on_real_time();
     test_rtc_defaults_and_increment();
