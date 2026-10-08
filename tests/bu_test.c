@@ -6,6 +6,7 @@
 #undef NDEBUG
 
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -237,6 +238,59 @@ static void test_read_sector_dummy_bytes_are_zero(mock_ps1_t *m) {
    Command 0x5E sends that bit. The region is sector 16 to 55.
    tools/com_probe.c write mode already reports both codes against a real card. */
 
+/* The cycles that the kernel needs to program flash after a Write Sector command ends. A
+   measurement against a real J110 dump gives 256 reference cycles as the smallest budget that
+   commits the data. This test uses four times that value, and it also checks that a budget of zero
+   commits nothing, thus it holds both bounds. */
+#define SETTLE_BUDGET_CYCLES 1024u
+
+/* A directory frame of the card. Frames 1 to 15 hold the directory. */
+#define DIRECTORY_SECTOR 1u
+
+/* Runs one Write Sector command on a new machine, and gives the budget to the kernel afterwards.
+   Returns a nonzero value when the frame holds the data. */
+static int write_commits_with_budget(uint16_t sector, uint32_t budget, uint8_t *term_out) {
+    mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+    uint8_t data[MOCK_PS1_FRAME_SIZE];
+    int committed;
+
+    assert(m != NULL);
+    fill_pattern(data, 0x5Au);
+    m->settle_frames = 0u;
+
+    (void)mock_ps1_write_sector(m, sector, data, 0, term_out, NULL);
+    mock_ps1_end_command(m);
+    if (budget > 0u) {
+        psemu_run(m->ps, budget);
+    }
+
+    committed = (memcmp(&psemu_flash_data(m->ps)[(size_t)sector * MOCK_PS1_FRAME_SIZE], data,
+                        MOCK_PS1_FRAME_SIZE) == 0);
+    mock_ps1_close(m);
+    return committed;
+}
+
+/* The kernel needs cycles after the command to program flash, and the budget is small. A data frame
+   and a directory frame need the same budget. */
+static void test_write_sector_needs_a_small_settle_budget(void) {
+    uint8_t term = 0xFFu;
+
+    assert(write_commits_with_budget(DATA_SECTOR, 0u, &term) == 0);
+    printf("  data frame, budget 0: not committed, term 0x%02X\n", (unsigned)term);
+    assert(term == MOCK_PS1_TERM_GOOD);
+
+    assert(write_commits_with_budget(DATA_SECTOR, SETTLE_BUDGET_CYCLES, &term) != 0);
+    printf("  data frame, budget %u: committed, term 0x%02X\n", (unsigned)SETTLE_BUDGET_CYCLES,
+        (unsigned)term);
+
+    assert(write_commits_with_budget(DIRECTORY_SECTOR, 0u, &term) == 0);
+    assert(write_commits_with_budget(DIRECTORY_SECTOR, SETTLE_BUDGET_CYCLES, &term) != 0);
+    printf("  directory frame, budget %u: committed, term 0x%02X\n", (unsigned)SETTLE_BUDGET_CYCLES,
+        (unsigned)term);
+
+    printf("test_write_sector_needs_a_small_settle_budget OK\n");
+}
+
 /* Sends command 0x58 Get Status and gives the FLAG byte. The output register is one byte behind the
    input, thus FLAG is at index 1 of the reply. */
 static uint8_t poll_flag(mock_ps1_t *m) {
@@ -248,6 +302,106 @@ static uint8_t poll_flag(mock_ps1_t *m) {
     mock_ps1_end_command(m);
     return reply[1];
 }
+
+/* FLAG MARKS A NEW CARD. The kernel gives the same lifecycle as a usual memory card:
+
+   - FLAG is 0x08 after the device goes into the connector.
+   - A Write Sector command clears FLAG to 0x00, and it stays 0x00.
+   - A removal and a new insertion set FLAG to 0x08 again. INT_IOP reports each transition, and the
+     IOP handler of the kernel sets FLAG.
+
+   A PS1 game writes a frame to clear the flag, and it then reads FLAG to find a card change. A value
+   of 0x08 after that write tells the game that a different card went in, and the game starts its
+   card check again. Thus no code outside the kernel may set FLAG after a write. Only a removal and a
+   new insertion do that. */
+static void test_flag_marks_a_new_card(void) {
+    mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+    uint8_t data[MOCK_PS1_FRAME_SIZE];
+    uint8_t term = 0xFFu;
+    uint8_t flag;
+
+    assert(m != NULL);
+
+    flag = poll_flag(m);
+    printf("  after insertion      : 0x%02X\n", (unsigned)flag);
+    assert(flag == 0x08u);
+
+    fill_pattern(data, 0x5Au);
+    (void)mock_ps1_write_sector(m, 63u, data, 0, &term, NULL);
+    mock_ps1_end_command(m);
+    mock_ps1_run_frames(m, FLASH_SETTLE_FRAMES);
+    assert(term == MOCK_PS1_TERM_GOOD);
+
+    flag = poll_flag(m);
+    printf("  after a write        : 0x%02X\n", (unsigned)flag);
+    assert(flag == 0x00u);
+    flag = poll_flag(m);
+    assert(flag == 0x00u);
+
+    psemu_com_set_docked(m->ps, 0);
+    mock_ps1_run_frames(m, 32u);
+    psemu_com_set_docked(m->ps, 1);
+    mock_ps1_run_frames(m, 60u);
+
+    flag = poll_flag(m);
+    printf("  after a new insertion: 0x%02X\n", (unsigned)flag);
+    assert(flag == 0x08u);
+
+    mock_ps1_close(m);
+    printf("test_flag_marks_a_new_card OK\n");
+}
+
+
+/* The frames that the BIOS shell needs before it sleeps with no input. A measurement against a real
+   J110 dump gives frame 1983, which is 62 seconds at 32 frames each second. */
+#define UNDOCKED_SLEEP_FRAMES 2400u
+
+/* The window for the docked check. It is more than twice the undocked figure above. */
+#define DOCKED_AWAKE_FRAMES 4200u
+
+/* Runs a new machine with the given docking level, and gives the frame of the first clock stop.
+   Returns UINT_MAX when no stop occurs inside the window. */
+static unsigned frame_of_first_clock_stop(int docked, unsigned window) {
+    mock_ps1_t *m = mock_ps1_open(bios_path(), NULL);
+    unsigned f;
+
+    assert(m != NULL);
+    psemu_com_set_docked(m->ps, docked);
+
+    for (f = 0u; f < window; f++) {
+        mock_ps1_run_frames(m, 1u);
+        if (psemu_clk_stopped(m->ps)) {
+            mock_ps1_close(m);
+            return f;
+        }
+    }
+    mock_ps1_close(m);
+    return UINT_MAX;
+}
+
+/* The BIOS shell sleeps when it gets no input. This is the control for the docked test below: it
+   shows that this suite can observe a clock stop at all. */
+static void test_the_bios_shell_sleeps_when_undocked(void) {
+    unsigned f = frame_of_first_clock_stop(0, UNDOCKED_SLEEP_FRAMES);
+
+    printf("  undocked: first clock stop at frame %u\n", f);
+    assert(f != UINT_MAX);
+    printf("test_the_bios_shell_sleeps_when_undocked OK\n");
+}
+
+/* THE KERNEL DOES NOT SLEEP WHILE IT SENSES THE DOCKED CONDITION. A PS1 gives the supply on the
+   connector, thus a docked device stays awake for the PS1. A clock stop executes nothing and
+   INT_COM is not a wake source, thus that condition would leave a transfer with no answer. */
+static void test_the_kernel_does_not_sleep_while_docked(void) {
+    unsigned f = frame_of_first_clock_stop(1, DOCKED_AWAKE_FRAMES);
+
+    printf("  docked: no clock stop in %u frames (%u s)\n", DOCKED_AWAKE_FRAMES,
+        DOCKED_AWAKE_FRAMES / 32u);
+    assert(f == UINT_MAX);
+    printf("test_the_kernel_does_not_sleep_while_docked OK\n");
+}
+
+
 
 /* psemu_com_transfer_timed gives the reference cycles that each exchange ran. A caller that keeps
    the machine at the time of a host clock needs that number, and a caller that times the
@@ -726,6 +880,8 @@ int main(void) {
     test_read_sector_gives_the_written_data(m);
     test_read_sector_dummy_bytes_are_zero(m);
     test_write_sector_refuses_a_bad_checksum(m);
+    test_write_sector_needs_a_small_settle_budget();
+    test_flag_marks_a_new_card();
     test_a_timed_transfer_reports_the_cost_of_each_answer();
     test_the_time_to_ack_is_the_exact_time_of_the_answer();
     test_split_runs_give_the_same_machine();
@@ -734,6 +890,8 @@ int main(void) {
     test_a_selection_with_no_byte_leaves_the_kernel_ready();
     test_the_frames_that_hold_the_unlock_addresses_take_data();
     test_a_write_to_frame_0_takes_the_data_and_keeps_the_serial();
+    test_the_bios_shell_sleeps_when_undocked();
+    test_the_kernel_does_not_sleep_while_docked();
 
     mock_ps1_close(m);
     printf("bu_test: all tests OK\n");

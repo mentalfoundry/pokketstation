@@ -1021,6 +1021,10 @@ int psemu_cpu_faulted(const psemu_t *ps) {
     return ps->cpu.unimplemented;
 }
 
+int psemu_clk_stopped(const psemu_t *ps) {
+    return clk_stop_requested(&ps->clk);
+}
+
 void psemu_write_crash_report(const psemu_t *ps, FILE *f) {
     const arm7tdmi_t *cpu = &ps->cpu;
     int thumb = (cpu->cpsr & CPSR_T) != 0;

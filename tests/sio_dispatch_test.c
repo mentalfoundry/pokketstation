@@ -5,6 +5,7 @@
 #undef NDEBUG
 
 #include <assert.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1134,6 +1135,63 @@ static void test_com_flag_at_ram_c0(const char *bios) {
     printf("test_com_flag_at_ram_c0 done\n");
 }
 
+/* The frames that an undocked app needs before it sleeps. A measurement against a real J110 dump
+   and the app under test gives frame 1922, which is 60 seconds at 32 frames each second. */
+#define UNDOCKED_APP_SLEEP_FRAMES 2400u
+
+/* The window for the docked check. It is more than twice the undocked figure above. */
+#define DOCKED_APP_AWAKE_FRAMES 4000u
+
+/* Runs a new machine with the app started and the given docking level. Gives the frame of the first
+   clock stop, or UINT_MAX when no stop occurs inside the window. */
+static unsigned app_frame_of_first_clock_stop(const char *bios, const char *app, int docked,
+                                             unsigned window) {
+    mock_ps1_t *m = open_with_app(bios, app);
+    unsigned f;
+
+    assert(m != NULL);
+    psemu_com_set_docked(m->ps, docked);
+    assert(psemu_app_running(m->ps));
+
+    for (f = 0u; f < window; f++) {
+        mock_ps1_run_frames(m, 1u);
+        if (psemu_clk_stopped(m->ps)) {
+            mock_ps1_close(m);
+            return f;
+        }
+    }
+    mock_ps1_close(m);
+    return UINT_MAX;
+}
+
+/* An app that gets no input sleeps. This is the control for the docked test below. */
+static void test_an_undocked_app_sleeps(const char *bios, const char *app) {
+    unsigned f = app_frame_of_first_clock_stop(bios, app, 0, UNDOCKED_APP_SLEEP_FRAMES);
+
+    printf("  undocked app: first clock stop at frame %u\n", f);
+    assert(f != UINT_MAX);
+
+    printf("test_an_undocked_app_sleeps OK\n");
+}
+
+/* A DOCKED APP DOES NOT SLEEP. The kernel stays awake for the PS1 while it senses the docked
+   condition, and a running app does not change that.
+
+   This result completes an answer about the COM block. A clock stop executes nothing, and INT_COM is
+   not a wake source, thus a transfer during a stop gets no answer. Neither the BIOS shell nor a
+   running app enters a stop while docked, thus that condition does not arise. See
+   test_the_kernel_does_not_sleep_while_docked in tests/bu_test.c for the BIOS shell half. */
+static void test_a_docked_app_does_not_sleep(const char *bios, const char *app) {
+    unsigned f = app_frame_of_first_clock_stop(bios, app, 1, DOCKED_APP_AWAKE_FRAMES);
+
+    printf("  docked app: no clock stop in %u frames (%u s)\n", DOCKED_APP_AWAKE_FRAMES,
+        DOCKED_APP_AWAKE_FRAMES / 32u);
+    assert(f == UINT_MAX);
+
+    printf("test_a_docked_app_does_not_sleep OK\n");
+}
+
+
 int main(void) {
     const char *bios = bios_path();
     const char *app  = app_path();
@@ -1180,6 +1238,8 @@ int main(void) {
     test_d0_ce_zero_after_boot(bios, app);
     test_midsession_app_start(bios, app);
     test_com_flag_at_ram_c0(bios);
+    test_an_undocked_app_sleeps(bios, app);
+    test_a_docked_app_does_not_sleep(bios, app);
 
     printf("sio_dispatch_test: all tests OK\n");
     return 0;

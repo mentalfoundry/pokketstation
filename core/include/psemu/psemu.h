@@ -675,6 +675,17 @@ int psemu_com_transfer_and_select_drop(psemu_t *ps, uint8_t data_in, uint8_t *da
    corrupts state and gives no error. */
 int psemu_cpu_faulted(const psemu_t *ps);
 
+/* Returns a nonzero value while software holds the clock stopped. Bit 0 of the second CLK register
+   is the stop, and it is the sleep method of a PocketStation. See "CLK control" in
+   docs/hardware-notes.md.
+
+   A stopped machine executes nothing. It answers no transfer, and it does not enable communication
+   in response to a docking signal. A button or an RTC tick wakes it. A COM interrupt does not.
+
+   This function observes that condition. It changes nothing. A test uses it, and a frontend can use
+   it to show the sleep state of the device. */
+int psemu_clk_stopped(const psemu_t *ps);
+
 /* Writes a human-readable diagnostic report to the open file `f`.
    The report contains:
    - The full register state.
