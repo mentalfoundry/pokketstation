@@ -38,13 +38,10 @@
    arm7tdmi_step records one entry at each step, for all callers.
    psemu_write_crash_report (psemu.c and psemu.h) uses this buffer to
    show the events before a fault. A frontend needs no trace function of
-   its own for this. See docs/hardware-notes.md for the crash
-   investigation that caused this project to add the buffer.
-   The buffer first held 256 entries. A real crash report showed a long
-   straight-line drift through memory that is not code. This drift
-   filled the full 256-entry window and erased the history of the bad
-   jump that caused the drift. This project increased the size to 8192
-   entries (64KB for each instance) to correct that. */
+   its own for this.
+   A fault can come after a long straight-line run through memory that is
+   not code. 8192 entries (64KB for each instance) keep the jump that
+   started such a run. */
 #define PSEMU_TRACE_SIZE 8192
 
 typedef struct {
@@ -63,11 +60,10 @@ typedef struct {
        shared copy, and index 1 is the FIQ copy. Only the set that is not in r[] at this time holds
        live data. See arm_set_mode, which exchanges the two sets at FIQ entry and at FIQ exit.
 
-       This bank is the reason that a real FIQ handler can use r8-r12 as scratch registers without a
-       save. It is also why a "fast interrupt" is fast. This emulator banked only r13 and r14 for a
-       long time. Thus a FIQ handler destroyed r8-r12 of the interrupted code and gave no error. One
-       music app drives its audio from Timer2, which routes to FIQ (INT_FIQ_MASK). That app is the
-       most exposed app that this project can operate. */
+       This bank lets a FIQ handler use r8-r12 as scratch registers without a save. It is also why a
+       "fast interrupt" is fast. Without it, a FIQ handler destroys r8-r12 of the interrupted code and
+       gives no error. A music app that drives its audio from Timer2, which routes to FIQ
+       (INT_FIQ_MASK), depends on the bank. */
     uint32_t r8_12_bank[2][5];
 
     psemu_bus_t *bus;
@@ -105,10 +101,7 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu);
    CLK_MODE and DAC_CTRL logs in memory.c, and tools/inspect.c.
    This data is important because the real BIOS mixes ARM code and Thumb
    code. A static disassembly that does not track the mode cannot follow
-   this mix.
-   This project added the hook for one investigation (see
-   docs/hardware-notes.md). The hook is now permanent, general-purpose
-   diagnostic equipment. */
+   this mix. */
 extern uint32_t psemu_debug_current_pc;
 
 /* Diagnostic hook: this callback occurs one time for each instruction

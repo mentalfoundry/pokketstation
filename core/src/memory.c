@@ -51,10 +51,9 @@ void (*psemu_bus_read_trace_cb)(uint32_t addr, uint8_t value, uint32_t pc) = NUL
    write and gives no error. Those three conditions have very different
    causes, and without this hook they give the same evidence.
 
-   This difference is not theoretical. The IR transmit path had this exact
-   shape: an app wrote IRDA_DATA thousands of times, while a mode-bit test
-   before the write discarded each one. Thus the app looked idle, but it
-   operated correctly (see tx_emit_active in ir.c).
+   One example is a mode-bit test that discards each IRDA_DATA write. The
+   app then writes thousands of times, but it looks idle (see
+   tx_emit_active in ir.c).
    tools/ir_probe.c uses this hook to identify the same three conditions
    for flash writes. That tool examines whether an app writes data to the
    PS1 save on the same memory card.
@@ -106,12 +105,9 @@ static uint32_t psemu_region_data_cycles(uint32_t addr) {
        same elapsed-tick count as an identical loop that read WRAM.
 
        The available table gives only "WRAM (and SOME F_xxx ports)" for
-       the fast rate. It does not name the applicable ports. An earlier
-       assumption used the slow rate, the same as FLASH and BIOS. That
-       assumption came from a disassembly of the source of an independent
-       emulator. Real hardware now replaces that assumption. This agrees
-       with the order of trust of this project: real hardware has more
-       authority than a disassembly of an independent emulator. See the
+       the fast rate. It does not name the applicable ports. A disassembly
+       of an independent emulator gives the slow rate, the same as FLASH
+       and BIOS. Real hardware has more authority than that source. See the
        "Memory access timing" section of docs/hardware-notes.md, and
        docs/app-notes.md, for the full real-hardware result. */
     if (addr >= PSEMU_FLASH_CTRL_BASE && addr < PSEMU_FLASH_CTRL_BASE + FLASH_CTRL_SPAN) {

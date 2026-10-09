@@ -24,10 +24,6 @@ struct intc;
    "0 = Div2, 1 = Div32, 2 = Div512, 3 = Div2 also".
    Bit 2 of control starts the timer.
 
-   History: an earlier version of this file did not model the divisor. It decreased count by the raw
-   cycles, for all divisors. This was a confirmed fault: each timer that used a slower divisor
-   expired much more frequently than a timer on real hardware.
-
    Not modeled: a decrease of the count of a running timer by 1, as a side effect of a software read.
    The available description gives only "current value (decrementing)" reads. It gives no read-side
    side effect.
@@ -45,15 +41,9 @@ struct intc;
    before the loop. This can occur only if the counter wraps and reloads at a 16-bit
    boundary. See docs/hardware-notes.md, "Timers".
 
-   History: this emulator modeled both registers as a full uint32_t. That model broke each
-   app whose timer setup wrote a value of more than 16 bits, and gave no error. The upper
-   bits stayed in the register and made the period very long, in place of a discard.
-   One music app confirms this. Its FIQ-driven audio timer (Timer2) held period 0x03240353
-   under the 32-bit model. That period is approximately 52.6 million ticks, thus the audio
-   interrupt never occurred. The app played in full silence, with its DAC gate open for the
-   full time. A mask to the real 16-bit width gives period 0x0353 (851). This value agrees
-   with the 0x34F (847) that the app programs into Timer1 at the same time, and the music
-   then plays.
+   A write discards the bits above bit 15. A music app depends on this: it writes 0x03240353
+   to the period of its FIQ-driven audio timer (Timer2), which gives period 0x0353 (851). This
+   value agrees with the 0x34F (847) that the app programs into Timer1 at the same time.
    See test_timer_registers_are_16_bit. */
 #define TIMER_REG_MASK 0xFFFFu
 

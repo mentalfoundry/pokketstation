@@ -136,13 +136,6 @@ void rtc_write8(rtc_t *rtc, uint32_t offset, uint8_t value) {
     }
 }
 
-/* An unconditional cascade from seconds, to minutes, to hours, to the day of the week.
-   This is the RTC automatic-advance logic of this emulator. It is not the logic that a write to the
-   control register causes.
-   This function does not cascade into the date at a day rollover.
-   This is a gap from the earlier history of this codebase. No independent source explains it.
-   No independent source gives the real date-rollover mechanism either. Thus this gap comes from
-   earlier work. This project did not create it. */
 static uint32_t bcd_to_bin(uint32_t bcd) {
     return (bcd >> 4) * 10u + (bcd & 0x0Fu);
 }
@@ -170,15 +163,11 @@ static uint32_t rtc_days_in_month(uint32_t month, uint32_t year) {
 
 /* Advances RTC_DATE by one day. The advance cascades into the month and the year.
 
-   CONFIRMED on real hardware: the date does roll over at midnight. This emulator did not do this
-   before. The cascade for each second stopped at the day of the week. Thus an emulated device stayed
-   at the same date permanently, while its day of the week continued to advance.
+   CONFIRMED on real hardware: the date rolls over at midnight.
 
    ALSO CONFIRMED on real hardware: the device applies leap years. This result also gives the month
    lengths. A design that rolls each month at 31 days cannot have a leap year, because the knowledge
-   that February has 28 or 29 days is the same knowledge as the lengths of the other months. This
-   code first used an assumption, because a date of "31 February" is clearly incorrect, and correct
-   lengths are not. The assumption was correct.
+   that February has 28 or 29 days is the same knowledge as the lengths of the other months.
 
    The leap-year rule is still an inference, not a measurement. But it can be only year % 4 (see
    rtc_days_in_month): the hardware has no century, thus it cannot apply the 100-year and 400-year
@@ -204,6 +193,9 @@ static void rtc_advance_date(rtc_t *rtc) {
         | bin_to_bcd(day);
 }
 
+/* An unconditional cascade from seconds, to minutes, to hours, to the day of the week, and at
+   midnight into the date (see rtc_advance_date). This is the automatic advance at each tick. It is
+   not the logic that a write to the control register causes. */
 static void rtc_advance_second(rtc_t *rtc) {
     rtc->time += 0x00000001u;
     if ((rtc->time & 0x0000000Fu) != 0x0000000Au) {

@@ -58,12 +58,8 @@ struct intc;
    week. At midnight it continues into the day, the month, and the year (see rtc_advance_date).
    It uses the same BCD carry arithmetic as the CNTSEL = 0 (seconds) condition.
 
-   History: this cascade stopped at the day of the week before, and never changed RTC_DATE. Thus an
-   emulated device stayed at one date permanently, while its day of the week continued to advance.
-   This file recorded that condition as a gap from earlier work, because no independent source gave
-   the real mechanism. A direct test on a real unit has since confirmed that the date does roll over.
-   Thus the condition was a fault, and not an unknown. The month lengths and the leap-year rule that
-   rtc_advance_date uses are still unconfirmed. See the comment on that function. */
+   A direct test on a real unit confirms that the date rolls over. See rtc_advance_date for the month
+   lengths and the leap-year rule. */
 typedef struct rtc {
     uint32_t mode;
     uint32_t control;
@@ -76,33 +72,23 @@ typedef struct rtc {
 /* The cycle count between interrupt-line TRANSITIONS. Two transitions make one full pulse. While the
    RTC runs, the clock advances one second for each full pulse (see rtc_tick).
 
-   **The 1Hz and 4096Hz figures are waveform rates. They are not transition rates.** This difference
-   is important, because this emulator used the figures incorrectly before: it used them as
-   transition rates. Thus its line operated at one half of the real frequency, in both modes.
+   **The 1Hz and 4096Hz figures are waveform rates. They are not transition rates.** A line that uses
+   them as transition rates operates at one half of the real frequency, in both modes.
 
    MEASURED ON REAL HARDWARE, by screen 14 of pk_timing_bench: while the RTC is paused, the line
    makes 8192 transitions each second. This is 4096 full pulses, which is exactly the expected
    figure. The measurement gave 0.031250s for 256 transitions, to the tick. This result also confirms
-   the frequency of CLK_MODE 7 (3,997,696Hz). Before this measurement, the timing table had that
-   frequency only from documentation.
+   the frequency of CLK_MODE 7 (3,997,696Hz).
 
    ALSO MEASURED, by the same screen: while the RTC runs, the line makes two transitions each second.
    This is a 1Hz waveform, which is again exactly the expected figure. Four transitions gave exactly
-   2.000 seconds. An earlier run of that measurement read 11% fast. That run sampled one pulse
-   immediately after the RTC left program mode, while the divider of the RTC was still
-   resynchronizing. If you discard one pulse first, the error does not occur.
+   2.000 seconds. The first pulse after the RTC leaves program mode can be short, because the divider
+   of the RTC resynchronizes. A measurement must discard that pulse.
 
    Arithmetic also gives the 1Hz running rate, independently of a measurement. `cycles` arrives at
    rtc_tick already converted to real elapsed time, at the fixed PSEMU_ASSUMED_CPU_HZ reference rate
    (see psemu_run). A wall clock must advance one second for each real second, whatever the line
-   does.
-
-   History: this value was 4000000. That value was selected only to be "fast enough that a
-   wait-for-pulse loop completes in a reasonable instruction budget". Nobody compared it against a
-   real reference. That value gives 3.79 reference-seconds for each transition. Thus the clock of the
-   emulated PocketStation operated almost 4 times too slowly: 60 seconds of real time advanced it by
-   15 seconds, a loss of approximately 45 minutes each hour. This value satisfies the wait-for-pulse
-   condition better, because pulses now occur sooner. */
+   does. */
 #define RTC_TICK_CYCLES_RUN (PSEMU_ASSUMED_CPU_HZ / 2u)
 /* This value is rounded, not truncated. The exact value is 128.9. A truncation to 128 makes the
    paused line 0.7% fast against the 8192 transitions each second that the hardware measurement

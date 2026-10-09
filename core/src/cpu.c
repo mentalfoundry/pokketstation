@@ -247,21 +247,12 @@ void (*psemu_exec_trace_cb)(uint32_t pc, uint32_t cpsr) = NULL;
 
 uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     psemu_debug_current_pc = cpu->r[15];
-    /* A confirmed fault, found through a crash report from the desktop
-       app.
-       This test used only `halted` before, and no code sets that flag.
-       Thus, after `unimplemented` became set, a caller that does not test
-       the flag at each step continued to fetch and execute from the
-       address of the CPU. The cycle-budget loop in psemu_run has this
-       gap. The per-instruction loop in tools/inspect.c does not.
-       Thus the CPU executed thousands of instructions after the real
-       fault, before the caller found the condition. The register state
-       and the executed-PC trace below then showed the later addresses,
-       and not the original fault. This gave incorrect data to the
-       diagnostics that psemu_write_crash_report supplies.
-       The correction tests both flags. After either flag is set, no
-       defined operation remains. Thus this function stops all advances
-       from this point, and this includes the trace. */
+    /* After either flag is set, no defined operation remains. Thus this
+       function stops all advances from this point, and this includes the
+       trace. A caller that does not test the flags at each step, such as
+       the cycle-budget loop in psemu_run, then does not execute past the
+       fault. The register state and the trace keep the fault for
+       psemu_write_crash_report. */
     if (cpu->halted || cpu->unimplemented) {
         return 1;
     }
@@ -275,13 +266,8 @@ uint32_t arm7tdmi_step(arm7tdmi_t *cpu) {
     cpu->trace_pos++;
     cpu->total_steps++;
     cpu->bus->pending_cycles = 0;
-    /* A confirmed fault, now corrected. See docs/hardware-notes.md,
-       "Interrupt controller".
-       This emulator never delivered a FIQ, for any app.
-       intc_fiq_asserted (intc.c) already existed, and a comparison
-       against the bit mapping of real hardware confirmed it
-       (INT_FIQ_MASK, Timer2, and COM). No code here called that
-       function.
+    /* See docs/hardware-notes.md, "Interrupt controller", for the FIQ bit
+       mapping (INT_FIQ_MASK, Timer2, and COM).
        A real ARM7TDMI tests FIQ before IRQ: FIQ has a higher priority in
        the exception scheme. FIQ is also level-triggered, the same as
        IRQ. It is hold & enable & INT_FIQ_MASK from the interrupt

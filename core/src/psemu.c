@@ -51,10 +51,10 @@ void psemu_reset(psemu_t *ps) {
        f_cal (the hardware ID and the LCD calibration), or ps->has_bios.
 
        Without this function, a mid-session load of a different BIOS,
-       app, or card left the peripheral register state of the earlier
-       session below the new content. That state includes the FLASH1
-       bank mapping, the INTC enable and mask registers, CLK_MODE, the
-       DAC buffer state, and old RAM. This is what caused visible
+       app, or card leaves the peripheral register state of the
+       previous session below the new content. That state includes the
+       FLASH1 bank mapping, the INTC enable and mask registers,
+       CLK_MODE, the DAC buffer state, and old RAM, and it gives visible
        errors on the screen after a load. */
     memset(ps->bus.ram, 0, sizeof(ps->bus.ram));
     /* A setting that a frontend holds is not part of the power-on state
@@ -166,9 +166,8 @@ static int mcs_payload_size(const uint8_t *data, size_t size, size_t *out_payloa
 psemu_status psemu_load_mcs(psemu_t *ps, const uint8_t *data, size_t size) {
     size_t payload_size;
     if (!mcs_payload_size(data, size, &payload_size)) {
-        /* This division of the error codes comes from the earlier inline version: a file that is too
-           short or has incorrect alignment is a size fault. A frame that does not agree with the
-           bytes after it is a format fault. */
+        /* A file that is too short or has incorrect alignment is a size fault. A frame that does not
+           agree with the bytes after it is a format fault. */
         if (!data || size <= MCS_HEADER_SIZE || (size - MCS_HEADER_SIZE) % FLASH_BLOCK_SIZE != 0) {
             return PSEMU_ERR_BAD_SIZE;
         }
@@ -341,9 +340,8 @@ psemu_status psemu_load_content(psemu_t *ps, const uint8_t *data, size_t size) {
     case PSEMU_CONTENT_APP:
         return psemu_load_app(ps, data, size);
     default:
-        /* This behavior is the same as the behavior of the earlier fallback chain. No loader
-           accepted the data, thus this code reports the status of the last loader that it tried. It
-           does not make a new status. */
+        /* No loader accepts the data, thus this code reports the status of the last loader that it
+           tries. It does not make a new status. */
         return psemu_load_app(ps, data, size);
     }
 }
@@ -696,12 +694,12 @@ static void idle_loop_branch(psemu_t *ps, idle_probe_t *p, uint32_t branch_pc, u
    Timer uses the raw step_cycles value, which CLK_MODE scales.
    The System Clock clocks the real timers. Thus they connect directly to the
    variable clock of the CPU. They do not use an independent oscillator.
-   A direct measurement confirms this. A Timer at a fixed reference rate made two
+   A direct measurement confirms this. A Timer at a fixed reference rate gives two
    errors:
-   - The HELLO animation was approximately 4 times too slow during CLK_MODE 7. The
+   - The HELLO animation is approximately 4 times too slow during CLK_MODE 7. The
      same Timer1 heartbeat drives the HELLO animation and the audio. Both are
      confirmed uses of the same IRQ by GUI code.
-   - The blink on the date-setting screen was approximately 2 times too fast during
+   - The blink on the date-setting screen is approximately 2 times too fast during
      CLK_MODE 4.
    Both errors agree almost exactly with the ratio between the real Hz value of
    CLK_MODE 7 or 4 and the fixed reference rate: 3.97 times and 2.01 times.
@@ -1060,8 +1058,7 @@ void psemu_write_crash_report(const psemu_t *ps, FILE *f) {
            advances it before dispatch. This code reverses that advance, to find the
            true fetch address of the instruction. This code then masks the result to the
            natural alignment for this mode. This operation agrees with the crash reporter
-           in tools/inspect.c. That reporter did this operation incorrectly at first (see
-           docs/hardware-notes.md). */
+           in tools/inspect.c. */
         uint32_t fault_pc = thumb ? cpu->r[15] - 2u : cpu->r[15] - 4u;
         uint32_t fetch_pc = thumb ? (fault_pc & ~1u) : (fault_pc & ~3u);
         uint32_t raw = thumb ? psemu_bus_read16((psemu_bus_t *)&ps->bus, fetch_pc)

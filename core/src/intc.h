@@ -9,7 +9,7 @@
 #define INTC_REG_SPAN 0x14u
 
 /* The real PocketStation interrupt controller and its sources.
-   A disassembly of a real BIOS corrected this data independently. See docs/hardware-notes.md.
+   A disassembly of a real BIOS confirms this data. See docs/hardware-notes.md.
 
    Registers at 0x0A000000:
    - hold (+0x0): read-only to software. Real hardware treats a write here as invalid.
@@ -24,13 +24,9 @@
    STATUS lets code read a source directly, with no effect on the interrupt-delivery state. The RTC
    wait-for-pulse loop is one example.
 
-   History: the interrupt-routing logic of this codebase first put STATUS_MASK bits only into
-   `status`, and never into `hold`. A disassembly of a real BIOS showed that this was incorrect.
-   The top-level IRQ handler of the BIOS tests `hold & enable & 0x200` (RTC).
-   The periodic callback that the BIOS installs tests `hold & 1` (the Action button).
-   Both tests reach real handlers, and a trace confirms this. Those handlers could never execute with
-   the earlier status-only routing.
-   Real hardware asserts these sources into both registers. This emulator now does the same. */
+   Real hardware asserts these sources into both registers. The top-level IRQ handler of the BIOS
+   tests `hold & enable & 0x200` (RTC), and the periodic callback that the BIOS installs tests
+   `hold & 1` (the Action button). Both tests reach real handlers, and a trace confirms this. */
 #define INT_BTN_ACTION 0x00000001u
 #define INT_BTN_RIGHT 0x00000002u
 #define INT_BTN_LEFT 0x00000004u
@@ -50,8 +46,7 @@
 /* The sources whose live signal level STATUS shows.
    The name of that register is INT_INPUT, "Raw Interrupt Signal Levels", at 0x0A000004.
    See docs/hardware-notes.md, "Buttons".
-   The buttons (bits 0-4) and the RTC (bit 9) were confirmed first.
-   INT_IRDA (bit 12) came later, from a disassembly of the IR receive handler of a real app.
+   A disassembly of the IR receive handler of a real app confirms INT_IRDA (bit 12).
    That handler acknowledges the interrupt. It then reads STATUS, isolates bit 12, and compares that
    live level against the level that it expects. It stops immediately if the two levels differ.
    While bit 12 was absent from this mask, STATUS bit 12 always read back as 0.
@@ -72,11 +67,11 @@
    That handler acknowledges INT_IRDA. Only then does it read STATUS to sample the live line level.
    That order is correct only if an acknowledge does not change the level. If an acknowledge changes
    the level, the handler always reads the result of its own acknowledge, which is 0, in place of the
-   real signal. This is what occurred before this mask was added.
+   real signal.
    The buttons are in this mask for the same reason. docs/hardware-notes.md, "Buttons", gives that
-   `status` follows the live button level for code that reads the register directly. An acknowledge
-   cleared that level before. Thus a button that the user still held read back as released, until
-   something pressed the button again.
+   `status` follows the live button level for code that reads the register directly. If an
+   acknowledge clears that level, a button that the user still holds reads back as released, until
+   the next press.
    The confirmed real-hardware finding about buttons applies to HOLD, not to STATUS. HOLD is a
    momentary edge pulse for each press. intc_clear_hold_only and psemu_set_buttons do this, and
    test_button_hold_pulses_not_sustained tests it. That finding gives no data about STATUS, and this

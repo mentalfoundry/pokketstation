@@ -24,17 +24,16 @@ struct intc;
    the function of MODE bits 1 to 3. Thus this project does not use those maps as evidence. The
    behavior of the real app is the confirmation.
 
-   The receive function of IRDA_DATA bit 0 has no documentation. It is an inference of this project,
-   and the first inference (1 = carrier present) was incorrect. A disassembly of the receive handler
+   The receive function of IRDA_DATA bit 0 has no documentation. A disassembly of the receive handler
    of a real IR app gives the polarity. The handler reads the live line from INTC STATUS bit 12. It
    compares the line against an expected level that it holds in its own state. It arms itself for
    level 0 before a carrier arrives. It then measures the sync burst as the interval that ends when
    the line returns to 1. Thus a carrier burst reads 0, and an idle line reads 1. Real IR
-   demodulator receivers also operate this way: their output is active low. With the first polarity,
-   the handler rejected the edge that starts a sync burst. It then locked onto the short gap between
-   pulses, and never went past sync detection. With this polarity, the handler continues to bit
-   accumulation and assembles a full message. Real hardware does not confirm this polarity directly,
-   but the polarity is no longer only an assumption. rx_level stays in physical terms (1 = carrier
+   demodulator receivers also operate this way: their output is active low. With the opposite
+   polarity, the handler rejects the edge that starts a sync burst, locks onto the short gap between
+   pulses, and never goes past sync detection. With this polarity, the handler continues to bit
+   accumulation and assembles a full message. Real hardware does not confirm this polarity directly.
+   rx_level stays in physical terms (1 = carrier
    present). The inversion occurs where software reads the value: in ir_read, and in the INT_IRDA
    level of apply_rx_level.
 
@@ -55,8 +54,7 @@ struct intc;
 
    The real BIOS has no IR functions, except basic initialization and power-down. The disassembly of
    this project confirms this. A real app writes to IRDA_MODE and IRDA_DATA directly from its own
-   code, with its own interrupt handler. It does not use a BIOS SWI. Thus this project does not have
-   to look for a BIOS-level IR interface.
+   code, with its own interrupt handler. It does not use a BIOS SWI.
 
    This file models IR as an asynchronous edge relay between two instances that have independent
    clocks. Real IR hardware operates the same way: two separate devices, two separate oscillators,
@@ -78,7 +76,7 @@ struct intc;
    BGEN does not gate an edge. That bit selects whether the hardware divides the on envelope into a
    40kHz burst. It does not control whether the LED comes on. This file relays only the envelope, thus
    BGEN has nothing to gate. Two real apps that both operate on real hardware use opposite values of
-   BGEN. See tx_emit_active in ir.c for those two apps, and for the fault that an earlier gate caused.
+   BGEN. See tx_emit_active in ir.c for those two apps.
 
    The BFLT debounce window is approximately 2 carrier periods. This is an inferred constant, not a
    confirmed hardware measurement. This project marks all other unconfirmed assumptions the same
@@ -92,11 +90,10 @@ struct intc;
 #define IR_CARRIER_HZ 40000u
 
 /* A real transmit burst from one IR app (41 bytes) makes 658 edges (see the transmit-side analysis
-   in tools/ir_probe.c). A capacity of 64 discarded 594 of those 658 edges when the CPU clock speeds
-   of the two instances became different during setup. Each app controls its own clock speed
-   (CLK_MODE). The receive queue then filled faster than the frontend drained it. A counter on the
-   discard path confirms this directly. It is not an inference. This larger capacity holds more than
-   four such messages before it discards an edge. */
+   in tools/ir_probe.c). Each app controls its own clock speed (CLK_MODE). When the clock speeds of
+   the two instances differ during setup, the receive queue fills faster than the frontend drains it.
+   A counter on the discard path confirms this. This capacity holds more than four such messages
+   before it discards an edge. */
 #define IR_EDGE_QUEUE_CAPACITY 4096u
 
 /* An edge is a transition of the demodulated IR signal.
@@ -146,8 +143,7 @@ typedef struct ir {
    It records each real IR register access with its real PC.
    Those PCs identify the IR routines in the app that are useful to disassemble.
    A static disassembly alone cannot tell ARM code from Thumb code, because it does not track the
-   mode during execution.
-   This is permanent diagnostic equipment. It is not part of one investigation. */
+   mode during execution. */
 extern int psemu_ir_trace_enabled;
 
 void ir_init(ir_t *ir);

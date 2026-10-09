@@ -10,10 +10,7 @@
 /* LCD_MODE (+0x0, read and write) and LCD_CAL (+0x4).
    Bit 6 of LCD_MODE is DISON, which sets the display on or off.
    Bit 7 of LCD_MODE is ROT, which rotates the display 180 degrees. Real hardware sets ROT for docked
-   mode, to agree with the docking flag in INT_INPUT bit 11. Both bits are real hardware bits.
-
-   History: this address range had no bus handler before. Writes to the range were discarded and gave
-   no error, and psemu_get_framebuffer always returned the raw VRAM. */
+   mode, to agree with the docking flag in INT_INPUT bit 11. Both bits are real hardware bits. */
 #define LCD_MODE_REG_SPAN 0x8u
 
 #define LCD_MODE_DISON 0x40u

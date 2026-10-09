@@ -15,18 +15,13 @@
    several indices.
    Indices 9-15 use the rate of index 8. The recorded table also gives this.
 
-   Index 0 keeps its earlier value, 32768. A test by ear against real hardware confirms this value.
+   Index 0 is 32768. A test by ear against real hardware confirms this value.
    This emulator uses index 0 as the idle default.
    This value does not come from the available documentation. That documentation gives index 0 as
    "hangs hardware", which is an invalid or reserved PLL setting, and it gives no frequency. The
    documentation has no other numeric value for this index.
    In practice this selection has no bad effect: a real-BIOS trace of 20 million instructions never
-   writes CLK_MODE = 0. It writes only 7, 4, or 3 (see docs/hardware-notes.md, "CLK_MODE").
-
-   History: a still earlier version of this table used values that were approximately 2 times too
-   high at each index. For example, "mode 7" gave approximately 7.995MHz.
-   A comparison test on real hardware showed independently that those values were incorrect. That
-   test has no relation to the documentation comparison above. */
+   writes CLK_MODE = 0. It writes only 7, 4, or 3 (see docs/hardware-notes.md, "CLK_MODE"). */
 static const uint32_t CPU_FREQ[16] = {
     32768u,   63488u,   126976u,  253952u,  507904u,  1015808u, 1998848u, 3997696u,
     7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u, 7995392u,

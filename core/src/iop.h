@@ -21,15 +21,9 @@
 
    Each byte writes directly into `data` at its own bit position: an OR for STOP, and an AND-NOT for
    START. This emulator does not collect writes in a scratch register and apply them only after a
-   full 32-bit store.
-
-   History: an earlier version of this file did use that collect-and-apply method. This was a
-   confirmed fault. A direct trace of the BIOS and the apps (see docs/hardware-notes.md) showed that
-   real code writes these registers with single-byte stores. Single-byte stores never got to the
-   word-complete gate, thus this emulator discarded them and gave no error.
-   To apply each byte immediately gives the same result as collect-and-apply for a full 32-bit store.
-   OR and AND-NOT are per-bit operations, thus the order of the bytes has no effect. The
-   delayed-apply step was not necessary. */
+   full 32-bit store. Real code writes these registers with single-byte stores (see
+   docs/hardware-notes.md). OR and AND-NOT are per-bit operations, thus the order of the bytes has no
+   effect, and a full 32-bit store gives the same result. */
 typedef struct iop {
     uint32_t data;
 } iop_t;

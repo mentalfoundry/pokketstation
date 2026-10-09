@@ -17,59 +17,40 @@ int psemu_ir_trace_enabled = 0;
    of ir.h. */
 #define IR_BFLT_DEBOUNCE_CYCLES ((2ull * PSEMU_ASSUMED_CPU_HZ) / IR_CARRIER_HZ)
 
-/* This constant is a deliberate concession. It is not a model of a physical effect. This comment records
-   it and does not conceal it.
+/* This constant is a deliberate concession. It is not a model of a physical effect.
    The receive-side sync-pulse acceptance window of a real IR app rejects the transmitted sync pulse of
-   this emulator by a small margin. The measurement gives 26 to 38 Timer2 ticks less than the floor of
-   the window. See "The transmitted falling edge is stretched" in docs/hardware-notes.md.
-   Measurements on real hardware, at three separate times, removed each CPU explanation and each
-   interrupt-dispatch explanation for a shortfall of this shape. Those measurements covered the timer
-   reload behavior, the interrupt entry cost, and the re-arm latency, on both IRQ and FIQ. They included
-   a full realistic dispatch chain with the same shape as the real transmit handler. All three agreed
-   with real hardware exactly. Thus the digital timing of this emulator is not the cause of the gap.
-   The best remaining explanation is the physics of a real transceiver, outside the CPU: an LED does not
-   switch off immediately, and the response of a receiving photodiode and its AGC settling add real time
-   before a pulse reads as complete. This emulator does not model IR as an analog signal, and this
-   constant does not try to model it. The constant only delays the apparent end of a transmitted pulse,
-   by a fixed quantity. Thus this fully digital link can satisfy the receive-side timing that a real app
-   expects. That app was tuned against real analog hardware, which this project cannot reproduce.
+   this emulator by a small margin: 26 to 38 Timer2 ticks less than the floor of the window. See "The
+   transmitted falling edge is stretched" in docs/hardware-notes.md.
+   Measurements on real hardware remove each CPU explanation and each interrupt-dispatch explanation for
+   a shortfall of this shape. The timer reload behavior, the interrupt entry cost, and the re-arm latency,
+   on both IRQ and FIQ, agree with real hardware exactly. Thus the digital timing of this emulator is not
+   the cause of the gap. The best remaining explanation is the physics of a real transceiver, outside the
+   CPU: an LED does not switch off immediately, and the response of a receiving photodiode and its AGC
+   settling add real time before a pulse reads as complete. This emulator does not model IR as an analog
+   signal. The constant only delays the apparent end of a transmitted pulse, by a fixed quantity. Thus this
+   digital link satisfies the receive-side timing that the app expects.
    Only the falling edge is delayed: the point where software commands the LED off. The rising edge, where
-   the LED comes on, stays at its true digital time. The OFF gap between pulses is not stretched. There
-   is no real-hardware evidence for the receiver requirements in that gap. There is evidence only for the
-   ON-pulse acceptance window.
-   The tuning of this constant uses the measured shortfall of this emulator: 38 Timer2 ticks, at the
-   IR-screen clock rate of a real app and the /2 divisor of Timer2. This code converts that value to the
-   fixed PSEMU_ASSUMED_CPU_HZ reference rate. The tuning does not use the unrelated "184" constant of the
-   real app. An earlier attempt used 184 directly and changed the order of the edges: it delayed a falling
-   edge past the rising edge of the next pulse. The real gap between transmitted pulses is much less than
-   184 Timer2 ticks. See tools/ir_probe.c for the two-instance test that calibrated this constant, and for
-   the trace that found that incorrect order before release.
-   A second, related failure has the same cause, at a smaller scale. A stretch of the falling edge must
-   compress the OFF gap after it. There is no method to make an ON pulse longer without a reduction of an
-   adjacent interval. At a value of 316, that compression left a margin of only approximately 1.2 to 1.6
-   times IR_BFLT_DEBOUNCE_CYCLES on the shortest real gaps. That margin is too small: the glitch filter of
-   this emulator sometimes rejected a real gap as noise. It then combined two pulses, and the bits that
-   they encoded, into one pulse. The byte-for-byte buffer comparison in tools/ir_probe.c found this
-   directly: specific bytes decoded incorrectly, and the raw Timer2-tick differences at those positions
-   did not agree with any single-pulse duration. They agreed only with sums of two or three sequential
-   pulses. A value of 200 keeps the sync pulse in its acceptance window with a good margin (4268 against a
-   window of 4200 to 5400). It also keeps more than 3 times the debounce margin on the shortest gap.
+   the LED comes on, stays at its true digital time. The OFF gap between pulses is not stretched, because
+   there is evidence only for the ON-pulse acceptance window.
+   The value comes from the measured shortfall, 38 Timer2 ticks at the IR-screen clock rate of the app and
+   the /2 divisor of Timer2, converted to the fixed PSEMU_ASSUMED_CPU_HZ reference rate. It is not the
+   unrelated "184" constant of the app. The real gap between transmitted pulses is much less than 184
+   Timer2 ticks, thus a delay of that size moves a falling edge past the rising edge of the next pulse.
+   A stretch of the falling edge compresses the OFF gap after it. A margin of 1.2 to 1.6 times
+   IR_BFLT_DEBOUNCE_CYCLES on the shortest real gaps is too small: the glitch filter then rejects a real
+   gap as noise, and combines two pulses, and the bits that they encode, into one pulse. A value of 200
+   keeps the sync pulse in its acceptance window with a good margin (4268 against a window of 4200 to
+   5400). It also keeps more than 3 times the debounce margin on the shortest gap. See tools/ir_probe.c
+   for the two-instance test that calibrates this constant.
 
-   This code also limits the stretch to the ON duration of the pulse (see enqueue_tx_edge). The text above
-   describes the tuning against one app whose pulses are wide envelopes. For that app, 200 cycles is a
-   small correction. It is not a small correction for each app. One trading-card app transmits pulses of
-   approximately 7 cycles (6.6us), with a space of 205 or 406 cycles between them. It encodes each bit in
-   the length of the gap, and not in the pulse. A flat value of 200 inverted the waveform for that app. A
-   measurement over a real transfer showed that a 7-cycle ON and 205-cycle OFF pattern arrived as a
-   207-cycle ON and 5-cycle OFF pattern. Also, 272 gaps became exactly 0 cycles: the falling edge arrived
-   at the next rising edge, and combined two pulses into one continuous ON period. Only the order guard
-   below prevented a reversal of the edges, and a gap of zero length is already unrecoverable.
-   The limit at the ON duration keeps this correction a turn-off tail, and not fabricated signal. A tail
-   that is longer than its pulse is not a tail. The AGC of a receiver also settles faster after less
-   delivered energy, thus a short pulse gets a proportionally short stretch. The limit has no effect for
-   the app that supplied the tuning. The sync pulse of that app is approximately 4068 cycles wide, thus
-   min(200, 4068) is still 200. Its measured sync figure of 4268 against the 4200 to 5400 window does not
-   change. */
+   This code also limits the stretch to the ON duration of the pulse (see enqueue_tx_edge). A
+   trading-card app transmits pulses of approximately 7 cycles (6.6us), with a space of 205 or 406 cycles
+   between them. It encodes each bit in the length of the gap, and not in the pulse. A flat stretch of 200
+   cycles inverts the waveform for that app, and closes some gaps to zero length, which is unrecoverable.
+   The limit at the ON duration keeps this correction a turn-off tail, and not fabricated signal. The AGC
+   of a receiver also settles faster after less delivered energy, thus a short pulse gets a proportionally
+   short stretch. The limit has no effect for the app that gives the tuning: its sync pulse is
+   approximately 4068 cycles wide, thus min(200, 4068) is still 200. */
 #define IR_TX_FALL_STRETCH_CYCLES 200ull
 
 void ir_init(ir_t *ir) {
@@ -166,7 +147,7 @@ static const ir_edge_t *queue_peek(const ir_edge_queue_t *q) {
    A write to IRDA_DATA outside those conditions still changes the register value, the same as on real
    hardware. It makes no edge, because the transmitter does not drive the LED.
 
-   BGEN is not part of this test. This is a correction of an earlier model. BGEN selects whether the
+   BGEN is not part of this test. BGEN selects whether the
    hardware divides the ON envelope of the LED into a 40kHz burst. It does not control whether the LED
    comes on. This emulator relays only that ON/OFF envelope, and it does not model the sub-carrier in the
    envelope (see the top comment of ir.h). Thus BGEN has nothing to gate here.
@@ -180,9 +161,7 @@ static const ir_edge_t *queue_peek(const ir_edge_queue_t *q) {
        (6.6us), and a space of 205 or 406 cycles between them. This is pulse-distance modulation, where
        the gap holds the bit. Those pulses are much shorter than IR_BFLT_DEBOUNCE_CYCLES. This is why the
        app turns the glitch filter off in the same write.
-   Both apps transfer data on real hardware. A gate on BGEN made the second app send nothing at all: this
-   emulator discarded each IRDA_DATA write, and tools/ir_probe.c reported "edges relayed: A->B 0" against a
-   save state on the transfer screen of that app. */
+   Both apps transfer data on real hardware. A gate on BGEN makes the second app send nothing at all. */
 static int tx_emit_active(const ir_t *ir) {
     return (ir->mode & IR_MODE_IFMODE) != 0u && (ir->mode & IR_MODE_STDBY) == 0u;
 }
@@ -204,9 +183,7 @@ static void enqueue_tx_edge(ir_t *ir, int level) {
     }
     /* This test prevents a stretched falling edge from arriving after the pulse that follows it. With the
        tuned constant above, a real gap of this length must not occur. But if such a gap occurs, this test
-       gives a compressed edge in place of a queue in the wrong order, which would give no error. This
-       test found that exact condition one time during the tuning of the constant: an earlier, larger
-       value delayed a falling edge past the next rising edge. */
+       gives a compressed edge in place of a queue in the wrong order, which would give no error. */
     if (timestamp < ir->tx_last_edge_cycles) {
         timestamp = ir->tx_last_edge_cycles;
     }

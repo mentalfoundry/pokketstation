@@ -134,8 +134,6 @@ uint8_t *psemu_ram_data(psemu_t *ps);
 /* Finds the content type of `data` from its size and its content. This function does not
    use a file extension. It then loads `data` with the applicable loader.
    All frontends must call this function. A frontend must not repeat this dispatch logic.
-   The frontends contained two copies of this logic before, and the two copies became
-   different.
 
    Dispatch rules:
    - If `data` is exactly PSEMU_FLASH_SIZE bytes, this function treats it as a full
@@ -175,8 +173,8 @@ psemu_content_kind psemu_identify_content(const uint8_t *data, size_t size);
    It does not identify the data that the content holds at this time. A hash of the full
    file cannot give this identity, because an app save changes the full file.
 
-   This difference became important when a frontend got the ability to write content to
-   disk. A save state contains its own copy of flash. Thus, if you load a save state onto
+   This difference is important for a frontend that writes content to disk. A save state
+   contains its own copy of flash. Thus, if you load a save state onto
    the wrong card, it replaces that full card, and all subsequent app writes go into the
    wrong file. The guard must continue to operate after an app saves. If it does not, it
    obstructs the user frequently, and a user then removes it. The guard is then absent for
@@ -692,8 +690,6 @@ int psemu_clk_stopped(const psemu_t *ps);
    - The fault opcode and its true fetch address, if psemu_cpu_faulted() returns a nonzero
      value.
    - The most recent PCs. See PSEMU_TRACE_SIZE in cpu.h.
-   An earlier crash investigation had to add tracing by hand to find this same data. See
-   docs/hardware-notes.md.
 
    A frontend must call this function when a condition looks incorrect. Do not call it
    only for a confirmed CPU fault. A hotkey that the user presses to write a report is

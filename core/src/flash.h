@@ -17,13 +17,9 @@
  * +0xC  F_WAIT1 (waitstates).
  * +0x10 F_WAIT2 (waitstates, and flash-write control and status).
  *
- * A corrected fault: a real BIOS flash-write routine reads +0x10 and
- * waits for bit 2 to read back as set. This emulator did not model that
- * register before the correction; the span stopped at +0xC. An unmapped
- * read returned 0, thus the poll loop continued for an unlimited time.
- * This was the second of two busy-wait faults that stopped each real app
- * launch. The first fault was in the +0 command readback of
- * flash_ctrl_read8. See the comment on that function.
+ * A real BIOS flash-write routine reads +0x10 and waits for bit 2 to
+ * read back as set. See also the +0 command readback of
+ * flash_ctrl_read8.
  * This emulator does not model real flash write timing, thus writes
  * complete immediately. Because of this, +0x10 always reads back as
  * "not busy".
@@ -32,8 +28,7 @@
  * +0x13C, 16 words). F_BANK_FLG shows which physical 8KB blocks are
  * enabled. F_BANK_VAL maps each physical block to a virtual bank slot
  * (0-15): table[physical] = virtual. This is the opposite direction from
- * a usual page table. An earlier version of this file used a linear
- * offset in place of the table. That assumption was incorrect. The range
+ * a usual page table. The range
  * between +0x14 and +0xFF is unmapped. Reads in this range give the
  * last_command mirror default.
  */
@@ -168,8 +163,8 @@ void flash_write8(flash_t *flash, uint32_t addr, uint8_t value);
 uint8_t flash1_read8(flash_t *flash, uint32_t addr);
 void flash1_write8(flash_t *flash, uint32_t addr, uint8_t value);
 
-/* FLASH_CTRL: the bank-select registers. This project found them by
-   reverse engineering of a real BIOS.
+/* FLASH_CTRL: the bank-select registers. A disassembly of a real BIOS
+   gives them.
    +8 (F_BANK_FLG) is a bitmask of the physical blocks of the app. +0 is
    an activate trigger. +0x100 and above (F_BANK_VAL) gives a virtual
    slot to each physical block. */

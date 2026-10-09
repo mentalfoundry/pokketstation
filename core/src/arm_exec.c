@@ -297,14 +297,11 @@ static void exec_msr(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc) {
            error. This is true for each control bit that the instruction
            selects.
            This is fixed CPU behavior. It is not specific to the
-           PocketStation. This emulator did not apply the rule before the
-           correction.
-           A real homebrew app (pk_timing_bench) depended on this behavior
-           without intent. It wrote CPSR_I and CPSR_F from User mode, and
-           expected no effect on real hardware (see start.s: "kept anyway
-           since it's harmless"). Before the correction, this emulator
-           applied the write. Thus it masked the interrupts globally for
-           the full runtime of the app. Real hardware never does this. */
+           PocketStation.
+           A real homebrew app (pk_timing_bench) writes CPSR_I and CPSR_F
+           from User mode, and expects no effect (see start.s: "kept anyway
+           since it's harmless"). If the write applies, the interrupts stay
+           masked for the full runtime of the app. */
         byte_mask &= 0xFF000000u;
     }
 
@@ -403,14 +400,10 @@ static void exec_halfword_transfer(arm7tdmi_t *cpu, uint32_t instr, uint32_t pc)
                not round down to the halfword below. Real silicon rotates
                the loaded halfword right by 8 bits. Thus it exchanges the
                two bytes before the value gets to the register.
-               This emulator read the aligned halfword with no rotation
-               before. For a caller that removes the high byte, that
-               result looks the same as the correct rotated odd-address
-               read. The font-glyph routine of a real PocketStation
-               homebrew app uses this exact pattern: an LDRH with a
-               post-increment of 1, masked to the low byte, to read a
-               byte-packed table one byte at a time. Thus every second
-               byte was incorrect. */
+               The font-glyph routine of a real PocketStation homebrew app
+               depends on this: an LDRH with a post-increment of 1, masked
+               to the low byte, reads a byte-packed table one byte at a
+               time. Without the rotation, every second byte is incorrect. */
             uint16_t h = psemu_bus_read16(cpu->bus, address & ~1u);
             if (address & 1u) {
                 h = (uint16_t)((h >> 8) | (h << 8));

@@ -120,10 +120,7 @@ void timer_tick(psemu_timer_t *timer, struct intc *intc, uint32_t cycles) {
         /* The count of the timer decreases one time for each `divisor` raw cycles.
            Bits 0-1 of control select /2, /32, or /512.
            This agrees with the timer-start behavior of real hardware and with the recorded divider
-           table.
-           History: an earlier version of this function decreased count by the raw cycles directly,
-           and did not use the divisor. Thus each timer with a slower divisor expired much more
-           frequently than a timer on real hardware. */
+           table. */
         divisor = timer_divisor(t->control);
         t->cycle_accumulator += cycles;
         ticks = t->cycle_accumulator / divisor;
@@ -140,8 +137,7 @@ void timer_tick(psemu_timer_t *timer, struct intc *intc, uint32_t cycles) {
            The extra time is the same absolute value at both periods. This removes a rate error and a
            divisor error as causes, and gives a fixed error of one tick for each period.
 
-           This code used exactly `count` ticks for each reload before. Thus each timer expired one
-           tick early. */
+           A reload after exactly `count` ticks expires one tick early. */
         while (ticks > 0) {
             if (ticks > t->count) {
                 ticks -= t->count + 1u;

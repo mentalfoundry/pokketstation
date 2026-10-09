@@ -11,8 +11,7 @@
    This flag is off by default, thus it has no cost in normal use.
    The `intctrace` flag in tools/inspect.c sets it, to record each real INTC access with its real PC.
    A static disassembly cannot tell ARM code from Thumb code, because it does not track the mode during
-   execution.
-   This flag is permanent diagnostic equipment. It is not part of one investigation. */
+   execution. */
 int psemu_intc_trace_enabled = 0;
 
 static const char *offset_name(uint32_t word_index) {
@@ -123,30 +122,16 @@ static void intc_set_line_body(intc_t *intc, uint32_t line, int state) {
            The STATUS_MASK bits (the buttons and the RTC) also latch into `status`, for a direct
            read.
 
-           History: this code first put the STATUS_MASK bits only into `status`, and never into
-           `hold`. A disassembly of the real BIOS confirmed that this was incorrect.
-           The top-level IRQ handler of the BIOS tests `hold & enable & 0x200` (RTC).
-           The periodic callback that the BIOS installs tests `hold & 1` (the Action button).
-           Both tests reach real handlers: the RTC acknowledge, and the day-rollover data (see
-           docs/hardware-notes.md). Those handlers never executed with the earlier status-only
-           routing.
-           With that routing, the buttons and the RTC could never deliver an interrupt. Code could
-           see them only through a direct read of `status`. */
+           The BIOS needs the latch into `hold`. Its top-level IRQ handler tests
+           `hold & enable & 0x200` (RTC), and its periodic callback tests `hold & 1` (the Action
+           button). Both tests reach real handlers: the RTC acknowledge, and the day-rollover data
+           (see docs/hardware-notes.md). */
         intc->hold |= line;
         intc->status |= line & INT_STATUS_MASK;
     } else {
-        /* History: an earlier version made only STATUS follow the de-assertion here.
-           The reasoning was that INT_INPUT ("Raw Interrupt Signal Levels") is different from
-           INT_LATCH ("Interrupt Request Flags"), and that the real RTC handler acknowledges its own
-           bit.
-
-           A trace of real hardware showed that this reasoning was incorrect. The real button-action
-           callback, at 0x04003784, never acknowledges bit 0. A permanent latch of `hold` after a
-           button release caused the CPU to enter the IRQ handler again at almost each instruction
-           after one press. One test measured 559034 re-entries in 20 million instructions. A real
-           device that a person can use does not operate this way.
-
-           The buttons clear `hold` at release, the same as `status`.
+        /* The buttons clear `hold` at release, the same as `status`. The real button-action
+           callback, at 0x04003784, never acknowledges bit 0. Thus a `hold` that stays set after a
+           release makes the CPU enter the IRQ handler again at almost each instruction.
            Only the real RTC handler also sends an acknowledge.
            This has no effect either way, because an acknowledge already clears `hold` and
            `status`. */

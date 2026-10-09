@@ -24,7 +24,7 @@
 #define DIRECTORY_MAX_APP_BLOCKS 15u /* block 0 holds the directory */
 
 /* A confirmed requirement. A byte-by-byte bisection of a real card dump
-   isolated it. The menu-browsing code of the BIOS requires byte 6 of the
+   isolates it. The menu-browsing code of the BIOS requires byte 6 of the
    file-name field (frame offset 0x10) to be the ASCII character 'P'.
    This code is separate from the app-selection and dispatch routine
    above, and it executes before that routine. It lets a user move to an
@@ -35,8 +35,6 @@
    When the save also contains a PocketStation app, a 'P' replaces that
    hyphen: "BASLUSP00892..." and "BISLPMP86247...". The product-code
    prefix `SLPM` of the second example already contains a different 'P'.
-   Because of this, the isolation of the real marker byte needed two
-   rounds of bisection.
 
    Confirmed by test: a real card that operates correctly continues to
    dispatch when each other byte of the file name is incorrect or zero,
@@ -174,15 +172,11 @@ psemu_status flash_load_app(flash_t *flash, const uint8_t *data, size_t size) {
    send them to the data array. Thus the byte at that physical address
    does not change.
 
-   A corrected fault, found through a real crash report (see
-   docs/hardware-notes.md, "Flash memory"). This emulator did not
-   intercept these addresses. Thus each real flash-write operation
-   permanently corrupted a live data byte, at the physical offset with
-   the same number as one of these two fixed addresses. That offset is
-   inside live app code, in the compiled binary of one commercial app.
-   Thus a usual in-game save caused code corruption with no error
-   message. The corruption became visible only later, when execution got
-   to the changed bytes. */
+   A write that reaches the data array changes a live byte at the
+   physical offset with the same number as one of these two addresses.
+   In one app, that offset is inside live code. Thus a usual save
+   corrupts the app with no error message (see docs/hardware-notes.md,
+   "Flash memory"). */
 #define FLASH_KEY1_OFFSET 0x2A54u
 #define FLASH_PROGRAM_FRAME_SIZE 128u
 
@@ -219,7 +213,7 @@ static int flash_is_unlock_key_offset(uint32_t offset) {
 
    A test on real retail hardware confirms that this address operates
    correctly. See docs/hardware-notes.md, "Hardware ID (F_SN)", for the
-   full investigation. */
+   evidence. */
 #define FLASH_HEADER_WRITE_SN_LO_OFFSET 0x0000u
 #define FLASH_HEADER_WRITE_SN_HI_OFFSET 0x0002u
 #define FLASH_HEADER_WRITE_CAL_OFFSET 0x0008u
@@ -345,8 +339,8 @@ static uint32_t flash_resolve_physical_bank(const flash_t *flash, uint32_t virtu
     }
     /* No F_BANK_VAL entry selects this virtual slot. The reset value of
        the register is 0 for each physical bank, which agrees with the
-       reset state of real hardware. Thus this code uses the earlier
-       validated behavior: it treats the enabled physical blocks as one
+       reset state of real hardware. Thus this code treats the enabled
+       physical blocks as one
        contiguous group, which starts at the enabled block with the
        lowest number.
 
@@ -413,11 +407,10 @@ uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {
         return 0u;
     }
     /* The range between the end of F_BANK_VAL (+0x140) and the start of
-       F_EXTRA (+0x300). This range is unmapped and unidentified, the
-       same as before this code made the span longer.
+       F_EXTRA (+0x300). This range is unmapped and unidentified.
        This range must NOT go to the word_index selection below. That
        selection covers only +0x0, +0x4, +0x8, and +0x10. FLASH_CTRL_SPAN
-       now continues past this range. Without this test, the selection
+       continues past this range. Without this test, the selection
        incorrectly mirrors last_command across the full range. */
     if (offset >= 0x140u) {
         return 0u;
@@ -428,25 +421,18 @@ uint8_t flash_ctrl_read8(flash_t *flash, uint32_t offset) {
         reg = flash->bank_mask;
     } else if (word_index == 0u) {
         /* On real hardware, +0 is a write-command and read-status
-           register. It is not a simple mirror. A corrected fault: a real
-           BIOS routine writes a command here. It then waits for bit 0 of
-           this same address to read back as 1 ("ready"). The bank commit
-           of this emulator always completes immediately, thus bit 0 is
-           always ready after a write. Before the correction, this code
-           returned the raw command value. Bit 0 of that value was 0 for
-           the observed command (2), thus the loop continued for an
-           unlimited time. This stopped each real app launch, and gave no
-           error. */
+           register. It is not a simple mirror. A real BIOS routine writes
+           a command here. It then waits for bit 0 of this same address to
+           read back as 1 ("ready"). The bank commit of this emulator
+           always completes immediately, thus bit 0 is always ready after
+           a write. The raw command value is not sufficient: bit 0 of the
+           observed command (2) is 0, and the app launch then stops in
+           that loop. */
         reg = flash->last_command | 1u;
     } else if (word_index == 4u) {
-        /* +0x10 (F_WAIT2): a second confirmed busy-wait fault, now
-           corrected. The flash-write routine of a real app reads bit 2
-           here. It waits for the bit to read back as set after the write
-           completes. This emulator did not model the register before the
-           correction; the span stopped at +0xC. An unmapped read gave a
-           default of 0, thus this loop also continued for an unlimited
-           time, immediately after the correction of the +0 fault above.
-           The writes of this emulator complete immediately, thus this
+        /* +0x10 (F_WAIT2): the flash-write routine of a real app reads bit
+           2 here. It waits for the bit to read back as set after the write
+           completes. The writes of this emulator complete immediately, thus this
            code always reports "not busy". */
         reg = 0x04u;
     } else {

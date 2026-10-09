@@ -57,7 +57,7 @@ uint32_t clk_current_hz(const clk_t *clk);
    The app then executes a short delay loop and returns. No other step in that sequence can stop the
    CPU. If this emulator uses this write as the stop, the confirmed behavior occurs exactly.
 
-   To make this register inert - which this emulator did before - is not a safe simplification. The
+   To make this register inert is not a safe simplification. The
    app writes its idle countdown back only AFTER its sleep call returns. Thus a CPU that continues
    to run enters the same tick again, reads the same expired count, and calls sleep again. This
    recursion has no limit, at 28 bytes for each level, and the app has only 388 bytes of stack
