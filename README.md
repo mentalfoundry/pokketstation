@@ -69,6 +69,12 @@ The [build guide of the desktop frontend](docs/desktop_readme.md#building) gives
 - [Libretro core](docs/libretro_readme.md): usage and building. It has one extra step: it gets `libretro-common` at the first configure operation, and that step needs internet access.
 - [Web build](frontends/web/README.md): compiles the core to one JavaScript file with Emscripten.
 
+## On AI Usage
+
+This repository uses AI assistance in the development of its code. The AI is always human steered using my best judgement and the application of my software development experiences and background. Where public documentation is missing or ambiguous, I will try to derive hardware behavior based on test bench data obtained from personal testing a real PocketStation device. I think the results and behavior of the resulting emulator speaks for itself.
+
+I'll endeavour not to serve you spaghetti. Hope you enjoy the sauce.
+
 ## License
 
 The emulation core in [core/](core/) and its test suite in [tests/](tests/) are MIT. See
